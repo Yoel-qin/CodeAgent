@@ -1,0 +1,65 @@
+[project]
+name = "coderag-backend"
+version = "0.1.0"
+description = "CodeRAG backend — FastAPI + LangGraph RAG pipeline"
+requires-python = ">=3.11"
+readme = "README.md"
+
+dependencies = [
+    # Web
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sse-starlette>=2.1",
+    # Config / validation
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    # DB
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "psycopg[binary]>=3.2",      # alembic 同步迁移用
+    "alembic>=1.13",
+    # 缓存/队列
+    "redis>=5.0",
+    # 日志 / HTTP / 认证
+    "loguru>=0.7",
+    "httpx>=0.27",
+    "python-jose[cryptography]>=3.3",
+    "passlib[bcrypt]>=1.7",
+    # ---- 以下依赖随阶段递增（Phase 0 暂不安装以加速构建）----
+    # Phase 1: langgraph, langchain-core, langchain-openai, langchain-community,
+    #          tree-sitter, tree-sitter-java, pymilvus, minio, elasticsearch
+    # Phase 1.5: PyMuPDF, pdfplumber, python-docx, mammoth, paddleocr
+    # Phase 2/5: sentence-transformers, torch, dgl (model_server)
+    "tree-sitter>=0.26.0",
+    "tree-sitter-java>=0.23.5",
+    "jieba>=0.42.1",
+    "elasticsearch>=8.11,<9",
+    "pymilvus>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "ruff>=0.5",
+]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
+default = true
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]

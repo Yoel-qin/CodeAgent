@@ -1,0 +1,66 @@
+# ---- Secrets / env ----
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.local
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+
+# ---- Node / Frontend ----
+node_modules/
+frontend/dist/
+frontend/build/
+.vite/
+*.local
+npm-debug.log*
+pnpm-debug.log*
+
+# ---- Data volumes (mounted by docker) ----
+data/*
+!data/.gitkeep
+
+# ---- Models / caches ----
+*.bin
+*.safetensors
+models_cache/
+hf_cache/
+
+# ---- IDE / OS ----
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- Logs ----
+*.log
+logs/
+
+# ---- Internal dev / design / progress docs (kept local, not pushed) ----
+/Rag学习清单.md
+/api接口清单.md
+/coderag前端设计方案 .md
+/coderag后端设计方案.md
+/开发实施计划与方案.md
+/开发清单.md
+/待确认问题清单.md
+/技术栈架构设计.md
+/新增pdf和word解析.md
+/mcp工具集合.md

@@ -1,0 +1,19 @@
+[project]
+name = "coderag-model-server"
+version = "0.1.0"
+description = "CodeRAG 本地模型服务：BGE-M3 嵌入（GPU）/ 后续 bge-reranker / R-GCN"
+requires-python = ">=3.11"
+
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "sentence-transformers>=3.0",
+  # torch 由基础镜像（pytorch/pytorch）提供，不在此重复声明
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
+default = true

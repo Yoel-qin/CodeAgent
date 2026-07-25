@@ -1,0 +1,3 @@
+# pnpm 11+ 从此文件读取构建设置（package.json 的 pnpm.* 已弃用）
+allowBuilds:
+  esbuild: true

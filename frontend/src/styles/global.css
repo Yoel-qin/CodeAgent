@@ -79,3 +79,22 @@ body,
     opacity: 0;
   }
 }
+
+/* ---- 文档表格预览（Phase 1.5d，渲染后端 table_html） ---- */
+.coderag-html-table table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+.coderag-html-table th,
+.coderag-html-table td {
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+}
+.coderag-html-table thead th {
+  background: rgba(127, 127, 127, 0.2);
+  font-weight: 600;
+}

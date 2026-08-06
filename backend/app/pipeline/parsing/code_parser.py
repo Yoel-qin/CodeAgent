@@ -110,7 +110,6 @@ def _javadoc_before(node) -> str | None:
         return None
     raw = _node_text(prev_comment)
     # 仅当与目标相邻（中间仅空白）
-    between = parent.text  # not used; do byte check via source
     if not _adjacent(prev_comment, node):
         return None
     return raw if raw.startswith("/**") else None

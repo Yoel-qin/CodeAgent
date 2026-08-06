@@ -5,6 +5,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     String,
@@ -100,4 +101,47 @@ class RollbackHistory(Base):
     __table_args__ = (
         Index("idx_rollback_source", "source_commit"),
         Index("idx_rollback_commit", "rollback_commit"),
+    )
+
+
+class DocUpdateProposal(Base):
+    """文档更新提案（M15：DOC_MAINTAIN 批准后产出的重写 + PR 工件记录）。
+
+    人工审批通过后，``apply`` 节点据当前代码 LLM 重写过时文档段落，把重写工件写回 MinIO，
+    并在此表落一行结构化 PR 提案（分支/commit/diff 载荷，**不执行真实 git**，status=PENDING_PUSH）。
+    无 LLM 时仅记录待人工重写（status=PENDING_MANUAL）。
+    M21 起：approve（``set_proposal_status``）在写回 KB 后**真执行 git**——隔离 worktree 建分支+提交
+    （+可选推送），回填 ``commit_sha``/``pr_url``、状态翻 ``PUSHED``（已推送）/``COMMITTED``（仅本地提交）；
+    git 失败翻 ``PUSH_FAILED``（KB 已写回）。``source_commit`` 在 ``create_doc_pr`` 捕获 base 提交，
+    供回滚 closer（``doc_pr_service.close_open_doc_pr_for``）匹配关 PR（删分支、翻 ``CLOSED_BY_ROLLBACK``）。
+    M17 起：SWEEP 批量重写（``sweep_rewrite_service``）也从此表产 PENDING 行＝审批队列，
+    人工 approve→``APPROVED``→（M21 git）``PUSHED``/``COMMITTED``/``PUSH_FAILED`` / reject→``REJECTED``。
+    status 值（``String(32)`` 无枚举，新增值零迁移）：PENDING_PUSH / PENDING_MANUAL / FAILED /
+    MERGED / CLOSED_BY_ROLLBACK / APPROVED / REJECTED / PUSHED / COMMITTED / PUSH_FAILED。
+    """
+    __tablename__ = "doc_update_proposals"
+
+    proposal_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(64))
+    file_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("doc_files.file_id"))
+    doc_chunk_id: Mapped[str | None] = mapped_column(String(128))
+    heading_path: Mapped[dict | None] = mapped_column(JSONB)
+    relation_ids: Mapped[dict | None] = mapped_column(JSONB)  # list[int]，触发本提案的锚点 relation_id
+    original_text: Mapped[str | None] = mapped_column(Text)
+    rewritten_text: Mapped[str | None] = mapped_column(Text)  # None ⇒ 未配置 LLM，待人工重写
+    artifact_key: Mapped[str | None] = mapped_column(String(512))  # MinIO 重写工件 key
+    branch_name: Mapped[str | None] = mapped_column(String(256))
+    commit_message: Mapped[str | None] = mapped_column(String(512))
+    status: Mapped[str] = mapped_column(String(32), default="PENDING_PUSH")  # PENDING_PUSH/PENDING_MANUAL/FAILED/MERGED/CLOSED_BY_ROLLBACK/APPROVED/REJECTED/PUSHED/COMMITTED/PUSH_FAILED
+    pr_url: Mapped[str | None] = mapped_column(String(512))
+    commit_sha: Mapped[str | None] = mapped_column(String(40))  # M21：我们在分支上创建的提交 sha（区别于 source_commit=base）
+    error_message: Mapped[str | None] = mapped_column(String(512))
+    source_commit: Mapped[str | None] = mapped_column(String(40))  # 预留：回滚关闭 PR 联动
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index("idx_doc_proposals_status", "status"),
+        Index("idx_doc_proposals_conv", "conversation_id"),
+        Index("idx_doc_proposals_file", "file_id"),
     )

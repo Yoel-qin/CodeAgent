@@ -1,8 +1,9 @@
 """会话/消息 落库相关纯函数单元测试（无外部依赖）。"""
 from __future__ import annotations
 
+from app.api.v1.conversations import _build_agent_trace
 from app.core.ids import prefixed_id
-from app.services.chat_service import _derive_title
+from app.services.chat_service import _derive_title, persist_retrieval_log
 
 
 def test_prefixed_id_format_and_uniqueness():
@@ -27,3 +28,55 @@ def test_derive_title_short_query_kept_as_is():
 
 def test_derive_title_collapses_newlines():
     assert _derive_title("a\nb\nc") == "a b c"
+
+
+# ---- Agent 步骤可观测性（M5）：agent_steps 持久化 + 回放 ----
+
+
+class _AddRecorder:
+    """假 AsyncSession：记录 add(...) 调用，flush 为 no-op（无需真实 DB）。"""
+
+    def __init__(self) -> None:
+        self.added: list = []
+
+    def add(self, obj) -> None:
+        self.added.append(obj)
+
+    async def flush(self) -> None:
+        return None
+
+
+async def test_persist_retrieval_log_stores_agent_steps():
+    session = _AddRecorder()
+    steps = [{"tool": "search_symbol", "args": {"q": "Foo.bar"}, "n": 3}]
+    await persist_retrieval_log(session, "q", {}, [], agent_steps=steps)
+    assert len(session.added) == 1
+    assert session.added[0].agent_steps == steps
+
+
+async def test_persist_retrieval_log_agent_steps_null_when_absent():
+    # legacy/retrieve 路径不传 agent_steps → 列应为 NULL
+    session = _AddRecorder()
+    await persist_retrieval_log(session, "q", {}, [])
+    assert session.added[0].agent_steps is None
+
+
+def test_build_agent_trace_present():
+    steps = [{"tool": "read_code", "args": {"chunk_id": "c1"}, "n": 1}]
+    resp = _build_agent_trace(agent_steps=steps, agent_type="CHANGE_IMPACT")
+    assert resp is not None
+    assert resp.type == "CHANGE_IMPACT"
+    assert resp.steps == steps
+
+
+def test_build_agent_trace_absent():
+    # 空轨迹（None 或 []）→ 不出 agent 段
+    assert _build_agent_trace(agent_steps=None, agent_type="CHANGE_IMPACT") is None
+    assert _build_agent_trace(agent_steps=[], agent_type="CHANGE_IMPACT") is None
+
+
+def test_build_agent_trace_type_fallback():
+    # agent_type 缺失（降级覆盖 meta 后 msg.agent_type 仍可能为 None）→ 回退 "AGENT"
+    resp = _build_agent_trace(agent_steps=[{"tool": "t", "args": {}, "n": 0}], agent_type=None)
+    assert resp is not None
+    assert resp.type == "AGENT"

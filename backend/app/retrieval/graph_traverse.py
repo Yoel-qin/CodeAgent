@@ -4,7 +4,6 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-
 _NEIGHBOR_SQL = text("""
     SELECT callee_chunk_id AS n FROM call_graph
       WHERE caller_chunk_id = ANY(cast(:ids as text[])) AND is_deleted = false

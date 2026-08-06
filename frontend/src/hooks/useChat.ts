@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { streamChat } from "../api/sse";
+import { streamChat, streamResume } from "../api/sse";
 import { getConversation } from "../api/conversations";
 
 export interface Citation {
@@ -10,6 +10,7 @@ export interface Citation {
   method?: string | null;
   path?: string[] | null;
   score?: number;
+  content_type?: string; // Phase 1.5e: text | image | table | table_fragment
 }
 
 export interface RetrievalInfo {
@@ -29,6 +30,16 @@ export interface RetrievalInfo {
   rerank_on?: boolean;
   recall_ms?: number;
   rerank_ms?: number;
+  // 场景 Agent 路径（mode:agent）：漏斗全零，真实信息在 agentSteps
+  mode?: string;
+  agent?: string;
+}
+
+/** Agent 工具调用轨迹一步（agent_step 事件，M5 可观测性）。 */
+export interface AgentStep {
+  tool: string;
+  args: Record<string, unknown>;
+  n: number;
 }
 
 export type Feedback = "HELPFUL" | "NOT_HELPFUL";
@@ -40,11 +51,13 @@ export interface ChatMessage {
   citations: Citation[];
   retrieval?: RetrievalInfo;
   agent?: string;
+  agentSteps?: AgentStep[]; // 实时累积的 Agent 工具调用轨迹（仅 langgraph 场景 Agent 流式消息）
   streaming?: boolean;
   error?: boolean;
   createdAt: number;
   messageId?: string; // 服务端消息 ID（assistant 消息，来自 done 事件）
   feedback?: Feedback;
+  interrupt?: { proposal: string; awaiting: boolean }; // HITL（M10）：图暂停待人工确认
 }
 
 let _seq = 0;
@@ -87,7 +100,19 @@ export function useChat() {
             },
             onRetrieval: (r) => patch(aiId, (m) => ({ ...m, retrieval: r as RetrievalInfo })),
             onCitation: (c) => patch(aiId, (m) => ({ ...m, citations: [...m.citations, c as Citation] })),
+            onAgentStep: (s) =>
+              patch(aiId, (m) => ({ ...m, agentSteps: [...(m.agentSteps ?? []), s as AgentStep] })),
             onToken: (t) => patch(aiId, (m) => ({ ...m, content: m.content + t })),
+            onInterrupt: (info) => {
+              // HITL（M10）：图暂停。记下 proposal + 服务端 message_id，弹审批框（streaming 关闭）
+              const d = info as { proposal?: string; message_id?: string };
+              patch(aiId, (m) => ({
+                ...m,
+                streaming: false,
+                messageId: d.message_id ?? m.messageId,
+                interrupt: { proposal: d.proposal ?? "", awaiting: true },
+              }));
+            },
             onDone: (meta) => {
               const d = meta as { message_id?: string };
               patch(aiId, (m) => ({ ...m, streaming: false, messageId: d.message_id ?? m.messageId }));
@@ -149,8 +174,46 @@ export function useChat() {
 
   const clear = useCallback(() => setMessages([]), []);
 
+  /** HITL（M10）：对「等待人工确认」的消息给出决策，POST /v1/chat/resume 续跑图，token 流回同一条消息。 */
+  const resume = useCallback(
+    async (approved: boolean, comment?: string) => {
+      if (streaming) return;
+      const target = messages.find((m) => m.interrupt?.awaiting);
+      if (!target?.messageId || !conversationId) return;
+      const ac = new AbortController();
+      ctrl.current = ac;
+      setStreaming(true);
+      patch(target.id, (m) => ({
+        ...m,
+        streaming: true,
+        content: "",
+        interrupt: m.interrupt ? { ...m.interrupt, awaiting: false } : m.interrupt,
+      }));
+      try {
+        await streamResume(
+          { conversation_id: conversationId, message_id: target.messageId, approved, comment: comment ?? null },
+          {
+            onToken: (t) => patch(target.id, (m) => ({ ...m, content: m.content + t })),
+            onDone: (meta) => {
+              const d = meta as { message_id?: string };
+              patch(target.id, (m) => ({ ...m, streaming: false, messageId: d.message_id ?? m.messageId }));
+            },
+            onError: () =>
+              patch(target.id, (m) => ({ ...m, streaming: false, error: true })),
+          },
+          ac.signal,
+        );
+      } finally {
+        setStreaming(false);
+        patch(target.id, (m) => ({ ...m, streaming: false }));
+        ctrl.current = null;
+      }
+    },
+    [streaming, messages, conversationId],
+  );
+
   return {
-    messages, streaming, send, stop, clear,
+    messages, streaming, send, resume, stop, clear,
     conversationId, conversationTitle,
     loadConversation, newConversation, setFeedback,
   };

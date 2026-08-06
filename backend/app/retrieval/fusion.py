@@ -10,8 +10,9 @@ Reciprocal Rank Fusion：把多路召回结果按各自排名融合，无需校�
 | -------- | ---- | -------- | ----------------------------- |
 | 向量语义 | 1.0  | vector   | 基准                          |
 | BM25/词法| 0.8  | lexical  | 精确匹配补充（含 PG 词法降级）|
-| 图向量   | 0.9  | graph_vec| 结构相似性（Phase 5 接入）    |
 | 图遍历   | 1.2  | graph    | 确定性关联，权重最高          |
+
+> 图向量（graph_vec，原 Phase 5 路径 C）已于 2026-07-27 移除；保留图遍历（路径 D）。
 """
 from __future__ import annotations
 
@@ -19,7 +20,6 @@ from __future__ import annotations
 DEFAULT_WEIGHTS: dict[str, float] = {
     "vector": 1.0,
     "lexical": 0.8,
-    "graph_vec": 0.9,
     "graph": 1.2,
 }
 

@@ -1,7 +1,10 @@
 """Milvus 客户端：向量入库 + ANN 检索（设计 §7.4 / §11.3 路径 A）。
 
-Phase 1 用单一 collection `coderag_vectors`（BGE-M3 1024d）+ kind 过滤；
-Phase 5 引入代码专用嵌入时再拆 code/doc collection。
+按 embedding_strategy 支持两种 collection 布局：
+  unified → 单一 `coderag_vectors`（1024d，带 kind 字段 + kind 过滤）——框架一（全 BGE-M3）。
+  dual    → 双 collection：`code_vectors`(768d, CodeBERT) + `doc_vectors`(1024d, BGE-M3)
+            ——框架二（方案一）；collection 名即 kind，无 kind 字段。
+HNSW COSINE；chunk_id VARCHAR 主键。
 """
 from __future__ import annotations
 
@@ -9,8 +12,12 @@ from pymilvus import DataType, MilvusClient
 
 from app.core.config import settings
 
-COLLECTION = "coderag_vectors"
-DIM = 1024
+UNIFIED_COLLECTION = "coderag_vectors"
+UNIFIED_DIM = 1024
+CODE_COLLECTION = "code_vectors"
+CODE_DIM = 768           # CodeBERT
+DOC_COLLECTION = "doc_vectors"
+DOC_DIM = 1024           # BGE-M3
 
 _client: MilvusClient | None = None
 
@@ -22,38 +29,78 @@ def get_client() -> MilvusClient:
     return _client
 
 
-def ensure_collection() -> None:
+def collection_for(strategy: str | None, kind: str | None) -> tuple[str, int, bool]:
+    """返回 (collection 名, 维度, 是否带 kind 字段)。
+    unified → 单 collection + kind 字段；dual → code/doc 各一 collection，无 kind 字段。
+    """
+    s = strategy if strategy is not None else settings.embedding_strategy
+    if s == "dual":
+        if kind == "code":
+            return CODE_COLLECTION, CODE_DIM, False
+        return DOC_COLLECTION, DOC_DIM, False  # doc 或缺省
+    return UNIFIED_COLLECTION, UNIFIED_DIM, True
+
+
+def ensure_collection(strategy: str | None = None, kind: str | None = None) -> None:
+    name, dim, has_kind = collection_for(strategy, kind)
     c = get_client()
-    if c.has_collection(COLLECTION):
+    if c.has_collection(name):
         return
     schema = c.create_schema(auto_id=False, enable_dynamic_field=False)
     schema.add_field("chunk_id", DataType.VARCHAR, is_primary=True, max_length=128)
-    schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=DIM)
-    schema.add_field("kind", DataType.VARCHAR, max_length=16)
+    schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=dim)
+    if has_kind:
+        schema.add_field("kind", DataType.VARCHAR, max_length=16)
     idx = c.prepare_index_params()
     idx.add_index(field_name="embedding", index_type="HNSW", metric_type="COSINE",
                   params={"M": 32, "efConstruction": 256})
-    c.create_collection(collection_name=COLLECTION, schema=schema, index_params=idx)
+    c.create_collection(collection_name=name, schema=schema, index_params=idx)
 
 
-def upsert_vectors(rows: list[dict]) -> None:
-    """rows: [{chunk_id, embedding, kind}]"""
+def upsert_vectors(strategy: str | None, kind: str, rows: list[dict]) -> None:
+    """rows: [{chunk_id, embedding}]；unified 自动补 kind 字段，dual 按 collection 名写入。"""
     if not rows:
         return
-    ensure_collection()
-    get_client().upsert(collection_name=COLLECTION, data=rows)
+    name, _, has_kind = collection_for(strategy, kind)
+    ensure_collection(strategy, kind)
+    data = [{**r, "kind": kind} for r in rows] if has_kind else rows
+    get_client().upsert(collection_name=name, data=data)
 
 
-def search(query_vec: list[float], top_k: int = 20, kind: str | None = None) -> list[dict]:
-    ensure_collection()
-    flt = f'kind == "{kind}"' if kind else ""
+def delete_vectors(strategy: str | None, kind: str, chunk_ids: list[str]) -> int:
+    """按 chunk_id（Milvus VARCHAR 主键）硬删除向量，返回请求删除的条数。
+
+    unified 单 collection 内 code/doc 的 chunk_id 全局唯一（code_/doc_ 前缀），按 PK 删即可；
+    dual 需按 kind 选 collection。空列表为 no-op（不触碰客户端）。
+    """
+    if not chunk_ids:
+        return 0
+    name, _, _ = collection_for(strategy, kind)
+    ensure_collection(strategy, kind)
+    get_client().delete(collection_name=name, ids=list(chunk_ids))
+    return len(chunk_ids)
+
+
+def search(strategy: str | None, kind: str | None, query_vec: list[float],
+           top_k: int = 20) -> list[dict]:
+    """ANN 检索。unified + kind=None → 不加 kind 过滤（混检 code+doc）。
+    返回 [{chunk_id, kind, score}]（dual 的 kind 由入参/collection 名回填）。
+    """
+    name, _, has_kind = collection_for(strategy, kind)
+    ensure_collection(strategy, kind)
+    flt = f'kind == "{kind}"' if (has_kind and kind) else ""
+    out_fields = ["kind"] if has_kind else []
     res = get_client().search(
-        collection_name=COLLECTION, data=[query_vec], anns_field="embedding",
-        limit=top_k, filter=flt, output_fields=["kind"],
+        collection_name=name, data=[query_vec], anns_field="embedding",
+        limit=top_k, filter=flt, output_fields=out_fields,
         search_params={"metric_type": "COSINE", "params": {"ef": 128}},
     )
     out: list[dict] = []
     for h in res[0]:
         ent = h.get("entity", {}) or {}
-        out.append({"chunk_id": h.get("id"), "kind": ent.get("kind"), "score": float(h.get("distance", 0.0))})
+        out.append({
+            "chunk_id": h.get("id"),
+            "kind": ent.get("kind") if has_kind else kind,
+            "score": float(h.get("distance", 0.0)),
+        })
     return out

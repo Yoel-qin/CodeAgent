@@ -2,8 +2,9 @@
 
 两阶段统一封装为 :func:`rerank_stage`：给定 (query, candidates, model, top_n)，
 调 ``clients.reranker_client`` 拿每条候选的相关性分数，按分重排并截断。
-图特征融合（§11.7，α·semantic + β·graph + γ·structural）依赖 Phase 5 的
-graph_embedding / pagerank / 社区等特征，**当前 Stage 3 为纯语义精排**，待 Phase 5 加层。
+Stage 3 为纯语义精排（按候选 ``content`` 文本打分）；dual 嵌入框架下它同时充当「统一重排桥」——
+对 CodeBERT 代码路与 BGE-M3 文档路合并后的候选统一打分，屏蔽两嵌入空间的分差
+（见 docs/嵌入向量方案.md 方案一）。图向量 / 图特征融合已于 2026-07-27 移除。
 """
 from __future__ import annotations
 

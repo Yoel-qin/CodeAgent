@@ -3,13 +3,28 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import chat, conversations
+from app.api.v1 import (
+    agents,
+    chat,
+    conversations,
+    documents,
+    graph,
+    resources,
+    staleness,
+    sync,
+)
 from app.api.v1.health import router as health_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
 api_router.include_router(chat.router, prefix="/v1")
 api_router.include_router(conversations.router, prefix="/v1")
+api_router.include_router(sync.router, prefix="/v1")
+api_router.include_router(documents.router, prefix="/v1")
+api_router.include_router(resources.router, prefix="/v1")
+api_router.include_router(graph.router, prefix="/v1")
+api_router.include_router(agents.router, prefix="/v1")
+api_router.include_router(staleness.router, prefix="/v1")
 
 
 @api_router.get("/v1")
@@ -17,9 +32,9 @@ async def v1_info() -> dict:
     """API 版本与已注册模块。"""
     return {
         "version": "v1",
-        "modules": ["chat (stub)"],
+        "modules": ["chat (stub)", "sync", "documents", "resources", "graph", "agents", "staleness"],
         "planned": [
-            "chat", "code", "graph", "communities", "sync",
-            "agents", "monitor", "search", "settings", "documents", "resources",
+            "chat", "code", "sync",
+            "monitor", "search", "settings",
         ],
     }

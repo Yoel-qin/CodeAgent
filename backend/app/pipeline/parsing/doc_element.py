@@ -7,7 +7,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # ---------------- 代码 ----------------
 
 @dataclass
@@ -67,6 +66,19 @@ class DocElement:
     metadata: dict = field(default_factory=dict)
 
 
+@dataclass
+class ParseMeta:
+    """解析器附加元信息（Phase 1.5a）：写入 DocFile 的 file_format/parse_engine/parse_status 等列。"""
+    file_format: str                     # markdown / pdf / docx / doc / html / txt
+    parse_engine: str                    # markdown / pymupdf / python-docx / text / none
+    total_pages: int | None = None
+    total_images: int | None = None
+    total_tables: int | None = None
+    ocr_required: bool = False
+    parse_status: str = "COMPLETED"      # COMPLETED / PARTIAL / FAILED
+    parse_error: str | None = None
+
+
 # ---------------- 切片规格（写库前中间结构） ----------------
 
 @dataclass
@@ -113,3 +125,24 @@ class DocChunkSpec:
     code_anchors: list[str]
     keywords: list[str]
     git_commit_hash: str
+    # Phase 1.5a：PDF/Word 透传（markdown/txt 留默认）
+    page_number: int | None = None
+    chunk_content_type: str = "text"     # text / code_block / table / table_fragment / image / ...
+    # Phase 1.5c：表格结构化（仅 table/table_fragment chunk 填）
+    table_data: dict | None = None        # {headers, rows, col_spans, n_rows, n_cols}
+    table_html: str | None = None
+    table_description: str | None = None
+    table_total_rows: int | None = None
+    table_total_cols: int | None = None
+    is_table_fragment: bool | None = None
+    table_fragment_index: int | None = None
+    parent_table_chunk_id: str | None = None
+    # Phase 1.5b：图片（仅 image chunk 填）
+    image_url: str | None = None
+    image_thumbnail_url: str | None = None
+    image_description: str | None = None
+    image_width: int | None = None
+    image_height: int | None = None
+    image_caption: str | None = None
+    context_before: str | None = None
+    context_after: str | None = None

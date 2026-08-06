@@ -33,6 +33,8 @@ class RetrievalLog(Base):
     fine_rank_results: Mapped[dict | None] = mapped_column(JSONB)
     fine_rank_count: Mapped[int | None] = mapped_column(Integer)
     final_chunk_ids: Mapped[dict | None] = mapped_column(JSONB)
+    # Agent 工具调用轨迹（mode:agent 路径）：[{tool, args, n}, ...]；legacy/retrieve 路径为 NULL。
+    agent_steps: Mapped[list | None] = mapped_column(JSONB)
     user_feedback: Mapped[str | None] = mapped_column(String(32))  # HELPFUL/NOT_HELPFUL
     feedback_time: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
     recall_latency_ms: Mapped[int | None] = mapped_column(Integer)

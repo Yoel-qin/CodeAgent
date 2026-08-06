@@ -10,6 +10,12 @@ const CHANNEL_LABEL: Record<string, string> = {
   graph_vector: "图向量",
 };
 
+/** 紧凑展示工具入参：key=value（字符串原样、其余 JSON 化），避免长串撑爆抽屉。 */
+const fmtArgs = (args: Record<string, unknown>) =>
+  Object.entries(args)
+    .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+    .join(", ");
+
 /** 检索详情抽屉：展开某条 assistant 消息的三阶段召回漏斗与精排候选。 */
 export default function RetrievalDrawer({
   messageId,
@@ -122,6 +128,58 @@ export default function RetrievalDrawer({
                 })}
               </div>
             </section>
+
+            {/* Agent 推理轨迹（仅 langgraph 场景 Agent 消息；M5 可观测性） */}
+            {data.agent && (
+              <section>
+                <Typography.Title level={5} style={{ marginBottom: 8 }}>
+                  Agent 推理轨迹
+                  <Typography.Text
+                    type="secondary"
+                    style={{ fontSize: 12, fontWeight: 400, marginLeft: 8 }}
+                  >
+                    {data.agent.type} · {data.agent.steps.length} 步
+                  </Typography.Text>
+                </Typography.Title>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {data.agent.steps.map((s, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        background: token.colorFillQuaternary,
+                        border: `1px solid ${token.colorBorderSecondary}`,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                        }}
+                      >
+                        <Tag color="purple" style={{ margin: 0 }}>
+                          {s.tool}
+                        </Tag>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          命中 {s.n} 条
+                        </Typography.Text>
+                      </div>
+                      {Object.keys(s.args).length > 0 && (
+                        <Typography.Text
+                          ellipsis
+                          className="code-font"
+                          style={{ display: "block", marginTop: 4, fontSize: 12 }}
+                        >
+                          {fmtArgs(s.args)}
+                        </Typography.Text>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         )}
       </Spin>

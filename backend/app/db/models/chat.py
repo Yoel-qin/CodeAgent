@@ -60,6 +60,9 @@ class ChatMessage(Base):
         BigInteger, ForeignKey("retrieval_logs.log_id")
     )
     agent_type: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(
+        String(16), default="completed", server_default="completed", nullable=False
+    )  # completed | interrupted（HITL 中断态，M10；resume 后翻回 completed）
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (

@@ -7,6 +7,7 @@ import {
   Typography,
   Empty,
   Tooltip,
+  Modal,
   theme,
 } from "antd";
 import {
@@ -21,7 +22,7 @@ import {
 } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useChat, type ChatMessage, type RetrievalInfo, type Feedback } from "../hooks/useChat";
+import { useChat, type ChatMessage, type RetrievalInfo, type AgentStep, type Feedback } from "../hooks/useChat";
 import { postFeedback } from "../api/conversations";
 import CitationCard from "../components/chat/CitationCard";
 import ConversationList from "../components/chat/ConversationList";
@@ -33,21 +34,27 @@ const { Text } = Typography;
 
 const AGENTS = [
   { value: "CODE_UNDERSTAND", label: "代码理解 Agent" },
-  { value: "DOC_QA", label: "文档问答 Agent" },
+  { value: "DOC_ANSWER", label: "文档问答 Agent" },
   { value: "CHANGE_IMPACT", label: "变更影响 Agent" },
   { value: "BUG_DIAGNOSIS", label: "缺陷诊断 Agent" },
-  { value: "GLOBAL_QA", label: "全局问答 Agent" },
+  { value: "CODE_REVIEW", label: "代码审查 Agent" }, // M11：主动评估代码质量/改进建议
+  { value: "TEST_GENERATION", label: "测试生成 Agent" }, // M12：为方法生成 JUnit 单元测试
+  { value: "DOC_MAINTAIN", label: "文档维护 Agent" }, // HITL（M10）：人在回路审批
 ];
 
 export default function ChatPage() {
   const { token } = theme.useToken();
   const {
-    messages, streaming, send, stop, clear,
+    messages, streaming, send, resume, stop, clear,
     conversationId, conversationTitle, loadConversation, newConversation, setFeedback,
   } = useChat();
   const [agent, setAgent] = useState("CODE_UNDERSTAND");
   const [value, setValue] = useState("");
   const [drawerMsgId, setDrawerMsgId] = useState<string | null>(null);
+  const [hitlComment, setHitlComment] = useState("");
+
+  // HITL（M10）：当前等待人工确认的消息（至多一条）
+  const awaiting = messages.find((m) => m.interrupt?.awaiting) ?? null;
 
   const submit = (q?: string) => {
     const text = (q ?? value).trim();
@@ -167,6 +174,45 @@ export default function ChatPage() {
         open={!!drawerMsgId}
         onClose={() => setDrawerMsgId(null)}
       />
+
+      {/* HITL（M10）审批框：图暂停待人工确认 */}
+      <Modal
+        title="人工确认 · 文档维护"
+        open={!!awaiting}
+        onOk={() => {
+          void resume(true, hitlComment || undefined);
+          setHitlComment("");
+        }}
+        onCancel={() => {
+          void resume(false);
+          setHitlComment("");
+        }}
+        okText="批准并应用"
+        cancelText="拒绝"
+        confirmLoading={streaming}
+        cancelButtonProps={{ disabled: streaming }}
+        maskClosable={false}
+        keyboard={false}
+      >
+        <Text type="secondary">系统提议执行以下写动作（标记锚点过时），需人工确认后才会应用：</Text>
+        <div
+          style={{
+            margin: "12px 0",
+            padding: 12,
+            background: token.colorFillQuaternary,
+            borderRadius: 8,
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {awaiting?.interrupt?.proposal}
+        </div>
+        <TextArea
+          value={hitlComment}
+          onChange={(e) => setHitlComment(e.target.value)}
+          placeholder="备注（可选，将作为 stale_reason 记录）"
+          autoSize={{ minRows: 1, maxRows: 3 }}
+        />
+      </Modal>
     </div>
   );
 }
@@ -217,13 +263,15 @@ function MessageRow({
           </div>
         ) : m.streaming ? (
           <Text type="secondary">正在检索与生成…</Text>
+        ) : m.interrupt?.awaiting ? (
+          <Text type="warning">⏳ 已暂停，等待人工确认…</Text>
         ) : null}
       </div>
 
       {/* 引用 + 检索信息 + 反馈 */}
       {!isUser && (m.citations.length > 0 || m.retrieval) && (
         <div style={{ maxWidth: "86%", marginTop: 6 }}>
-          {m.retrieval && <RetrievalSummary r={m.retrieval} token={token} />}
+          {m.retrieval && <RetrievalSummary r={m.retrieval} steps={m.agentSteps} token={token} />}
           {m.citations.length > 0 && (
             <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap" }}>
               {m.citations.map((c, i) => (
@@ -283,11 +331,47 @@ function MessageRow({
 
 function RetrievalSummary({
   r,
+  steps,
   token,
 }: {
   r: RetrievalInfo;
+  steps?: AgentStep[];
   token: ReturnType<typeof theme.useToken>["token"];
 }) {
+  // 场景 Agent 消息（mode:agent）：recall 漏斗全零，改渲染工具调用轨迹（实时进度，M5 可观测性）
+  if (steps?.length) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 6,
+          color: token.colorTextTertiary,
+          fontSize: 11,
+        }}
+      >
+        <span>🔧 {steps.length} 步</span>
+        {steps.map((s, i) => (
+          <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            {i > 0 && <span>→</span>}
+            <span
+              style={{
+                padding: "0 6px",
+                borderRadius: 8,
+                background: token.colorPrimaryBg,
+                lineHeight: "18px",
+              }}
+            >
+              {s.tool}
+              {s.n ? ` ·${s.n}` : ""}
+            </span>
+          </span>
+        ))}
+      </div>
+    );
+  }
+
   const recall = r.recall;
   const vec = recall?.vector ?? r.vector ?? 0;
   const lex = recall?.lexical ?? r.lexical ?? 0;

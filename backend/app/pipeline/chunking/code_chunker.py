@@ -125,7 +125,7 @@ def _split_into_blocks(m: CodeMethod, header: str) -> list[str]:
     n = len(body)
     while i < n:
         window = body[i:i + step]
-        blk = header + sig_line + "\n    // ... (block {0}/{1})\n    ".format("", "") + "\n    ".join(window) + "\n"
+        blk = header + sig_line + "\n    // ... (block {}/{})\n    ".format("", "") + "\n    ".join(window) + "\n"
         blocks.append(blk)
         if i + step >= n:
             break
@@ -177,7 +177,7 @@ def chunk_code_file(pf: ParsedCodeFile, *, commit_hash: str | None = None,
         if not cls.methods:
             # 无方法的类（常量/工具）→ 类级 chunk
             content = _class_header(pf, cls.name, cls.interfaces, cls.superclass) + \
-                f"// (no methods; class-level chunk)\n"
+                "// (no methods; class-level chunk)\n"
             specs.append(CodeChunkSpec(
                 chunk_id=f"code_{_safe(cls.name)}_{short_hash(content)}",
                 file_path=pf.file_path, module_name=pf.module_name, package_name=pf.package,

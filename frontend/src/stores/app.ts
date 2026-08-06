@@ -1,10 +1,19 @@
 import { create } from "zustand";
 import { getHealth, type HealthResponse } from "../api/client";
 
+/** 当前聚焦的引用 chunk（由聊天引用卡片点击设置，供右侧上下文面板读取）。 */
+export interface FocusedCitation {
+  chunk_id: string;
+  type: "code" | "doc";
+  label: string;
+}
+
 interface AppState {
   health: HealthResponse | null;
   healthLoading: boolean;
   fetchHealth: () => Promise<void>;
+  focused: FocusedCitation | null;
+  setFocused: (c: FocusedCitation | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -21,4 +30,6 @@ export const useAppStore = create<AppState>((set) => ({
       set({ healthLoading: false });
     }
   },
+  focused: null,
+  setFocused: (c) => set({ focused: c }),
 }));

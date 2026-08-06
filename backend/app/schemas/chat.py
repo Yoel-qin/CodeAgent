@@ -15,3 +15,17 @@ class ChatRequest(BaseModel):
     # Phase 1.5 多模态过滤
     content_type_filter: list[str] | None = None
     file_format_filter: list[str] | None = None
+
+
+class ResumeRequest(BaseModel):
+    """HITL 续跑（M10）：对一条 interrupted 态消息给出人工决策，触发图续跑。"""
+    conversation_id: str
+    message_id: str
+    approved: bool
+    comment: str | None = None
+
+
+class ContinueRequest(BaseModel):
+    """通用续跑（M14 Part C）：推进一条已存在 thread 的执行（断流恢复 / 中断态上报）。"""
+    conversation_id: str
+    message_id: str | None = None  # 若指定，中断态上报时复用此消息 id

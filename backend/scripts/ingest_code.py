@@ -5,6 +5,8 @@
 本地（连容器化的 PG）:
     uv run python scripts/ingest_code.py --repo ../data/repo/sample --module demo
 可选 --small-file-lines 0：强制方法级切片（默认 <200 行按整文件切片）。
+
+实现：薄封装 app.pipeline.ingest.ingest_repo（exts={".java":"code"}），不再内联遍历/提交逻辑。
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.pipeline.ingest_code import ingest_java_file
+from app.pipeline.ingest import ingest_repo
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,26 +40,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"repo not found: {repo}", file=sys.stderr)
         return 2
 
-    files = sorted(repo.rglob(f"*{args.ext}"))
-    print(f"found {len(files)} {args.ext} file(s) under {repo}")
-
     engine = create_engine(settings.database_url_sync)
-    total_files = total_chunks = 0
     with Session(engine) as session:
-        for f in files:
-            try:
-                stats = ingest_java_file(
-                    session, f, commit_hash=args.commit, repo_root=repo,
-                    module_name=args.module, small_file_lines=args.small_file_lines,
-                )
-                total_files += 1
-                total_chunks += stats["chunks"]
-                print(f"  + {stats['file_path']}: classes={stats['classes']} "
-                      f"chunks={stats['chunks']} (method={stats['method_chunks']})")
-            except Exception as e:  # 单文件失败不阻断整体
-                session.rollback()
-                print(f"  ! {f}: {type(e).__name__}: {e}", file=sys.stderr)
+        stats = ingest_repo(
+            session, repo, module=args.module, commit_hash=args.commit,
+            small_file_lines=args.small_file_lines, build_relations=False,
+            exts={args.ext: "code"},
+        )
         session.commit()
+
+    total_files = total_chunks = 0
+    for d in stats["details"]:
+        total_files += 1
+        total_chunks += d.get("chunks", 0)
+        print(f"  + {d['file_path']}: classes={d.get('classes')} "
+              f"chunks={d.get('chunks')} (method={d.get('method_chunks')})")
+    for err in stats["errors"]:
+        print(f"  ! {err['file']}: {err['error']}", file=sys.stderr)
 
     print(f"DONE. files={total_files} chunks={total_chunks}")
     return 0

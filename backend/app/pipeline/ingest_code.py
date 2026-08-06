@@ -1,7 +1,8 @@
 """代码入库编排：解析 → 切片 → upsert code_files/code_chunks（PG，同步）。
 
-写入顺序遵循"PG 先写（事务）"的一致性策略（设计 §9.3）；
-embedding_synced 保持 False，留待向量化阶段（Phase 1 后续）置 True。
+写入顺序遵循"PG 先写（事务）"的一致性策略（设计 §9.3）；ES 全文索引与 Milvus 向量
+统一收敛到 :mod:`app.pipeline.indexing`（去重 + 批处理 + 失败置 ``embedding_synced=False``），
+瞬时不可用导致的未同步 chunk 由 ``indexing.resync_pending_embeddings`` 补偿重试。
 
 提供同步实现用于离线脚本与 CLI；API/Celery 路径后续补 async 版本。
 """
@@ -10,11 +11,13 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.models import CodeChunk, CodeFile
 from app.db.references import clear_code_chunk_refs
+from app.pipeline import indexing
 from app.pipeline.chunking.code_chunker import chunk_code_file
 from app.pipeline.parsing.code_parser import parse_java
 
@@ -96,10 +99,9 @@ def ingest_java_source(session: Session, *, source: str, file_path: str,
     specs = chunk_code_file(pf, commit_hash=commit_hash, **kwargs)
     n = replace_chunks(session, cf.file_id, specs)
 
-    # 同步 ES 全文索引（路径 B；失败不阻断）
+    # 同步 ES 全文索引（路径 B；index_chunks_safe 已自吞错误，失败不阻断 PG 写入）
     try:
-        from app.clients import es_client
-        es_client.index_chunks_safe(file_path, [{
+        indexing.index_chunks_to_es(file_path, [{
             "chunk_id": s.chunk_id, "kind": "code", "content": s.content,
             "keywords": s.keywords, "class_name": s.class_name,
             "method_name": s.method_name, "heading_path": [], "file_path": file_path,
@@ -107,15 +109,19 @@ def ingest_java_source(session: Session, *, source: str, file_path: str,
     except Exception:
         pass
 
-    # 向量化入 Milvus（路径 A；嵌入未启用则跳过）
+    # 向量化入 Milvus（路径 A；嵌入未启用/编码器不可用则跳过，embedding_synced 留 False，
+    # 由 indexing.resync_pending_embeddings 补偿重试）。保留外层 try/except：UPDATE 抛错不得破坏 PG insert。
     try:
-        from app.clients import embedding_client, milvus_client
-        if embedding_client.enabled():
-            vecs = embedding_client.embed_texts_sync([s.content for s in specs])
-            milvus_client.upsert_vectors([
-                {"chunk_id": s.chunk_id, "embedding": vecs[i], "kind": "code"}
-                for i, s in enumerate(specs)
-            ])
+        strat = settings.embedding_strategy
+        if indexing._embed_enabled_for(strat, "code"):
+            rows = [{"chunk_id": s.chunk_id, "text": indexing.embed_text_for("code", s)}
+                    for s in specs]
+            if indexing.index_chunks_to_milvus(strat, "code", rows):
+                session.execute(
+                    update(CodeChunk)
+                    .where(CodeChunk.chunk_id.in_([s.chunk_id for s in specs]))
+                    .values(embedding_synced=True)
+                )
     except Exception:
         pass
 

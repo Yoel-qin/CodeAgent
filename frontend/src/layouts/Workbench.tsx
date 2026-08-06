@@ -5,15 +5,16 @@ import {
   FolderOutlined,
   FileTextOutlined,
   ApartmentOutlined,
-  GlobalOutlined,
   SyncOutlined,
   RobotOutlined,
+  WarningOutlined,
   DashboardOutlined,
   SettingOutlined,
   SearchOutlined,
 } from "@ant-design/icons";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "../stores/app";
+import ContextPanel from "../components/ContextPanel";
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Text } = Typography;
@@ -28,7 +29,6 @@ const navItems = [
       { key: "/code", label: "代码浏览", icon: <FolderOutlined /> },
       { key: "/documents", label: "文档管理", icon: <FileTextOutlined /> },
       { key: "/graph", label: "知识图谱", icon: <ApartmentOutlined /> },
-      { key: "/communities", label: "社区总览", icon: <GlobalOutlined /> },
     ],
   },
   {
@@ -38,6 +38,7 @@ const navItems = [
     children: [
       { key: "/sync", label: "同步管理", icon: <SyncOutlined /> },
       { key: "/agents", label: "Agent 面板", icon: <RobotOutlined /> },
+      { key: "/staleness", label: "腐化审批", icon: <WarningOutlined /> },
       { key: "/monitor", label: "系统监控", icon: <DashboardOutlined /> },
       { key: "/settings", label: "系统设置", icon: <SettingOutlined /> },
     ],
@@ -112,7 +113,7 @@ export default function Workbench() {
         </Content>
 
         <Sider width={320} theme="light" style={{ borderLeft: `1px solid ${token.colorBorderSecondary}` }}>
-          <ContextPanelPlaceholder />
+          <ContextPanel />
         </Sider>
       </Layout>
 
@@ -126,17 +127,5 @@ export default function Workbench() {
         </Space>
       </Footer>
     </Layout>
-  );
-}
-
-function ContextPanelPlaceholder() {
-  const { token } = theme.useToken();
-  return (
-    <div style={{ padding: 16 }}>
-      <Typography.Text strong>📌 当前上下文</Typography.Text>
-      <div style={{ marginTop: 12, color: token.colorTextTertiary, fontSize: 13 }}>
-        问答后此处展示：引用来源 / 关联关系 / 调用链 / 最近变更（Phase 1 实现）。
-      </div>
-    </div>
   );
 }

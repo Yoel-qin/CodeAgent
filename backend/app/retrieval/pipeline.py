@@ -1,10 +1,10 @@
 """检索管道编排（设计 §11）。
 
-    Stage 0 查询理解
-      → 四路召回（A 向量 / B ES BM25（不可用降级 PG 词法）/ D 图遍历；C 图向量 Phase 5）
+    Stage 0 查询理解（规则分词 + LLM 改写，可降级）
+      → 三路召回（A 向量[unified 单路 / dual 代码CodeBERT+文档BGE-M3 双路] / B ES BM25（不可用降级 PG 词法）/ D 图遍历）
       → Stage 1 RRF 融合去重（§11.4）
       → Stage 2 粗排 bge-reranker-base（§11.5）
-      → Stage 3 精排 bge-reranker-v2-m3（§11.6；图特征融合待 Phase 5）
+      → Stage 3 精排 bge-reranker-v2-m3（§11.6；dual 框架下作为统一重排桥，屏蔽两嵌入空间分数差异）
 
 每路召回与整段精排均独立 try/except：向量/BM25 不可用退回词法召回，
 精排不可用（无 Key / API 失败）退回 RRF 排序——主链路永不因可选项中断。
@@ -22,7 +22,7 @@ from app.retrieval.bm25_search import bm25_recall
 from app.retrieval.fusion import DEFAULT_WEIGHTS, rrf_fuse
 from app.retrieval.graph_traverse import graph_recall
 from app.retrieval.lexical_search import lexical_recall
-from app.retrieval.query_understanding import extract_query_terms
+from app.retrieval.query_understanding import extract_query_terms, rewrite_query
 from app.retrieval.reranker import rerank_stage
 from app.retrieval.vector_search import vector_recall
 
@@ -34,15 +34,35 @@ _SEED_TOP = 5  # 取代码召回前 N 条作为图遍历种子
 class RetrievalPipeline:
     async def recall(
         self, session: AsyncSession, query: str, *, top_k: int = 8,
+        semantic_query: str | None = None, terms: list[str] | None = None,
+        rewritten: bool | None = None,
     ) -> tuple[list[dict], dict]:
-        terms = extract_query_terms(query)
+        # ---- Stage 0：LLM 查询改写（失败优雅降级）----
+        # 调用方可预计算 Stage 0（如 LangGraph 的 query_analysis 节点）后透传，避免重复改写；
+        # 不传（legacy / 默认）则在此现算——行为与重构前完全一致。
+        if semantic_query is None:
+            rw = await rewrite_query(query)
+            sem = rw["semantic_query"]
+            terms = extract_query_terms(query)
+            if rw["extra_keywords"]:
+                seen_l = {t.lower() for t in terms}
+                for k in rw["extra_keywords"]:
+                    if k.lower() not in seen_l:
+                        terms.append(k)
+                        seen_l.add(k.lower())
+            rewritten = sem != query or bool(rw["extra_keywords"])
+        else:
+            sem = semantic_query
+            terms = terms or []
+            if rewritten is None:
+                rewritten = sem != query
         t_start = time.perf_counter()
 
-        # ---- Stage 0 + 四路召回（每路独立降级）----
+        # ---- 三路召回（每路独立降级）----
         vector: list[dict] = []
         used_vec = False
         try:
-            vector = await vector_recall(session, query, top_k=settings.top_k_recall)
+            vector = await vector_recall(session, sem, top_k=settings.top_k_recall)
             used_vec = bool(vector)
         except Exception:
             vector = []
@@ -50,7 +70,7 @@ class RetrievalPipeline:
         lexical: list[dict] = []
         used_es = False
         try:
-            lexical = await bm25_recall(query, top_k=settings.top_k_recall)
+            lexical = await bm25_recall(sem, top_k=settings.top_k_recall)
             used_es = bool(lexical)
         except Exception:
             lexical = []
@@ -115,6 +135,8 @@ class RetrievalPipeline:
             "rerank_on": rerank_on,
             "recall_ms": recall_ms,
             "rerank_ms": rerank_ms,
+            "rewritten": rewritten,
+            "embedding_strategy": settings.embedding_strategy,
             # 兼容旧字段（chat_service 降级提示 / 旧前端 RetrievalInfo）
             "lexical": len(lexical),
             "vector": len(vector),

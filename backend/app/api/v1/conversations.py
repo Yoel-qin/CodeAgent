@@ -13,17 +13,35 @@ from app.core.config import settings
 from app.db.models.chat import ChatMessage, Conversation
 from app.db.models.system import RetrievalLog
 from app.schemas.conversation import (
+    AgentTraceResponse,
     ConversationDetailResponse,
     ConversationItem,
     ConversationListResponse,
     FeedbackRequest,
+    InterruptInfo,
     MessageItem,
     RetrievalDetailResponse,
     SuggestionRequest,
     SuggestionResponse,
+    ThreadStateResponse,
 )
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+def _build_agent_trace(
+    *, agent_steps: list | None, agent_type: str | None,
+) -> AgentTraceResponse | None:
+    """有 Agent 工具调用轨迹才返回 agent 段。
+
+    判定用 ``agent_steps`` 非空（而非 meta.mode）：``_degrade`` 会用真实漏斗覆盖
+    ``retrieval_meta`` 丢 ``"agent"`` 键，但若 Agent 降级前已跑几步，``agent_steps``
+    已累积，此时仍应展示「它试过这些工具」更合理。``type`` 取 ``msg.agent_type``
+    （降级覆盖 meta 后仍可靠）。
+    """
+    if not agent_steps:
+        return None
+    return AgentTraceResponse(type=agent_type or "AGENT", steps=agent_steps)
 
 
 @router.get("/conversations", response_model=ConversationListResponse)
@@ -69,12 +87,58 @@ async def get_conversation(
         MessageItem(
             message_id=m.message_id, role=m.role, content=m.content,
             citations=m.citations, agent_type=m.agent_type, created_at=m.created_at,
+            status=m.status,
         )
         for m in rows
     ]
     return ConversationDetailResponse(
         conversation_id=conv.conversation_id, title=conv.title,
         agent_type=conv.agent_type, messages=messages,
+    )
+
+
+@router.get("/conversations/{conversation_id}/state", response_model=ThreadStateResponse)
+async def get_thread_state(
+    conversation_id: str, session: AsyncSession = Depends(get_db),
+) -> ThreadStateResponse:
+    """会话线程执行状态（HITL 可观测，M14 Part C）：是否有待审批 interrupt + 最新 assistant 消息状态。
+
+    仅 ``RAG_ENGINE=langgraph`` 可用（线程状态来自主图 checkpoint）；legacy → 501。
+    """
+    if settings.rag_engine != "langgraph":
+        raise HTTPException(status_code=501, detail="线程状态仅在 RAG_ENGINE=langgraph 下可用")
+    from app.agent.graph import get_graph
+    from app.agent.streaming import _extract_interrupts
+
+    config = {"configurable": {"thread_id": conversation_id, "session": session}}
+    snap = await get_graph().aget_state(config)
+    interrupts = _extract_interrupts(snap)
+
+    latest = (await session.execute(
+        select(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
+        .where(ChatMessage.role == "assistant").order_by(ChatMessage.created_at.desc()).limit(1)
+    )).scalars().first()
+
+    interrupt_info: InterruptInfo | None = None
+    if interrupts:
+        proposal = interrupts[0].value
+        imsg = (await session.execute(
+            select(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
+            .where(ChatMessage.status == "interrupted")
+            .order_by(ChatMessage.created_at.desc()).limit(1)
+        )).scalars().first()
+        age = None
+        if imsg and imsg.created_at:
+            age = round((datetime.now(UTC) - imsg.created_at).total_seconds() / 3600, 2)
+        interrupt_info = InterruptInfo(
+            proposal=str(proposal) if proposal is not None else None,
+            message_id=imsg.message_id if imsg else None,
+            created_at=imsg.created_at if imsg else None,
+            age_hours=age,
+        )
+    return ThreadStateResponse(
+        conversation_id=conversation_id, status=latest.status if latest else None,
+        has_pending_interrupt=bool(interrupts), interrupt=interrupt_info,
     )
 
 
@@ -116,7 +180,8 @@ async def get_retrieval(
         "rerank_on": meta.get("rerank_on"),
         "results": rlog.fine_rank_results or [],
     }
-    return RetrievalDetailResponse(stage1=stage1, stage2=stage2, stage3=stage3)
+    agent = _build_agent_trace(agent_steps=rlog.agent_steps, agent_type=msg.agent_type)
+    return RetrievalDetailResponse(stage1=stage1, stage2=stage2, stage3=stage3, agent=agent)
 
 
 @router.post("/suggestions", response_model=SuggestionResponse)

@@ -5,8 +5,8 @@ from app.db.base import Base
 from app.db.models.chat import ChatMessage, Conversation
 from app.db.models.code import CallGraph, CodeChunk, CodeFile
 from app.db.models.doc import DocChunk, DocFile, DocResource
-from app.db.models.graph import GraphCommunity, GraphEmbedding, NodeCommunityMapping
-from app.db.models.history import ChangeHistory, RollbackHistory, SyncTask
+from app.db.models.graph import GraphEmbedding
+from app.db.models.history import ChangeHistory, DocUpdateProposal, RollbackHistory, SyncTask
 from app.db.models.relation import AnchorMapping, ChunkRelation
 from app.db.models.system import RankingModelConfig, RetrievalLog
 
@@ -23,9 +23,8 @@ __all__ = [
     "ChangeHistory",
     "SyncTask",
     "RollbackHistory",
+    "DocUpdateProposal",
     "GraphEmbedding",
-    "GraphCommunity",
-    "NodeCommunityMapping",
     "RetrievalLog",
     "RankingModelConfig",
     "Conversation",

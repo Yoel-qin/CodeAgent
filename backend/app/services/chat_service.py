@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.llm_client import llm
+from app.core.config import settings
 from app.core.ids import prefixed_id
 from app.db.models.chat import ChatMessage, Conversation
+from app.db.models.doc import DocChunk
 from app.db.models.system import RetrievalLog
 from app.retrieval.pipeline import pipeline
 
@@ -24,11 +27,20 @@ SYSTEM_PROMPT = (
 )
 
 _TITLE_MAX = 40
+# 跨轮历史每条内容截断上限（防 token 爆量）；超长加 …[已截断] 标记。
+_HISTORY_MSG_MAX_CHARS = 1200
 
 
 def _label(r: dict) -> str:
     if r["kind"] == "code":
         return f"[代码] {r.get('class_name')}.{r.get('method_name')}"
+    ct = r.get("content_type") or "text"
+    if ct == "image":
+        d = (r.get("image_description") or "").strip()
+        return "[图片] " + (d[:50] or "图片")
+    if ct in ("table", "table_fragment"):
+        path = " > ".join(r.get("heading_path") or [])
+        return f"[表格] {path}" if path else "[表格]"
     return "[文档] " + " > ".join(r.get("heading_path") or [])
 
 
@@ -44,12 +56,51 @@ def build_context(ranked: list[dict], *, max_chars: int = 2000) -> str:
     return "\n\n".join(parts)
 
 
-def build_messages(query: str, context: str, agent_type: str | None = None) -> list[dict]:
+def build_messages(
+    query: str, context: str, agent_type: str | None = None,
+    history: list[dict] | None = None,
+) -> list[dict]:
+    """组装 LLM 消息：system [+ 跨轮历史] 当前 user(含引用片段)。
+
+    history 非空时插在 system 与当前 user 间（每项 ``{role, content}``）；
+    None/[] 与无历史逐字一致（保证现有调用点零回归）。
+    """
     role = f"\n\n（当前 Agent：{agent_type}）" if agent_type else ""
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"{query}\n\n=== 引用片段 ===\n{context or '（无）'}{role}"},
-    ]
+    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": f"{query}\n\n=== 引用片段 ===\n{context or '（无）'}{role}"})
+    return messages
+
+
+async def load_conversation_history(
+    session: AsyncSession, conversation_id: str, *,
+    exclude_message_id: str, limit: int,
+) -> list[dict]:
+    """载入会话历史（供跨轮记忆），返回 ``[{role, content}]`` 升序（最旧→最新）。
+
+    - ``limit<=0`` → ``[]``（禁用，逐字同无记忆行为）。
+    - 按 ``created_at DESC LIMIT limit`` 取最近 ``limit`` 条先前消息，再反转为升序时序。
+    - 排除当前轮（刚由 ``add_user_message`` 写入的 ``exclude_message_id``）。
+    - 每条 ``content`` 截断到 ``_HISTORY_MSG_MAX_CHARS`` + 标记，防 token 爆量。
+    - 排除 ``interrupted``/``expired`` 态（HITL 占位/超时终态无有效答案，避免注入噪声——M14）。
+    """
+    if limit <= 0:
+        return []
+    rows = (await session.execute(
+        select(ChatMessage.role, ChatMessage.content)
+        .where(ChatMessage.conversation_id == conversation_id)
+        .where(ChatMessage.message_id != exclude_message_id)
+        .where(ChatMessage.status.notin_(("interrupted", "expired")))
+        .order_by(ChatMessage.created_at.desc())
+        .limit(limit)
+    )).all()
+    history: list[dict] = []
+    for role, content in reversed(rows):  # DESC 取最近 N 条 → 反转成升序时序
+        if len(content) > _HISTORY_MSG_MAX_CHARS:
+            content = content[:_HISTORY_MSG_MAX_CHARS] + "…[已截断]"
+        history.append({"role": role, "content": content})
+    return history
 
 
 def _no_key_notice(meta: dict) -> str:
@@ -66,20 +117,41 @@ def _no_key_notice(meta: dict) -> str:
     )
 
 
+async def _enrich_content_types(session: AsyncSession, ranked: list[dict]) -> None:
+    """Phase 1.5e：一次查询补 chunk_content_type（+ image_description），让 image/table 引用可区分。
+    避免改每条召回路径与 ES mapping——仅在精排后补一次。"""
+    ids = [r["chunk_id"] for r in ranked]
+    if not ids:
+        return
+    rows = (await session.execute(
+        select(DocChunk.chunk_id, DocChunk.chunk_content_type, DocChunk.image_description)
+        .where(DocChunk.chunk_id.in_(ids))
+    )).all()
+    cmap = {cid: (ct or "text") for cid, ct, _ in rows}
+    dmap = {cid: desc for cid, _, desc in rows}
+    for r in ranked:
+        r["content_type"] = cmap.get(r["chunk_id"], "text")
+        if r["content_type"] == "image":
+            r["image_description"] = dmap.get(r["chunk_id"])
+
+
 def _citation(r: dict) -> dict:
     return {
         "type": r["kind"], "chunk_id": r["chunk_id"], "label": _label(r),
         "class": r.get("class_name"), "method": r.get("method_name"),
         "path": r.get("heading_path"), "score": round(float(r["score"]), 3),
+        "content_type": r.get("content_type") or "text",
     }
 
 
-async def stream_chat(
-    session: AsyncSession, query: str, *, top_k: int = 8, agent_type: str | None = None,
-    conversation_id: str | None = None,
-) -> AsyncIterator[tuple[str, dict]]:
-    """产出 SSE 事件并落库。事件：conversation / retrieval / citation / token / done。"""
-    # ---- 1. 解析或新建会话 ----
+# ---- 持久化 helper（legacy stream_chat 与 LangGraph 适配器共用，保证两路同构）----
+
+
+async def open_conversation(
+    session: AsyncSession, query: str, agent_type: str | None,
+    conversation_id: str | None,
+) -> tuple[Conversation, str]:
+    """解析或新建会话（首条消息自动建会话，标题取首问）。返回 (conv, conversation_id)。"""
     conv: Conversation | None = None
     if conversation_id:
         conv = await session.get(Conversation, conversation_id)
@@ -91,25 +163,28 @@ async def stream_chat(
         )
         session.add(conv)
         await session.flush()
-    yield ("conversation", {"conversation_id": conversation_id, "title": conv.title,
-                            "agent_type": conv.agent_type})
+    return conv, conversation_id
 
-    # ---- 2. user 消息 ----
+
+async def add_user_message(
+    session: AsyncSession, conv: Conversation, query: str, agent_type: str | None,
+) -> str:
+    """写 user 消息并 commit，返回 message_id（供 load_conversation_history 排除当前轮）。"""
+    message_id = prefixed_id("msg")
     session.add(ChatMessage(
-        message_id=prefixed_id("msg"), conversation_id=conversation_id,
+        message_id=message_id, conversation_id=conv.conversation_id,
         role="user", content=query, agent_type=agent_type,
     ))
     conv.message_count = (conv.message_count or 0) + 1
     await session.commit()
+    return message_id
 
-    # ---- 3. 检索（召回 → RRF → 精排）----
-    ranked, meta = await pipeline.recall(session, query, top_k=top_k)
-    yield ("retrieval", meta)
-    citations = [_citation(r) for r in ranked]
-    for cit in citations:
-        yield ("citation", cit)
 
-    # ---- 4. 检索日志（漏斗 meta + 精排候选，供检索详情/反馈/LTR）----
+async def persist_retrieval_log(
+    session: AsyncSession, query: str, meta: dict, citations: list[dict],
+    agent_steps: list[dict] | None = None,
+) -> RetrievalLog:
+    """写检索日志（漏斗 meta + 精排候选 + Agent 工具轨迹），flush 后返回（供 assistant 消息外键）。"""
     rlog = RetrievalLog(
         query_text=query,
         recall_results=meta,
@@ -121,15 +196,95 @@ async def stream_chat(
         recall_latency_ms=meta.get("recall_ms"),
         fine_rank_ms=meta.get("rerank_ms"),
         total_latency_ms=(meta.get("recall_ms") or 0) + (meta.get("rerank_ms") or 0),
+        agent_steps=agent_steps or None,  # 空 list → NULL（legacy/retrieve 路径无轨迹）
     )
     session.add(rlog)
     await session.flush()
+    return rlog
+
+
+async def add_assistant_message(
+    session: AsyncSession, conv: Conversation, content: str, citations: list[dict],
+    retrieval_log_id: int, agent_type: str | None, *, status: str = "completed",
+) -> str:
+    """写 assistant 消息并 commit，返回 message_id。
+
+    ``status``：``completed``（默认，既有调用方零回归）| ``interrupted``（HITL 中断态，待 resume 续写）。
+    """
+    assistant_id = prefixed_id("msg")
+    session.add(ChatMessage(
+        message_id=assistant_id, conversation_id=conv.conversation_id,
+        role="assistant", content=content, status=status,
+        citations=citations or None, retrieval_log_id=retrieval_log_id, agent_type=agent_type,
+    ))
+    conv.message_count = (conv.message_count or 0) + 1
+    await session.commit()
+    return assistant_id
+
+
+async def finalize_interrupted_message(
+    session: AsyncSession, message_id: str, content: str,
+) -> None:
+    """HITL resume 后：把中断态消息更新为完成态并写入最终内容（apply/reject 的产出）。"""
+    msg = await session.get(ChatMessage, message_id)
+    if msg is not None:
+        msg.content = content
+        msg.status = "completed"
+        await session.commit()
+
+
+async def get_message_status(session: AsyncSession, message_id: str) -> str | None:
+    """返回消息当前 ``status``（无此消息 → ``None``）；供 ``/resume`` 校验是否仍处待审批态（M14）。"""
+    msg = await session.get(ChatMessage, message_id)
+    return msg.status if msg is not None else None
+
+
+async def stream_chat(
+    session: AsyncSession, query: str, *, top_k: int = 8, agent_type: str | None = None,
+    conversation_id: str | None = None,
+) -> AsyncIterator[tuple[str, dict]]:
+    """产出 SSE 事件并落库。事件：conversation / retrieval / citation / token / done。
+
+    按 settings.rag_engine 分流：langgraph → app/agent StateGraph（行为同构）；
+    否则走下方 legacy 线性流水线（默认）。
+    """
+    if settings.rag_engine == "langgraph":
+        # 延迟导入：避免 chat_service ↔ agent.streaming 循环，且 legacy 路径零 langgraph 开销。
+        from app.agent.streaming import stream_graph
+        async for event, data in stream_graph(
+            session, query, top_k=top_k, agent_type=agent_type, conversation_id=conversation_id,
+        ):
+            yield event, data
+        return
+
+    # ---- 1. 解析或新建会话 ----
+    conv, conversation_id = await open_conversation(session, query, agent_type, conversation_id)
+    yield ("conversation", {"conversation_id": conversation_id, "title": conv.title,
+                            "agent_type": conv.agent_type})
+
+    # ---- 2. user 消息 ----
+    current_msg_id = await add_user_message(session, conv, query, agent_type)
+
+    # ---- 3. 检索（召回 → RRF → 精排）----
+    ranked, meta = await pipeline.recall(session, query, top_k=top_k)
+    await _enrich_content_types(session, ranked)
+    yield ("retrieval", meta)
+    citations = [_citation(r) for r in ranked]
+    for cit in citations:
+        yield ("citation", cit)
+
+    # ---- 4. 检索日志（漏斗 meta + 精排候选，供检索详情/反馈/LTR）----
+    rlog = await persist_retrieval_log(session, query, meta, citations)
 
     # ---- 5. LLM 流式生成（累积落库）----
     context = build_context(ranked)
     parts: list[str] = []
     if llm.configured:
-        messages = build_messages(query, context, agent_type)
+        history = await load_conversation_history(
+            session, conversation_id, exclude_message_id=current_msg_id,
+            limit=settings.conversation_history_turns,
+        )
+        messages = build_messages(query, context, agent_type, history)
         try:
             async for tok in llm.stream_tokens(messages):
                 parts.append(tok)
@@ -148,14 +303,9 @@ async def stream_chat(
         yield ("token", {"content": notice})
 
     # ---- 6. assistant 消息 ----
-    assistant_id = prefixed_id("msg")
-    session.add(ChatMessage(
-        message_id=assistant_id, conversation_id=conversation_id,
-        role="assistant", content="".join(parts),
-        citations=citations or None, retrieval_log_id=rlog.log_id, agent_type=agent_type,
-    ))
-    conv.message_count = (conv.message_count or 0) + 1
-    await session.commit()
+    assistant_id = await add_assistant_message(
+        session, conv, "".join(parts), citations, rlog.log_id, agent_type,
+    )
 
     yield ("done", {"citations": len(citations), "message_id": assistant_id,
                     "conversation_id": conversation_id})

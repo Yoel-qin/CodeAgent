@@ -25,9 +25,13 @@ dependencies = [
     "httpx>=0.27",
     "python-jose[cryptography]>=3.3",
     "passlib[bcrypt]>=1.7",
-    # ---- 以下依赖随阶段递增（Phase 0 暂不安装以加速构建）----
-    # Phase 1: langgraph, langchain-core, langchain-openai, langchain-community,
-    #          tree-sitter, tree-sitter-java, pymilvus, minio, elasticsearch
+    # ---- Agent 编排（Phase 7）----
+    # langgraph 提供 StateGraph / get_stream_writer / MemorySaver / create_react_agent；
+    # langchain-core 提供 reducer/类型；langchain-openai 提供工具调用 + with_structured_output（场景 Agent）。
+    "langgraph>=1.0",
+    "langchain-core>=0.3",
+    "langchain-openai>=0.3",
+    # ---- 以下依赖随阶段递增 ----
     # Phase 1.5: PyMuPDF, pdfplumber, python-docx, mammoth, paddleocr
     # Phase 2/5: sentence-transformers, torch, dgl (model_server)
     "tree-sitter>=0.26.0",
@@ -35,6 +39,14 @@ dependencies = [
     "jieba>=0.42.1",
     "elasticsearch>=8.11,<9",
     "pymilvus>=3.0.0",
+    # Phase 1.5a: 文本型 PDF / Word(.docx) / txt 解析（pymupdf 导入名 fitz）
+    "pymupdf>=1.24",
+    "python-docx>=1.1",
+    "minio>=7.2.20",
+    "python-multipart>=0.0.32",
+    "pillow>=12.3.0",
+    "rapidocr-onnxruntime>=1.4.4",
+    "langgraph-checkpoint-postgres>=3.1.1",
 ]
 
 [project.optional-dependencies]
@@ -63,3 +75,7 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+# 只从 tests/ 收集——app/ 下有以 test_ 开头的业务模块（如 agents/test_generation.py，
+# 「测试生成 Agent」的节点函数名 test_generation 也以 test_ 开头），不限定会被 pytest
+# 误当测试收集（fixture 'state' not found）。
+testpaths = ["tests"]

@@ -45,6 +45,19 @@ export interface RetrievalChannel {
   name: string;
   count: number;
 }
+
+/** Agent 工具调用轨迹一步（对齐后端 agent_step 事件 / RetrievalDetailResponse.agent）。 */
+export interface AgentStepBrief {
+  tool: string;
+  args: Record<string, unknown>;
+  n: number;
+}
+
+export interface AgentTrace {
+  type: string; // agent_type，如 "CHANGE_IMPACT"
+  steps: AgentStepBrief[];
+}
+
 export interface RetrievalDetail {
   stage1: {
     latency_ms: number | null;
@@ -60,6 +73,8 @@ export interface RetrievalDetail {
     rerank_on: boolean;
     results: CitationBrief[];
   };
+  // 仅 RAG_ENGINE=langgraph 的场景 Agent 消息才有（legacy/retrieve 为 undefined）
+  agent?: AgentTrace;
 }
 
 export const listConversations = (params: { page?: number; page_size?: number; agent_type?: string } = {}) =>

@@ -5,8 +5,9 @@ import sys
 from logging.config import fileConfig
 from pathlib import Path
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
+
+from alembic import context
 
 # 确保 backend/ 在 sys.path（prepend_sys_path=. 通常已处理）
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -25,6 +26,17 @@ config.set_main_option("sqlalchemy.url", settings.database_url_sync)
 target_metadata = Base.metadata
 
 
+# langgraph AsyncPostgresSaver.setup() 自建的检查点四表（checkpoints / checkpoint_writes /
+# checkpoint_blobs + 迁移版本表 checkpoint_migrations）非应用 ORM、由 langgraph 自管；
+# 排除以免 autogenerate 把它们标为 drop。
+def _include_object(object, name, type_, reflected, compare_to_object):
+    if type_ == "table" and name in {
+        "checkpoints", "checkpoint_writes", "checkpoint_blobs", "checkpoint_migrations",
+    }:
+        return False
+    return True
+
+
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
@@ -33,6 +45,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=_include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -47,6 +60,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            include_object=_include_object,
         )
         with context.begin_transaction():
             context.run_migrations()

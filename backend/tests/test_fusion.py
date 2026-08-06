@@ -51,7 +51,7 @@ def test_dedup_by_chunk_id_and_first_seen_metadata_kept():
 
 
 def test_missing_path_weight_ignored():
-    # graph_vec 路径未传入 → 其权重 0.9 不参与，不影响结果
+    # 未传入的路径不参与计分（如 graph），不影响结果
     fused = rrf_fuse({"vector": [_rec("a")]}, k=60)
     assert fused[0]["score"] == 1.0 / 61
 

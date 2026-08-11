@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import app.agent.tools.doc_tools as dt
 from app.agent.tools import formatting as fmt
-from app.agent.tools.doc_tools import _get_related_code, _read_doc, _search_docs
+from app.agent.tools.doc_tools import _get_related_code, _read_doc, _search_docs, _search_media
 from app.schemas.graph import GraphNode, GraphResponse
 
 # ---- formatting ----
@@ -71,6 +71,9 @@ class _Mappings:
 
     def first(self):
         return self._rows[0] if self._rows else None
+
+    def all(self):
+        return list(self._rows)
 
 
 class _Result:
@@ -165,3 +168,44 @@ async def test_search_docs_tool_emits_citations(monkeypatch):
     events = [p["event"] for p in pushed]
     assert "citation" in events and "agent_step" in events
     assert isinstance(out, str) and "d1" in out
+
+
+# ---- image_search / table_search（按描述检索媒体文档段；内容工具，发 citation）----
+
+
+def test_format_media_search():
+    out = fmt.format_media_search(
+        [{"chunk_id": "d1", "heading_path": ["架构"], "description": "系统时序图"}], "image")
+    assert "图片" in out and "系统时序图" in out and "d1" in out
+    assert "未检索到匹配的表格" in fmt.format_media_search([], "table")
+
+
+async def test_search_media_image():
+    rows = [{"chunk_id": "doc_img1", "content": "", "heading_path": ["架构", "总览"],
+             "keywords": ["架构", "图"], "description": "系统架构时序图"}]
+    res = await _search_media("架构图", _FakeSession(rows), media_type="image", top_k=8)
+    assert res.chunks[0]["chunk_id"] == "doc_img1" and res.chunks[0]["kind"] == "doc"
+    assert isinstance(res.chunks[0]["score"], float) and res.chunks[0]["score"] >= 0.3
+    assert "图片" in res.text and "系统架构时序图" in res.text
+
+
+async def test_search_media_table_empty():
+    # 无命中行 → 空候选 + 提示文（content 工具优雅降级）
+    res = await _search_media("配置表", _FakeSession([]), media_type="table", top_k=8)
+    assert res.chunks == [] and "表格" in res.text
+
+
+async def test_image_search_tool_emits_citations(monkeypatch):
+    pushed: list[dict] = []
+    monkeypatch.setattr(dt, "get_stream_writer", lambda: lambda d: pushed.append(d))
+    monkeypatch.setattr(dt, "_citation", lambda c: {"type": c.get("kind"), "chunk_id": c["chunk_id"]})
+    rows = [{"chunk_id": "d1", "content": "", "heading_path": ["图"], "keywords": ["图"], "description": "流程图"}]
+
+    out = await dt.image_search.ainvoke(
+        {"query": "流程图"}, {"configurable": {"session": _FakeSession(rows), "top_k": 8}},
+    )
+    events = [p["event"] for p in pushed]
+    assert "citation" in events and "agent_step" in events          # 内容工具：citation + step
+    step = next(p["data"] for p in pushed if p["event"] == "agent_step")
+    assert step["tool"] == "image_search" and step["args"] == {"query": "流程图"}
+    assert isinstance(out, str) and "图片" in out and "d1" in out

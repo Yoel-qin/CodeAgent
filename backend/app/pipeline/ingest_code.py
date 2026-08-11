@@ -125,6 +125,18 @@ def ingest_java_source(session: Session, *, source: str, file_path: str,
     except Exception:
         pass
 
+    # M25：dual 模式额外把代码用 BGE-M3 嵌入写镜像索引 code_vectors_bge（让多语言 BGE-M3 也能检索代码，
+    # 修 CodeBERT 对中文 NL 召回弱）。best-effort、独立 try/except，**永不翻 embedding_synced**
+    # （那是主编码器的标志，与镜像无关；镜像缺失由 scripts/reindex_code_bge.py 补）。
+    try:
+        strat = settings.embedding_strategy
+        if indexing._embed_enabled_for(strat, "code_bge"):
+            bge_rows = [{"chunk_id": s.chunk_id, "text": indexing.embed_text_for("code", s)}
+                        for s in specs]
+            indexing.index_chunks_to_milvus(strat, "code_bge", bge_rows)
+    except Exception:
+        pass
+
     return {
         "file_path": file_path,
         "file_id": cf.file_id,

@@ -54,6 +54,10 @@ def _embed_enabled_for(strategy: str, kind: str) -> bool:
     """
     if kind == "code" and strategy == "dual":
         return embedding_client.code_enabled()
+    if kind == "code_bge":
+        # M25：dual 模式代码的 BGE-M3 镜像索引——需 dual + 总开关 + BGE-M3 API 就绪。
+        # unified 下不会出现 code_bge（collection_for 会兜底到 coderag_vectors），故统一返 enabled()。
+        return strategy == "dual" and settings.dual_code_bgem3_enabled and embedding_client.enabled()
     return embedding_client.enabled()
 
 
@@ -95,18 +99,31 @@ def delete_chunks_from_milvus(strategy: str, kind: str, chunk_ids: list[str]) ->
 
     **不碰 DB**。自吞异常（Milvus 不可用不得阻断 PG 写入/同步），失败仅记日志——
     孤儿向量可容忍，后续可由对账任务清理。空列表为 no-op，返回 True。
+
+    M25：dual 删 ``code`` chunk 时**对称删 BGE-M3 镜像索引**（``code_vectors_bge``）防孤儿——
+    ``sync_soft_delete``/``sync_incremental`` 删代码时若不同步删镜像，``code_vectors_bge`` 会累积
+    过时 id。镜像删除 best-effort：失败仅记日志，**不染主删的返回值**（主删成功即 True）。
     """
     if not chunk_ids:
         return True
     try:
         milvus_client.delete_vectors(strategy, kind, chunk_ids)
-        return True
     except Exception as e:
         logger.warning(
             f"[indexing] Milvus 删除失败 kind={kind} n={len(chunk_ids)} "
             f"{type(e).__name__}: {e}"
         )
         return False
+    # 主删成功后 best-effort 删 BGE-M3 代码镜像（仅 dual 删 code 时）
+    if strategy == "dual" and kind == "code" and settings.dual_code_bgem3_enabled:
+        try:
+            milvus_client.delete_vectors(strategy, "code_bge", chunk_ids)
+        except Exception as e:
+            logger.warning(
+                f"[indexing] Milvus code_bge 镜像删除失败 n={len(chunk_ids)} "
+                f"{type(e).__name__}: {e}"
+            )
+    return True
 
 
 def _load_unsynced_chunks(session: Session, kind: str, limit: int | None) -> list[dict]:
@@ -172,3 +189,49 @@ def resync_pending_embeddings(
             f"[indexing] 补偿完成 kind={kind} total={total} synced={synced} failed={failed}"
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# M25：dual 模式代码的 BGE-M3 镜像索引 reindex
+# ---------------------------------------------------------------------------
+
+def _load_all_code_chunks(session: Session, limit: int | None) -> list[dict]:
+    """加载**全部**未删代码 chunk（非 ``embedding_synced`` 门控）——供 M25 BGE-M3 代码镜像 reindex。
+
+    返回 ``[{chunk_id, text}]``（text 已由 ``embed_text_for`` 组装）。抽成独立函数便于测试 monkeypatch。
+    """
+    stmt = select(CodeChunk).where(CodeChunk.is_deleted == False)  # noqa: E712
+    if limit:
+        stmt = stmt.limit(limit)
+    rows = session.execute(stmt).scalars().all()
+    return [{"chunk_id": r.chunk_id, "text": embed_text_for("code", r)} for r in rows]
+
+
+def reindex_code_bge(
+    session: Session, *, strategy: str | None = None, limit: int | None = None,
+) -> dict:
+    """M25：把全部未删代码 chunk 用 BGE-M3 重新嵌入并 upsert 进 ``code_vectors_bge``。
+
+    与 ``resync_pending_embeddings`` 的区别：BGE 镜像**无 ``embedding_synced`` 标志位**（零迁移不加 PG 列），
+    故按「全量」加载重嵌（PK upsert 幂等，可重复跑）。gate 未满足（非 dual / 总开关关 / 无 BGE key）→
+    ``skipped=True`` no-op（不读 DB、不调编码器）。返回 ``{total, synced, failed, skipped}``。
+    """
+    if strategy is None:
+        strategy = settings.embedding_strategy
+    if not _embed_enabled_for(strategy, "code_bge"):
+        logger.info("[indexing] code_bge reindex 跳过（非 dual / dual_code_bgem3 关闭 / 无 BGE key）")
+        return {"total": 0, "synced": 0, "failed": 0, "skipped": True}
+    rows = _load_all_code_chunks(session, limit)
+    total = len(rows)
+    batch_size = max(1, settings.embed_batch_size)
+    synced = failed = 0
+    for start in range(0, total, batch_size):
+        batch = rows[start:start + batch_size]
+        if index_chunks_to_milvus(strategy, "code_bge", batch):
+            synced += len(batch)
+        else:
+            failed += len(batch)
+    logger.info(
+        f"[indexing] code_bge reindex 完成 total={total} synced={synced} failed={failed}"
+    )
+    return {"total": total, "synced": synced, "failed": failed, "skipped": False}

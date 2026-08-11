@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients import reranker_client
 from app.core.config import settings
+from app.retrieval.ablation import AblationConfig
 from app.retrieval.bm25_search import bm25_recall
 from app.retrieval.fusion import DEFAULT_WEIGHTS, rrf_fuse
 from app.retrieval.graph_traverse import graph_recall
@@ -36,6 +37,7 @@ class RetrievalPipeline:
         self, session: AsyncSession, query: str, *, top_k: int = 8,
         semantic_query: str | None = None, terms: list[str] | None = None,
         rewritten: bool | None = None,
+        ablation: AblationConfig | None = None,
     ) -> tuple[list[dict], dict]:
         # ---- Stage 0：LLM 查询改写（失败优雅降级）----
         # 调用方可预计算 Stage 0（如 LangGraph 的 query_analysis 节点）后透传，避免重复改写；
@@ -58,31 +60,37 @@ class RetrievalPipeline:
                 rewritten = sem != query
         t_start = time.perf_counter()
 
-        # ---- 三路召回（每路独立降级）----
+        # ---- 三路召回（每路独立降级；ablation 可整路关闭，A/B 评测用）----
+        # ab=None（生产）等价 full()：四路全开，行为与重构前完全一致。
+        ab = ablation or AblationConfig()
         vector: list[dict] = []
         used_vec = False
-        try:
-            vector = await vector_recall(session, sem, top_k=settings.top_k_recall)
-            used_vec = bool(vector)
-        except Exception:
-            vector = []
+        if ab.vector:
+            try:
+                vector = await vector_recall(session, sem, top_k=settings.top_k_recall)
+                used_vec = bool(vector)
+            except Exception:
+                vector = []
 
         lexical: list[dict] = []
         used_es = False
-        try:
-            lexical = await bm25_recall(sem, top_k=settings.top_k_recall)
-            used_es = bool(lexical)
-        except Exception:
-            lexical = []
-        if not lexical:  # ES BM25 不可用 → PG 词法召回降级
-            lexical = await lexical_recall(session, terms, top_k=settings.top_k_recall)
+        if ab.lexical:
+            try:
+                lexical = await bm25_recall(sem, top_k=settings.top_k_recall)
+                used_es = bool(lexical)
+            except Exception:
+                lexical = []
+            if not lexical:  # ES BM25 不可用 → PG 词法召回降级
+                lexical = await lexical_recall(session, terms, top_k=settings.top_k_recall)
 
         seed_ids = [
             r["chunk_id"] for r in (vector + lexical) if r.get("kind") == "code"
         ][:_SEED_TOP]
-        graph = await graph_recall(
-            session, seed_ids, depth=_SEED_DEPTH, max_nodes=_GRAPH_MAX_NODES
-        )
+        graph: list[dict] = []
+        if ab.graph:
+            graph = await graph_recall(
+                session, seed_ids, depth=_SEED_DEPTH, max_nodes=_GRAPH_MAX_NODES
+            )
 
         # ---- Stage 1: RRF 融合 ----
         fused = rrf_fuse(
@@ -98,7 +106,7 @@ class RetrievalPipeline:
         coarse_n: int | None = None
         candidates = pool
         t_rerank = time.perf_counter()
-        if reranker_client.enabled():
+        if ab.rerank and reranker_client.enabled():
             if settings.reranker_coarse_model:
                 try:
                     candidates = await rerank_stage(
@@ -127,6 +135,13 @@ class RetrievalPipeline:
             # 检索漏斗（前端检索详情 / 设计 §11 全景）
             "terms": terms,
             "recall": {"vector": len(vector), "lexical": len(lexical), "graph": len(graph)},
+            # M25 诊断：三路候选的 slim 投影（chunk_id+kind），供评测逐 query 定位
+            # 「向量路漏召 / 返回了什么 kind」（如 dual 向量路对中文 NL 返回 doc 漏 code）。生产不读，加性。
+            "recall_paths": {
+                "vector": [{"chunk_id": c.get("chunk_id"), "kind": c.get("kind")} for c in vector],
+                "lexical": [{"chunk_id": c.get("chunk_id"), "kind": c.get("kind")} for c in lexical],
+                "graph": [{"chunk_id": c.get("chunk_id"), "kind": c.get("kind")} for c in graph],
+            },
             "bm25": used_es,
             "vector_on": used_vec,
             "rrf_pool": len(fused),

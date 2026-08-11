@@ -8,8 +8,11 @@ from app.api.v1 import (
     chat,
     conversations,
     documents,
+    eval,
     graph,
+    monitor,
     resources,
+    search,
     staleness,
     sync,
 )
@@ -25,6 +28,9 @@ api_router.include_router(resources.router, prefix="/v1")
 api_router.include_router(graph.router, prefix="/v1")
 api_router.include_router(agents.router, prefix="/v1")
 api_router.include_router(staleness.router, prefix="/v1")
+api_router.include_router(monitor.router, prefix="/v1")
+api_router.include_router(search.router, prefix="/v1")
+api_router.include_router(eval.router, prefix="/v1")
 
 
 @api_router.get("/v1")
@@ -32,9 +38,9 @@ async def v1_info() -> dict:
     """API 版本与已注册模块。"""
     return {
         "version": "v1",
-        "modules": ["chat (stub)", "sync", "documents", "resources", "graph", "agents", "staleness"],
+        "modules": ["chat (stub)", "sync", "documents", "resources", "graph", "agents", "staleness", "monitor", "search", "eval"],
         "planned": [
             "chat", "code", "sync",
-            "monitor", "search", "settings",
+            "settings",
         ],
     }

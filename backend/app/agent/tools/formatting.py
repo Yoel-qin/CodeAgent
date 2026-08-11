@@ -256,3 +256,84 @@ def format_related_code(resp: GraphResponse) -> str:
     for n in code_nodes:
         lines.append(f"- {n.name}  [chunk_id={n.id}]")
     return "\n".join(lines)
+
+
+# ---- M26 新增工具用 ----
+
+
+def format_impact_callees(resp: GraphResponse) -> str:
+    """get_downstream_callers 的输出：下游被调用方（center 依赖谁）按 BFS 层归类。
+
+    与 ``format_impact_callers`` 同构（上游影响面），但语义为「它调用了什么」（下游依赖），
+    供变更影响 Agent 补全下游视角。
+    """
+    nodes = [n for n in resp.nodes if not str(n.id).startswith("class:")]
+    if not nodes:
+        return f"（{resp.center} 无下游被调用关系，它不依赖其他方法）"
+    by_depth: dict[int, list[GraphNode]] = {}
+    classes: set[str] = set()
+    for n in nodes:
+        by_depth.setdefault(n.depth or 0, []).append(n)
+        if n.class_name:
+            classes.add(n.class_name)
+    callees = [n for n in nodes if (n.depth or 0) >= 1]
+    lines = [f"中心 {resp.center} 的下游被调用（共 {len(nodes)} 个，按距目标的层数归类）："]
+    for d in sorted(by_depth):
+        tag = "修改对象（目标本身）" if d == 0 else ("直接依赖（它调用的）" if d == 1 else f"第 {d} 层间接依赖")
+        grp = by_depth[d]
+        lines.append(f"【{tag}】")
+        for n in grp[:_MAX_PER_DEPTH]:
+            lines.append(f"  - {n.name}  [chunk_id={n.id}]")
+        if len(grp) > _MAX_PER_DEPTH:
+            lines.append(f"  …（本层还有 {len(grp) - _MAX_PER_DEPTH} 个，已并入引用）")
+    lines.append(f"下游依赖 {len(callees)} 个；涉及 {len(classes)} 个类"
+                 + (f"：{', '.join(sorted(classes))}" if classes else ""))
+    return "\n".join(lines)
+
+
+def format_media_search(rows: list[dict], media_type: str) -> str:
+    """image_search/table_search 的输出：按描述命中的图片/表格文档段。"""
+    label = "图片" if media_type == "image" else "表格"
+    if not rows:
+        return f"（未检索到匹配的{label}）"
+    lines = [f"命中 {len(rows)} 个{label}文档段："]
+    for r in rows:
+        lines.append(f"- {_heading(r.get('heading_path'))}  [chunk_id={r.get('chunk_id')}]")
+        desc = (r.get("description") or "").strip()
+        if desc:
+            lines.append(f"   {label}描述：{desc[:_MAX_SNIPPET]}")
+    return "\n".join(lines)
+
+
+def format_affected_docs(rows: list[dict], center: str) -> str:
+    """get_affected_docs 的输出：锚定到 center 代码的文档段（改该代码可能需更新这些文档）。
+
+    每条附代码最近变更作腐化信号（对接文档维护弧线）：有变更 → 提示可能过时；无记录 → 提示
+    未增量同步。空 → 该代码未被任何文档锚定。
+    """
+    if not rows:
+        return f"（未找到锚定 {center} 的文档；该代码可能未被任何文档引用）"
+    lines = [f"找到 {len(rows)} 个锚定该代码的文档段（改代码时需同步检查/更新）："]
+    for r in rows:
+        lines.append(f"- {_heading(r.get('heading_path'))}  [chunk_id={r.get('chunk_id')}]")
+        lc = r.get("last_change")
+        if lc:
+            t = lc.get("git_commit_time")
+            ts = t.strftime("%Y-%m-%d") if hasattr(t, "strftime") else str(t or "")[:10]
+            lines.append(f"   代码最近变更：[{lc.get('change_type')}] {ts}（文档可能已过时）")
+        else:
+            lines.append("   代码无变更记录（未经过增量同步，无法判断是否近期改动）")
+    return "\n".join(lines)
+
+
+def format_rerank(rows: list[dict]) -> str:
+    """rerank 的输出：按相关性重排后的候选（chunk_id + 分数），供 Agent 聚焦最相关的。"""
+    if not rows:
+        return "（无候选可重排）"
+    lines = [f"重排 {len(rows)} 个候选（按相关性降序）："]
+    for i, r in enumerate(rows, 1):
+        cls = r.get("class_name")
+        meth = r.get("method_name")
+        name = f"{cls}.{meth}" if cls and meth else r.get("chunk_id", "?")
+        lines.append(f"{i}. {name}  [chunk_id={r.get('chunk_id')}]  score={float(r.get('score') or 0):.3f}")
+    return "\n".join(lines)

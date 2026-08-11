@@ -2,8 +2,11 @@
 
 按 embedding_strategy 支持两种 collection 布局：
   unified → 单一 `coderag_vectors`（1024d，带 kind 字段 + kind 过滤）——框架一（全 BGE-M3）。
-  dual    → 双 collection：`code_vectors`(768d, CodeBERT) + `doc_vectors`(1024d, BGE-M3)
+  dual    → `code_vectors`(768d, CodeBERT) + `doc_vectors`(1024d, BGE-M3)
             ——框架二（方案一）；collection 名即 kind，无 kind 字段。
+            + `code_vectors_bge`(1024d, BGE-M3)：M25 代码的 BGE-M3 镜像索引（伪 kind "code_bge"），
+              让多语言的 BGE-M3 也能检索代码（修 dual 向量对中文 NL 代码查询召回弱——CodeBERT 无中文，
+              把中文 NL 查询嵌入稀疏区 → 漏召；BGE-M3 此前只搜 doc_vectors 看不到代码）。
 HNSW COSINE；chunk_id VARCHAR 主键。
 """
 from __future__ import annotations
@@ -18,6 +21,10 @@ CODE_COLLECTION = "code_vectors"
 CODE_DIM = 768           # CodeBERT
 DOC_COLLECTION = "doc_vectors"
 DOC_DIM = 1024           # BGE-M3
+# M25：dual 模式代码的 BGE-M3 镜像索引（伪 kind "code_bge"）。code 的 code_* chunk_id 与
+# code_vectors 相同，但向量来自 BGE-M3(1024d)，查询侧用 BGE-M3 查询向量检索，让 BGE-M3 也能找回代码。
+CODE_BGE_COLLECTION = "code_vectors_bge"
+CODE_BGE_DIM = 1024      # BGE-M3
 
 _client: MilvusClient | None = None
 
@@ -31,12 +38,14 @@ def get_client() -> MilvusClient:
 
 def collection_for(strategy: str | None, kind: str | None) -> tuple[str, int, bool]:
     """返回 (collection 名, 维度, 是否带 kind 字段)。
-    unified → 单 collection + kind 字段；dual → code/doc 各一 collection，无 kind 字段。
+    unified → 单 collection + kind 字段；dual → code(768d)/code_bge(1024d BGE 镜像)/doc 各一 collection，无 kind 字段。
     """
     s = strategy if strategy is not None else settings.embedding_strategy
     if s == "dual":
         if kind == "code":
             return CODE_COLLECTION, CODE_DIM, False
+        if kind == "code_bge":
+            return CODE_BGE_COLLECTION, CODE_BGE_DIM, False  # M25 BGE-M3 代码镜像
         return DOC_COLLECTION, DOC_DIM, False  # doc 或缺省
     return UNIFIED_COLLECTION, UNIFIED_DIM, True
 

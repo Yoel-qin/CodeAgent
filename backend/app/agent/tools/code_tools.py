@@ -20,8 +20,10 @@ from langgraph.config import get_stream_writer
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.retrieval.graph_traverse import fetch_chunks
 from app.retrieval.pipeline import pipeline
+from app.retrieval.reranker import rerank_stage
 from app.services import graph_service
 from app.services.chat_service import _citation
 
@@ -231,6 +233,89 @@ async def _get_existing_tests(center: str, session: AsyncSession) -> tuple[list[
     return [dict(m) for m in rows], cls
 
 
+async def _get_downstream_callers(center: str, session: AsyncSession, *, depth: int = 3) -> ToolResult:
+    """下游被调用面：center 调用了谁（它依赖什么）。
+
+    与 ``_get_callers`` 同构（方向锁 CALLEES、max_nodes=120、depth=3），但语义为「它调用了什么」
+    ——既有 ``get_callers`` 是 CALLERS 上游影响面，本工具补全下游依赖视角，供变更影响 Agent。
+    """
+    resp = await graph_service.get_call_graph(
+        session, center, depth=depth, direction="CALLEES", max_nodes=120,
+    )
+    ids = [n.id for n in resp.nodes if not str(n.id).startswith("class:")]
+    raw = await fetch_chunks(session, ids)
+    depth_of = {n.id: (n.depth or 0) for n in resp.nodes}
+    chunks = [_norm(c, score=max(0.1, 1.0 - 0.15 * depth_of.get(c["chunk_id"], 0))) for c in raw]
+    note = f"（{len(chunks)} 个节点，direction=CALLEES，depth={depth}）"
+    return ToolResult(f"{fmt.format_impact_callees(resp)}\n{note}", chunks)
+
+
+async def _get_affected_docs(center: str, session: AsyncSession) -> ToolResult:
+    """查找锚定到 center 代码的文档段（改该代码可能需同步更新这些文档）。
+
+    center 解析为 code chunk_id 集合：``class:`` 前缀→该类全部 chunk；否则当 chunk_id。再查
+    ``doc_chunks.linked_code_ids``（JSONB 数组）与该集合重叠、未删的文档段。best-effort 取代码
+    最近变更（``change_history``）作腐化信号挂到每条文档（对接文档维护弧线）。**内容工具**：
+    返回可引用的 doc chunks。
+    """
+    # 1) 解析 center → code chunk_ids
+    if center.startswith("class:"):
+        cls = center[len("class:"):]
+        id_rows = (await session.execute(sql_text(
+            "SELECT chunk_id FROM code_chunks WHERE is_deleted = false AND class_name = :cls"
+        ), {"cls": cls})).mappings().all()
+        ids = [r["chunk_id"] for r in id_rows]
+    else:
+        ids = [center]
+    if not ids:
+        return ToolResult(f"（未解析出 {center} 对应的代码 chunk）", [])
+    # 2) doc_chunks.linked_code_ids 重叠
+    sql = sql_text("""
+        SELECT dc.chunk_id, dc.content, dc.heading_path
+        FROM doc_chunks dc
+        WHERE dc.is_deleted = false AND dc.linked_code_ids ?| cast(:ids as text[])
+        ORDER BY dc.section_order NULLS LAST LIMIT 15
+    """)
+    rows = [dict(m) for m in (await session.execute(sql, {"ids": ids})).mappings().all()]
+    # 3) best-effort 代码最近变更（腐化信号）——代码侧属性，所有文档共享同一条
+    last_change = None
+    lc = (await session.execute(sql_text(
+        "SELECT chunk_id, change_type, git_commit_time, commit_message FROM change_history "
+        "WHERE chunk_id = ANY(:ids) ORDER BY git_commit_time DESC NULLS LAST LIMIT 1"
+    ), {"ids": ids})).mappings().all()
+    if lc:
+        last_change = dict(lc[0])
+    for r in rows:
+        r["last_change"] = last_change
+    chunks = [_norm({
+        "chunk_id": r["chunk_id"], "kind": "doc", "content": r.get("content"),
+        "heading_path": r.get("heading_path") or [],
+    }, score=0.5) for r in rows]
+    return ToolResult(fmt.format_affected_docs(rows, center), chunks)
+
+
+async def _rerank(query: str, chunk_ids: list[str], session: AsyncSession) -> tuple[list[dict], bool]:
+    """对给定候选 chunk_ids 用精排模型按 query 重排。返回 (重排后候选, 是否真正重排)。
+
+    无候选 → ([], False)；候选经 ``fetch_chunks`` 水合后送 ``rerank_stage``（按 content 打分）。
+    无模型/无 key/异常 → 降级原序、``reranked=False``（不抛错，由 @tool 降级提示）。
+    """
+    if not chunk_ids:
+        return [], False
+    raw = await fetch_chunks(session, list(chunk_ids))
+    candidates = [_norm(c) for c in raw]
+    if not candidates:
+        return [], False
+    model = settings.reranker_fine_model
+    if not model:
+        return candidates, False
+    try:
+        ranked = await rerank_stage(query, candidates, model=model, top_n=len(candidates))
+        return ranked, True
+    except Exception:  # noqa: BLE001  无 key / 网络错 → 降级原序
+        return candidates, False
+
+
 # ---- @tool 包装（供 create_react_agent 绑定；config 注入 session/top_k）----
 
 
@@ -350,6 +435,47 @@ async def get_existing_tests(center: str, config: RunnableConfig) -> str:
     _emit_citations(chunks)
     _emit_step("get_existing_tests", {"center": center}, len(rows))
     return fmt.format_existing_tests(rows, cls)
+
+
+@tool
+async def get_downstream_callers(center: str, config: RunnableConfig, depth: int = 3) -> str:
+    """查找"center 调用了谁"（下游依赖面），看它依赖哪些代码。center 是 chunk_id 或 class:类名；
+    depth 为展开层数（默认 3）。与 get_callers（上游影响面）对称：get_callers=谁调用它（改它波及谁），
+    本工具=它调用谁（它的依赖/实现细节）。返回按层归类的下游被调用方。"""
+
+    session: AsyncSession = config["configurable"]["session"]
+    res = await _get_downstream_callers(center, session, depth=depth)
+    _emit_citations(res.chunks)
+    _emit_step("get_downstream_callers", {"center": center, "depth": depth}, len(res.chunks))
+    return res.text
+
+
+@tool
+async def get_affected_docs(center: str, config: RunnableConfig) -> str:
+    """查找锚定到某段代码的文档段落（修改该代码可能需要同步更新的文档）。center 是 chunk_id 或
+    class:类名（来自 search_symbol/search_code/read_code）。用于变更影响分析：评估改这段代码
+    会影响哪些文档（附代码最近变更作腐化信号）。返回文档段落列表（含 chunk_id，可引用）。"""
+
+    session: AsyncSession = config["configurable"]["session"]
+    res = await _get_affected_docs(center, session)
+    _emit_citations(res.chunks)
+    _emit_step("get_affected_docs", {"center": center}, len(res.chunks))
+    return res.text
+
+
+@tool
+async def rerank(query: str, chunk_ids: list[str], config: RunnableConfig) -> str:
+    """对一组候选代码/文档片段按与 query 的相关性用精排模型重排。query 为当前问题，chunk_ids 是
+    先前 search_code/search_docs/get_call_chain 等返回的 chunk_id 列表。用于候选较多时聚焦最相关
+    的若干条。注意：需配置精排模型；未启用或失败时保持原序（不报错）。"""
+
+    session: AsyncSession = config["configurable"]["session"]
+    ranked, reranked = await _rerank(query, chunk_ids, session)
+    _emit_step("rerank", {"query": query, "n": len(chunk_ids)}, len(ranked))
+    if not ranked:
+        return "（无候选可重排）"
+    note = "（已按相关性重排）" if reranked else "（精排未启用或失败，保持原序）"
+    return f"{fmt.format_rerank(ranked)}\n{note}"
 
 
 #: 代码理解 Agent 绑定的工具集

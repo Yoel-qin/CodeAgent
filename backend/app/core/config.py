@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     code_embedding_enabled: bool = True
     code_embedding_model: str = "microsoft/codebert-base"
     code_embedding_dim: int = 768
+    # M25：dual 模式是否给代码额外建 BGE-M3 镜像索引（code_vectors_bge）并双路检索。
+    # 修 dual 向量对中文 NL 代码查询召回弱（CodeBERT 无中文）——BGE-M3 多语言，能找回中文 query 对应的代码。
+    # 开 → ingest 代码双写 + 查询侧用 BGE-M3 向量额外检索 code_vectors_bge；关 → 回退 M24（仅 CodeBERT 代码路）。
+    # 默认开：未 reindex 时 code_vectors_bge 为空 → 检索返空 no-op，故上线即安全，reindex 后自动生效。
+    dual_code_bgem3_enabled: bool = True
 
     # ---- 精排（reranker）----
     # reranker 走 OpenAI 兼容的 /rerank 端点（Cohere/SiliconFlow 风格）。

@@ -135,3 +135,19 @@ async def test_change_impact_degrades_on_failure(monkeypatch):
     seq = [e["event"] for e in events]
     assert "retrieval" in seq and "citation" in seq and "token" in seq  # 兜底仍产出完整事件
     assert "".join(e["data"]["content"] for e in events if e["event"] == "token") == "DEGRADE"
+
+
+# ---- M26：IMPACT_TOOLS / REVIEW_TOOLS 绑定回归 ----
+
+
+def test_impact_and_review_tools_include_m26_additions():
+    from app.agent.agents.change_impact import IMPACT_TOOLS
+    from app.agent.agents.code_review import REVIEW_TOOLS
+
+    impact = {t.name for t in IMPACT_TOOLS}
+    # 既有 5 个不丢 + M26 新增 3 个
+    assert {"search_symbol", "search_code", "read_code", "get_call_chain", "get_callers"} <= impact
+    assert {"get_downstream_callers", "get_affected_docs", "rerank"} <= impact
+
+    review = {t.name for t in REVIEW_TOOLS}
+    assert "rerank" in review  # M26：代码审查 Agent 获得精排聚焦

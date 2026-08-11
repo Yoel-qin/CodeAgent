@@ -22,6 +22,7 @@ from app.agent.tools.code_tools import (
     get_code_metrics,
     get_recent_changes,
     read_code,
+    rerank,
     search_code,
     search_symbol,
 )
@@ -31,8 +32,9 @@ CODE_REVIEW_PROMPT = (
     "工作方式（ReAct）：先定位目标（search_symbol 按名 / search_code 按描述）→ read_code 精读其完整源码 → "
     "get_code_metrics 取量化度量（LOC / token / fan-in / fan-out）佐证复杂度与影响面 → "
     "get_call_chain 看调用上下文（它依赖谁、谁依赖它）→ get_recent_changes 看近期改动（高频改动重点查回归）→ "
-    "综合给出审查结论。\n"
-    "可用工具：search_symbol、search_code、read_code、get_code_metrics、get_call_chain、get_recent_changes。\n"
+    "候选较多时用 rerank 聚焦最相关 → 综合给出审查结论。\n"
+    "可用工具：search_symbol、search_code、read_code、get_code_metrics、get_call_chain、"
+    "get_recent_changes、rerank。\n"
     "规则：① 结论必须基于检索/读取到的真实代码，不要臆造；② 按**严重度**分级列问题"
     "（正确性 / 错误处理 / 复杂度 / 命名 / 安全），每条配证据（chunk_id / 度量数字 / 调用关系）+ 可执行建议；"
     "③ 用 get_code_metrics 引用客观数字佐证（如『方法 180 行偏长』『fan-in=23 改动需谨慎』）；"
@@ -41,8 +43,8 @@ CODE_REVIEW_PROMPT = (
     "⑥ 用中文、简洁，控制在 6 步内，**不要重复读取同一个 chunk**，代码用代码块。"
 )
 
-#: 代码审查 Agent 绑定的工具集（定位 + 精读 + 量化度量 + 调用上下文 + 回归排查）
-REVIEW_TOOLS = [search_symbol, search_code, read_code, get_code_metrics, get_call_chain, get_recent_changes]
+#: 代码审查 Agent 绑定的工具集（定位 + 精读 + 量化度量 + 调用上下文 + 回归排查 + 精排聚焦）
+REVIEW_TOOLS = [search_symbol, search_code, read_code, get_code_metrics, get_call_chain, get_recent_changes, rerank]
 
 _agent = None
 

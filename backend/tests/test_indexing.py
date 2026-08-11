@@ -197,3 +197,108 @@ def test_resync_commit_each_batch(monkeypatch, reset_batch):
     session_off = _FakeSession()
     indexing.resync_pending_embeddings(session_off, strategy="unified", commit_each_batch=False)
     assert session_off.commits == 0
+
+
+# ---- M25：code_bge 就绪判断 / 对称删除 / reindex ----
+
+def test_embed_enabled_for_code_bge(monkeypatch):
+    """code_bge 仅在 dual + 总开关 + BGE API 就绪时启用。"""
+    monkeypatch.setattr(embedding_client, "enabled", lambda: True)
+    monkeypatch.setattr(embedding_client, "code_enabled", lambda: True)
+    saved = settings.dual_code_bgem3_enabled
+    try:
+        settings.dual_code_bgem3_enabled = True
+        assert indexing._embed_enabled_for("dual", "code_bge") is True
+
+        settings.dual_code_bgem3_enabled = False
+        assert indexing._embed_enabled_for("dual", "code_bge") is False
+
+        settings.dual_code_bgem3_enabled = True
+        assert indexing._embed_enabled_for("unified", "code_bge") is False  # unified 不用 code_bge
+
+        monkeypatch.setattr(embedding_client, "enabled", lambda: False)
+        assert indexing._embed_enabled_for("dual", "code_bge") is False      # 无 BGE key
+    finally:
+        settings.dual_code_bgem3_enabled = saved
+
+
+def test_delete_dual_code_also_deletes_code_bge_mirror(monkeypatch):
+    """dual 删 code 时对称删 code_vectors_bge 镜像；总开关关时只删 code。"""
+    deleted: list[tuple] = []
+    monkeypatch.setattr(
+        milvus_client, "delete_vectors",
+        lambda strategy, kind, ids: (deleted.append((strategy, kind, list(ids))), len(ids))[1],
+    )
+    saved = settings.dual_code_bgem3_enabled
+    try:
+        settings.dual_code_bgem3_enabled = True
+        assert indexing.delete_chunks_from_milvus("dual", "code", ["c1", "c2"]) is True
+        assert ("dual", "code", ["c1", "c2"]) in deleted
+        assert ("dual", "code_bge", ["c1", "c2"]) in deleted
+
+        deleted.clear()
+        settings.dual_code_bgem3_enabled = False
+        assert indexing.delete_chunks_from_milvus("dual", "code", ["c1"]) is True
+        assert deleted == [("dual", "code", ["c1"])]   # 关 flag → 不删镜像
+    finally:
+        settings.dual_code_bgem3_enabled = saved
+
+
+def test_delete_code_bge_failure_does_not_taint_primary(monkeypatch):
+    """镜像删除失败仅记日志，不染主删返回值（仍 True）。"""
+    def fake_delete(strategy, kind, ids):
+        if kind == "code_bge":
+            raise RuntimeError("bge down")
+        return len(ids)
+
+    monkeypatch.setattr(milvus_client, "delete_vectors", fake_delete)
+    saved = settings.dual_code_bgem3_enabled
+    try:
+        settings.dual_code_bgem3_enabled = True
+        assert indexing.delete_chunks_from_milvus("dual", "code", ["c1"]) is True
+    finally:
+        settings.dual_code_bgem3_enabled = saved
+
+
+def test_reindex_code_bge_skips_when_disabled(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("disabled path must not touch DB or clients")
+
+    monkeypatch.setattr(indexing, "_embed_enabled_for", lambda strategy, kind: False)
+    monkeypatch.setattr(indexing, "_load_all_code_chunks", boom)
+    monkeypatch.setattr(indexing, "index_chunks_to_milvus", boom)
+
+    res = indexing.reindex_code_bge(_FakeSession(), strategy="dual")
+    assert res["skipped"] is True and res["synced"] == 0
+
+
+def test_reindex_code_bge_embeds_all_code(monkeypatch, reset_batch):
+    """启用时按批 route 全部代码 chunk 到 code_bge（PK upsert 幂等）。"""
+    settings.embed_batch_size = 2
+    loaded = [{"chunk_id": f"c{i}", "text": "t"} for i in range(3)]   # 3 行 → 2 批 (2,1)
+    routed: list[tuple] = []
+
+    monkeypatch.setattr(indexing, "_embed_enabled_for", lambda strategy, kind: True)
+    monkeypatch.setattr(indexing, "_load_all_code_chunks", lambda session, limit: loaded)
+    monkeypatch.setattr(
+        indexing, "index_chunks_to_milvus",
+        lambda strategy, kind, batch: (routed.append((kind, len(batch))), True)[1],
+    )
+
+    res = indexing.reindex_code_bge(_FakeSession(), strategy="dual")
+    assert res == {"total": 3, "synced": 3, "failed": 0, "skipped": False}
+    assert all(kind == "code_bge" for kind, _ in routed)
+    assert [n for _, n in routed] == [2, 1]
+
+
+def test_reindex_code_bge_counts_failures(monkeypatch, reset_batch):
+    settings.embed_batch_size = 2
+    monkeypatch.setattr(indexing, "_embed_enabled_for", lambda strategy, kind: True)
+    monkeypatch.setattr(
+        indexing, "_load_all_code_chunks",
+        lambda session, limit: [{"chunk_id": f"c{i}", "text": "t"} for i in range(4)],
+    )
+    monkeypatch.setattr(indexing, "index_chunks_to_milvus", lambda *a, **k: False)  # 全失败
+
+    res = indexing.reindex_code_bge(_FakeSession(), strategy="dual")
+    assert res["synced"] == 0 and res["failed"] == 4

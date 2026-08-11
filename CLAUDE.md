@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-CodeRAG — a RAG knowledge base over large Java codebases. Fuses a **switchable dual-encoder embedding** (unified BGE-M3, or dual: CodeBERT for code + BGE-M3 for docs, per `docs/嵌入向量方案.md` 方案一) + 3-stage reranking, behind a FastAPI backend, a React frontend, and 9 planned LangGraph agents. **Graph *vectors* (GNN / path C) have been dropped**; graph *traversal* (PG `call_graph` BFS) is kept. Currently at **Phase 1**: an end-to-end minimal loop is working (parse → chunk → index → 3-path recall → streaming LLM → SSE → chat UI).
+CodeRAG — a RAG knowledge base over large Java codebases. Fuses a **switchable dual-encoder embedding** (unified BGE-M3, or dual: CodeBERT for code + BGE-M3 for docs, per `docs/嵌入向量方案.md` 方案一) + BM25 + PG graph traversal + 3-stage reranking, behind a FastAPI backend, a React frontend, and a **LangGraph multi-agent layer** (6 read-only scenario agents + 1 write-action HITL agent). **Graph *vectors* (GNN / path C) and GraphRAG have been dropped**; graph *traversal* (PG `call_graph` BFS) is kept.
+
+Progress is well past the Phase-1 minimal loop (parse → chunk → index → 3-path recall → streaming LLM → SSE → chat UI). As of milestone **M27** the system also has: incremental sync + git rollback, multimodal docs (PDF/Word/txt + structured tables + OCR'd images), a knowledge-graph viewer, the full agent layer with cross-restart checkpointing + HITL, a **document self-healing arc** (detect stale doc↔code anchors → LLM-rewrite → human-approve → write back to PG/MinIO + re-embed + open a git PR), system monitoring, retrieval evaluation (CLI + API + UI), and a ⌘K global search. `docs/项目状态.md` is the authoritative per-milestone ledger — trust it over the README.
 
 Repo comments and all root-level design docs are in **Chinese**. Code comments frequently reference design sections like "§10" (DDL) or "§11" (retrieval) — these point into `coderag后端设计方案.md` / `coderag前端设计方案 .md`.
 
@@ -53,6 +55,12 @@ uv run python scripts/ingest_code.py --repo ../data/repo/sample --module demo
 uv run python scripts/ingest_docs.py  --repo ../data/repo/sample     # markdown
 # Smoketest external providers:
 uv run python scripts/llm_ping.py && uv run python scripts/embedding_ping.py
+
+# Retrieval evaluation / A-B ablation / dual-code BGE-M3 mirror (from backend/)
+uv run python scripts/eval_retrieval.py --validate                          # check eval-set anchors resolve (no retrieval)
+uv run python scripts/eval_retrieval.py --top-k 10 --rewrite off --json     # Recall@K/MRR/NDCG over the real funnel
+uv run python scripts/ab_eval.py --pairs rerank multipath_rrf graph         # A/B deltas vs AblationConfig variants
+uv run python scripts/reindex_code_bge.py                                  # (dual only) populate the code_vectors_bge mirror
 ```
 
 ### Config / secrets
@@ -63,28 +71,37 @@ Missing API keys **degrade gracefully, they don't crash**: empty `LLM_API_KEY` �
 
 **Embedding is a switchable dual framework** (`EMBEDDING_STRATEGY`, default `unified`): `unified` = code+docs both via SiliconFlow `BAAI/bge-m3` (1024-d, OpenAI-compatible `/embeddings`); `dual` = 方案一 — code via local `model_server` **CodeBERT** (768-d), docs via BGE-M3 API, dual Milvus collections, merged by the Stage-3 reranker. LLM = DeepSeek; reranker = SiliconFlow `BAAI/bge-reranker-v2-m3` (Cohere-style `/rerank`). Default `unified` needs no GPU/local model; `dual` requires the `model_server` running (down → code vector path returns empty, retrieval degrades to BM25+graph-traverse).
 
+**Agent / runtime behavior switches** (all default to the safe/no-op state; none crash when unset):
+- `RAG_ENGINE` = `legacy` (default) | `langgraph`. `legacy` = the original retrieve→generate path. `langgraph` = the StateGraph with intent routing → scenario agents. The default `legacy` means **zero behavior change** unless you opt in — and the SSE event contract is identical either way.
+- `LANGGRAPH_CHECKPOINT` = `memory` (default) | `postgres`. `postgres` uses `AsyncPostgresSaver` so thread state (`thread_id = conversation_id`) survives process restart — required for HITL resume across restarts. On win32 this triggers the uvicorn loop-factory patch in `app/main.py` (see Platform gotchas).
+- `CONVERSATION_HISTORY_TURNS` (default 6, `0` disables) — prior turns loaded from `chat_messages` and injected into the LLM so "它/刚才那个" resolves. History source is `chat_messages`, not the checkpointer.
+- `DUAL_CODE_BGEM3_ENABLED` (default on, `dual` only) — the M25 **BGE-M3 code mirror index** `code_vectors_bge` that fixes CodeBERT's Chinese-NL blindness; off → reverts to the pre-M25 behavior.
+- Document-self-healing / ops toggles (all default *off* or safe in dev): `MAINTENANCE_ENABLED`, `HITL_INTERRUPT_TIMEOUT_HOURS`, `CHECKPOINT_RETENTION_DAYS`, `STALENESS_SWEEP_ENABLED`+`_INTERVAL_SECONDS`, `SWEEP_REWRITE_*`, `EAGER_REEMBED_ENABLED` (default on), `DOC_GIT_ENABLED`/`DOC_GIT_PUSH_ENABLED` (real git PR landing is opt-in).
+
 ## Backend architecture
 
 Layered FastAPI app under `backend/app/`:
 
 | Layer | Location | Responsibility |
 |---|---|---|
-| API routers | `api/v1/` | HTTP + SSE endpoints, mounted via `api/v1/router.py` |
+| API routers | `api/v1/` | HTTP + SSE endpoints, mounted via `api/v1/router.py` (11 routers: chat, conversations, sync, documents, resources, graph, agents, staleness, monitor, search, eval) |
 | Schemas | `schemas/` | Pydantic request/response models |
-| Services | `services/` | Orchestration (e.g. `chat_service.stream_chat`) |
-| Retrieval | `retrieval/` | 4-path recall + merge scoring |
-| Pipeline | `pipeline/` | Ingest: parse → chunk → metadata → relations |
-| Clients | `clients/` | External I/O: `llm_client`, `embedding_client`, `es_client`, `milvus_client` |
+| Services | `services/` | Orchestration: `chat_service`, plus `sync`/`document`/`graph`/`monitor`/`search`/`eval_run`/`staleness_sweep`/`sweep_rewrite`/`doc_maintenance`/`doc_pr`/`maintenance`/`agent_stats` |
+| Retrieval | `retrieval/` | 4-path recall + merge scoring; `ablation.py` (eval hook) |
+| Pipeline | `pipeline/` | Ingest: parse → chunk → metadata → relations; sync (git) + rollback |
+| Agent | `agent/` | LangGraph StateGraph: intent routing → scenario agents; tools; streaming bridge; checkpointer |
+| Eval | `eval/` | Pure-fn IR metrics + `run_eval`/`run_ab` over the real funnel (cross-cutting, read-only) |
+| Clients | `clients/` | External I/O: `llm_client`, `embedding_client`, `es_client`, `milvus_client`, `minio_client`, `reranker_client` |
 | DB | `db/` | SQLAlchemy 2.0 async engine/session + ORM models |
 | Core | `core/` | `config.Settings`, `logging` |
 
-**Chat request flow** (`POST /v1/chat/completions`, SSE): `chat.py` → `chat_service.stream_chat` → `retrieval.pipeline.recall` (4-path recall → RRF → rerank) → `build_context` → `llm.stream_tokens` → emits SSE events `conversation` → `retrieval` → `citation`(s) → `token`(s) → `done`. Each turn is persisted: a `Conversation` (auto-created on first message, title = first query) + `ChatMessage`(s) (user + assistant) + a `RetrievalLog` holding the full recall/rerank funnel, linked from the assistant message.
+**Chat request flow** (`POST /v1/chat/completions`, SSE): `chat.py` → `chat_service.stream_chat` → `retrieval.pipeline.recall` (4-path recall → RRF → rerank) → `build_context` → `llm.stream_tokens` → emits SSE events `conversation` → `retrieval` → `citation`(s) → `token`(s) → `done`. Each turn is persisted: a `Conversation` (auto-created on first message, title = first query) + `ChatMessage`(s) (user + assistant) + a `RetrievalLog` holding the full recall/rerank funnel, linked from the assistant message. Under `RAG_ENGINE=langgraph`, `stream_chat` instead dispatches to the agent graph (see Agent layer) but persists the same rows.
 
 **Companion REST endpoints** (also under `/v1/chat`, in `conversations.py`): `GET /conversations` + `/conversations/{id}` (list / detail-with-messages), `GET /messages/{id}/retrieval` (replays the persisted funnel as stage1/stage2/stage3), `POST /suggestions` (LLM follow-up questions), `POST /messages/{id}/feedback` (`HELPFUL`/`NOT_HELPFUL`, written onto the `RetrievalLog` to collect Phase 8 LTR data).
 
 **Retrieval pipeline** (`retrieval/pipeline.py`) — three independent recall paths, each wrapped in its own try/except so a failing path degrades to empty rather than breaking the request:
 
-1. **Vector** (`vector_search`): `unified` → query embedded once (BGE-M3) → Milvus `coderag_vectors` (HNSW COSINE 1024-d, kind filter); `dual` → query embedded by **both** CodeBERT (→ `code_vectors` 768-d) and BGE-M3 (→ `doc_vectors` 1024-d), two hit lists merged. Needs embedding key (and, in `dual`, the `model_server`).
+1. **Vector** (`vector_search`): `unified` → query embedded once (BGE-M3) → Milvus `coderag_vectors` (HNSW COSINE 1024-d, kind filter); `dual` → query embedded by **both** CodeBERT (→ `code_vectors` 768-d) and BGE-M3 (→ `doc_vectors` 1024-d), two hit lists merged. In `dual` the already-computed BGE-M3 query vector is **also** searched against a code mirror collection `code_vectors_bge` (M25; gated by `DUAL_CODE_BGEM3_ENABLED`, default on) — this fixes CodeBERT's Chinese-NL blindness, which otherwise left vector-only Recall@10 at ~0.11. Needs embedding key (and, in `dual`, the `model_server`).
 2. **BM25** (`bm25_search` → Elasticsearch) — falls back to **PG lexical** (`lexical_search`) if ES returns nothing.
 3. **Graph traversal** (`graph_traverse` → PG `call_graph` BFS), seeded from the top code hits of paths 1+2. (Graph *vectors* / path C have been dropped.)
 
@@ -98,18 +115,73 @@ The recall lists flow through a **3-stage ranking funnel**, each stage independe
 
 The `retrieval` SSE event carries the full funnel as meta: `recall` per-path counts, `rrf_pool`, `coarse`/`fine` counts, `rerank_on`, `rewritten`, `embedding_strategy`, `recall_ms`/`rerank_ms` (plus legacy aliases). Persisted to `retrieval_logs` and replayed by `GET /v1/chat/messages/{id}/retrieval`.
 
+**Ablation hook**: `recall(..., ablation=AblationConfig(...))` (default `None` ≡ all-on ≡ production) can independently disable each of the 4 stages (`vector`/`lexical`/`graph`/`rerank`; see `retrieval/ablation.py`). This is the seam the eval subsystem injects through (`run_eval`'s `recall_fn` DI) to measure each stage's contribution — it is dead code in every production call site.
+
 **PG is the source of truth**; Milvus (vectors) and ES (BM25) are derived indexes. The cross-store join key is `chunk_id` (a string PK on `code_chunks` / `doc_chunks`). `embedding_synced` on chunks flags whether a chunk has been pushed to Milvus.
+
+## Agent layer (Phase 7) — `app/agent/`
+
+A LangGraph StateGraph (`agent/graph.py`) gated behind `RAG_ENGINE` (`legacy` default | `langgraph`). Under `langgraph`, `chat_service.stream_chat` dispatches to `agent.streaming.stream_graph` instead of the legacy retrieve→generate path; the SSE event contract is **identical** (`conversation → retrieval → citation → token → done`, plus `interrupt` for HITL), so the frontend doesn't care which engine ran. `graph.py` is compiled once with a checkpointer from `agent/memory/checkpointer.py`.
+
+**Graph topology**: `query_analysis` (Stage-0 rewrite + LLM intent classify: code/doc/graph/bug/review/test/mixed/chitchat, rule fallback if no key) → `router` (conditional edge, two dispatch tables `_INTENT_TO_AGENT_TYPE` + `_AGENT_TYPE_TO_NODE` in `agent/nodes/router.py`) → either a **scenario-agent node** or the `retrieve → generate` fallback → `post_process → END`. Per-request resources (async `session`, `top_k`) travel in `RunnableConfig.configurable`, **not** in checkpointed state.
+
+**6 read-only scenario agents** (`agent/agents/`) — each is a thin wrapper around `_base.run_scenario_agent(state, config, *, agent_name, tools, build_agent, degrade_label)`, the shared skeleton. The skeleton runs a nested `langgraph.prebuilt.create_react_agent` via `astream(stream_mode="custom")`, bridges its `agent_step`/`citation`/`token` events up to the parent stream, and on **any** exception or recursion overflow calls `_degrade()` → plain `pipeline.recall` + streaming answer (the request never breaks; no-LLM-key short-circuits straight to degrade). Citations are emitted as stream events and accumulated by the adapter — agents deliberately do **not** use `Command`/write graph state for them.
+
+| Intent | Node | Tools (subset of `agent/tools/`) |
+|---|---|---|
+| `code` | `code_understand` | search_code, search_symbol, get_call_chain, get_related_docs, read_code |
+| `doc` | `doc_answer` | search_docs, read_doc, get_related_code, image_search, table_search |
+| `graph` | `change_impact` | code set + get_callers, get_downstream_callers, get_affected_docs, rerank |
+| `bug` | `bug_diagnosis` | code set + get_callers, get_recent_changes |
+| `review` | `code_review` | code set + get_code_metrics, get_recent_changes, rerank |
+| `test` | `test_generation` | code set + get_existing_tests |
+
+Tools (`agent/tools/{code,doc,maintain,formatting}_tools.py`) follow one shape: a pure async logic fn returning `ToolResult(text, chunks)`, wrapped by `@tool` which pulls `session`/`top_k` from `configurable`, emits citations + an `agent_step` via `get_stream_writer()`, and returns the text observation to the LLM. **Metadata-only tools** (`get_recent_changes`, `get_code_metrics`, `rerank`) emit a step but no citation (avoid duplicating `read_code`). `formatting.py` are pure text formatters, not tools. (`neo4j_query`/`get_javadoc` were explicitly **not** built — no Neo4j in this system, and `read_code` already returns signatures+javadoc.)
+
+**Observability**: every tool call → `agent_step` SSE event, accumulated in `streaming.stream_graph`, persisted as `retrieval_logs.agent_steps` (JSONB; migration `b7e2d09af3c1`), and replayed as the `agent` segment of `GET /v1/chat/messages/{id}/retrieval`. The trace is keyed on `agent_steps` being non-empty (not on `meta.mode=="agent"`), so steps taken before a degrade are still shown. The same column feeds the `/v1/agents/stats` KPIs (`services/agent_stats_service.py`).
+
+**Checkpointing & HITL** (`agent/memory/`): `get_checkpointer()` returns `MemorySaver` by default or `AsyncPostgresSaver` when `LANGGRAPH_CHECKPOINT=postgres` (thread state keyed by `thread_id=conversation_id` survives restart — the basis for resume/HITL/cross-turn memory). **`DOC_MAINTAIN` is the one write-action agent** and is structurally different — a 4-node main-graph chain `propose → confirm → apply|reject → post_process` (in `agent/nodes/doc_maintain.py`), routed only by explicit `agent_type=DOC_MAINTAIN` (no intent maps to it). `propose` is itself a ReAct agent; `confirm` calls `interrupt(proposal)` — **the interrupt must live in a main-graph node, not inside the nested agent** (a nested interrupt restarts on resume instead of continuing). On first pass the adapter detects the interrupt via `aget_state`, persists an `interrupted` `ChatMessage`, and emits an `interrupt` event instead of `done`; `POST /v1/chat/resume` (langgraph-only; legacy → 501) sends `Command(resume=decision)` on the same thread. `POST /v1/chat/continue` (M14) is generic recovery via `astream(None)`; `GET /v1/chat/conversations/{id}/state` reports pending interrupts. A maintenance loop in `main.py` lifespan expires stale interrupts and cleans old checkpoints.
+
+## Document self-healing arc (staleness → rewrite → approve → writeback → PR)
+
+The flagship feature line (M15→M21). It keeps `doc_chunks` honest against code drift, with a human gate on every write.
+
+1. **Detect** — `services/staleness_sweep_service.run_staleness_sweep` (background loop, `STALENESS_SWEEP_ENABLED`): for each non-stale DOC↔CODE `chunk_relation`, if the code side has a `change_history` row with `change_type IN ('MODIFIED','DELETED')` newer than the relation, mark `is_stale=True, stale_reason='SWEEP:...'`. (Soft-delete already marks DELETED in real time; the sweep catches MODIFIED.) Reactive path: the `DOC_MAINTAIN` agent's `detect_stale_docs` tool finds stale anchors on demand. Exposed via `GET /v1/staleness/report`.
+2. **Rewrite (pre-approval)** — `services/sweep_rewrite_service.run_sweep_rewrite` batch-generates LLM rewrites for top-N stale docs → writes an append-only MinIO artifact → inserts a `doc_update_proposals` row (`PENDING_PUSH`/`PENDING_MANUAL`). **Generate is pre-approval-safe**: it writes only append-only artifacts + one INSERT row, never the source of truth or git, so no gate needed. (The reactive DOC_MAINTAIN `apply` path generates the same way, after its own interrupt.)
+3. **Approve (the HITL gate)** — `POST /v1/staleness/proposals/{id}/decide` (or DOC_MAINTAIN `/chat/resume`). This is the only gate.
+4. **Write back** — `set_proposal_status(APPROVED)`: writes `rewritten_text` into `doc_chunks.content` + recomputes hash/tokens + sets `embedding_synced=false` + clears `is_stale` on the anchored relations, in **one transaction** (so `APPROVED` always means "written").
+5. **Re-embed (eager)** — post-commit best-effort, re-embeds the chunk and upserts Milvus immediately (M20; `EAGER_REEMBED_ENABLED`); on failure leaves the lazy `embedding_synced=false` flag for `resync_embeddings`/the lifespan loop.
+6. **Land (real git, opt-in)** — `services/doc_pr_service` + `pipeline/sync_git` (M21): in an **isolated `git worktree`** (never mutates the main checkout), splice the rewrite into the on-disk doc, branch+commit, and — if `DOC_GIT_PUSH_ENABLED` — push, backfilling `commit_sha`/`pr_url` and flipping `PUSHED`/`COMMITTED` (fail → `PUSH_FAILED`; the KB writeback is unaffected). Rollback's `close_open_doc_pr_for` deletes branches opened from a since-reverted commit.
+
+Frontend: `pages/StalenessPage.tsx` (report KPIs + approval queue + original/rewrite diff-preview drawer).
+
+## Read-only ops modules: monitor / search / eval
+
+Three independent read-only modules (Phase 8–9). All are **zero new write-path, zero behavior change to retrieval/agents**.
+
+- **Monitor** (`api/v1/monitor.py` + `services/monitor_service.py`): 4 GET endpoints — `retrieval-perf` (latency p50/p95 + funnel means + rerank rate + feedback, raw `percentile_cont` over `retrieval_logs`), `api-usage` (**PG-derived proxy** — there's no client-side usage telemetry, so LLM calls ≈ assistant messages, embedding ≈ retrieval_logs rows, tokens ≈ chars/4; the response `note` states this), `index-stats` (PG/Milvus/ES counts), `resources` (connectivity + storage size per component). Each component is independently try/except'd → never 500s. Frontend: `pages/MonitorPage.tsx`.
+- **Search** (`api/v1/search.py` + `services/search_service.py`): `GET /v1/search?q=&kind=&top_k=` — pure-PG lexical (`extract_query_terms` → `lexical_recall`), zero API key / zero vector, returns `{chunk_id, kind, label, snippet, score}`. Powers the ⌘K palette, **not** semantic search (that stays on `/v1/chat`). Frontend: `components/CommandPalette.tsx` + `hooks/useHotkey.ts` (⌘K/Ctrl+K).
+- **Eval** (`app/eval/`, `api/v1/eval.py`, `services/eval_run_service.py`): retrieval-quality measurement over the **real** funnel via two DI seams — `run_eval(..., recall_fn=...)` (defaults to `pipeline.recall`) and `recall(..., ablation=AblationConfig(...))`. `eval/metrics.py` = pure-fn Recall@K/MRR/NDCG. `backend/eval/eval_set.yaml` (gitignored) holds ~80 annotated queries; relevant items resolve at runtime from `Class.method` / class name / literal `chunk_id` (resilient to content change since `chunk_id` embeds `sha256(content)[:8]`). `--rewrite off` bypasses Stage-0 LLM rewrite for reproducible A/B deltas. **Endpoints**: single-run `POST /v1/eval/run` (+ optional `ablation={rerank:false,...}` for a single-variant run, M29) + `GET /runs[/{id}]`, and (M28) A/B ablation `POST /v1/eval/ab` + `GET /ab-runs[/{id}?diagnose=]` — both persist to `eval_runs`, discriminated by `config.kind` (`"single"`/`"ab"`); the kind filter also unifies the history table. CLIs `scripts/eval_retrieval.py` & `scripts/ab_eval.py` (M29) **persist via the same services** (`trigger="cli"`) so CLI runs appear in EvalPage history; `--no-persist` opts out (`ab_eval.py --diagnose` surfaces the dual-vector "returns doc, misses code" failure mode). Frontend: `pages/EvalPage.tsx` (Tabs: 单次评测[+消融多选] + A/B 消融[+趋势 Sparkline + 逐 query 配对明细]).
 
 ## DB / Alembic patterns
 
-- Models live in `app/db/models/{chat,code,doc,graph,history,relation,system}.py` (`chat.py` = `Conversation` + `ChatMessage`). **`app/db/models/__init__.py` imports every model** so Alembic's `target_metadata = Base.metadata` sees them — a new model file that isn't imported there is invisible to `alembic revision --autogenerate`.
+- Models live in `app/db/models/{chat,code,doc,eval,graph,history,relation,system}.py` (`chat.py` = `Conversation` + `ChatMessage`; `history.py` = `SyncTask`/`ChangeHistory`/`RollbackHistory`/`DocUpdateProposal`; `eval.py` = `EvalRun`; `system.py` = `RetrievalLog`/`RankingModelConfig`). **`app/db/models/__init__.py` imports every model** so Alembic's `target_metadata = Base.metadata` sees them — a new model file that isn't imported there is invisible to `alembic revision --autogenerate`.
 - Naming convention in `app/db/base.py` enforces `idx_/uk_/fk_/pk_` prefixes — match it in any hand-written DDL.
 - Alembic runs **synchronous** via `database_url_sync` (psycopg); the app runs **async** via `database_url` (asyncpg). Same DB, two drivers.
-- `scripts/ingest_*.py` use a **sync** `Session` (not the async one) — they're CLI tools, not request-scoped.
+- `scripts/ingest_*.py` and `reindex_code_bge.py` use a **sync** `Session` (not the async one) — they're CLI tools, not request-scoped.
+- **`env.py` runs with `compare_type=True` and an `include_object` that excludes the four langgraph checkpoint tables** (`checkpoints`/`checkpoint_writes`/`checkpoint_blobs`/`checkpoint_migrations`, created by the saver's `setup()`). Because `compare_type=True` makes autogenerate prone to `alter_column` drift after frequent schema changes, the M27 `eval_runs` migration was **hand-written** (explicit `create_table` + indexes) rather than autogenerated — prefer that pattern for a new table when autogenerate looks noisy.
+- Status columns (`SyncTask.status`, `DocUpdateProposal.status`, `EvalRun.status`, `ChatMessage.status`) are plain `String(32)` with **no DB-level enum** — adding a status value never needs a migration.
+- `RetrievalLog` carries the full funnel (`recall_results`/`fine_rank_results`) **plus** `agent_steps` (JSONB) for agent runs; `retrieval_logs` is the join table the monitor/eval/agent-stats services all aggregate over.
 
 ## Frontend architecture
 
-React 18 + TS + Vite + AntD 5 + Zustand + React Router 6 (`frontend/src/`): `api/client.ts` (axios) + `api/sse.ts` (`@microsoft/fetch-event-source`) → `hooks/useChat.ts` → `pages/ChatPage.tsx` + `components/chat/CitationCard.tsx`, state in `stores/app.ts`. **Vite proxy rewrites `/api` → `` (stripped)**, so the backend sees `/v1/...`, not `/api/v1/...`. Local dev talks to `:8000` directly; only the (now-unused) containerized nginx layout would prefix `/api`.
+React 18 + TS + Vite + AntD 5 + Zustand + React Router 6 (`frontend/src/`). `layouts/Workbench.tsx` is the shell (sidebar nav + the persistent right-side `components/ContextPanel.tsx` that any citation click focuses). Routes in `App.tsx` under `<Workbench>`: `chat` (default), `documents`, `graph`, `sync`, `agents`, `staleness`, `monitor`, `eval` (+ placeholder `code`/`settings`).
+
+- **Data layer**: `api/client.ts` (axios) + `api/sse.ts` (`@microsoft/fetch-event-source` — parses the SSE stream incl. `agent_step`/`interrupt`) → `hooks/useChat.ts` (chat state machine, incl. `interrupt`/`resume()`) → `stores/app.ts` (Zustand: conversations, the `focused` context chunk, `cmdkOpen`). One typed `api/*.ts` client per backend module.
+- **Pages**: `ChatPage` (sidebar + `CitationCard` + `RetrievalDrawer` rendering the stage1/2/3 funnel **and** the `agent` tool trace), `DocumentsPage` (upload→parse→table preview), `GraphPage` (`react-cytoscapejs` viz), `SyncPage`, `AgentsPage` (KPIs from `/v1/agents/stats`), `StalenessPage` (report + approval queue + rewrite-preview drawer), `MonitorPage`, `EvalPage` (KPIs + history + inline-SVG `Sparkline` trend — **there is no chart library in the repo**).
+- **⌘K**: `components/CommandPalette.tsx` (AntD Modal; nav group → `useNavigate`, knowledge-base group → debounced `GET /v1/search` → `setFocused`) + `hooks/useHotkey.ts` (global ⌘K/Ctrl+K), wired to the previously-disabled ⌘K trigger in `Workbench`.
+
+**Vite proxy rewrites `/api` → `` (stripped)**, so the backend sees `/v1/...`, not `/api/v1/...`. Local dev talks to `:8000` directly; only the (now-unused) containerized nginx layout would prefix `/api`. `api/eval.ts`'s `runEval` sets a single-request `timeout: 300_000` — the repo's first override of `client.ts`'s 30s default (eval runs ~80 queries through the reranker).
 
 ## Platform gotchas (hard-won, all active)
 

@@ -1,0 +1,123 @@
+# 检索评测集（横切·评测 / 后端设计 Phase 9.2）。
+#
+# 标注 query → 相关 chunk。relevant 用三种**人工可读**标注（eval_service.resolve_relevant 运行时
+# 解析为 chunk_id，对内容变更鲁棒——chunk_id 内嵌 sha256(content)[:8] 会随内容变）：
+#   - 含 "." → code_anchor_key "Class.method"（见 pipeline/metadata.make_anchor_key）
+#   - 以 "code_"/"doc_" 开头 → literal chunk_id
+#   - 否则 → class_name（整文件/类级 chunk，如 "Foo"；其 code_anchor_key 为 None）
+#
+# target_repos: 评测前须先入库（data/* 被 gitignore，故评测集与入库数据须本机一致）：
+#   uv run python scripts/ingest_code.py --repo ../data/repo/gitdemo --module demo   # Account / Profile（方法级 chunk）
+#   uv run python scripts/ingest_code.py --repo ../data/repo/sample  --module demo   # Foo（整文件 chunk）
+#
+# 校验命中率:  uv run python scripts/eval_retrieval.py --validate
+# 跑评测:      uv run python scripts/eval_retrieval.py --top-k 10
+#
+# ~85 对（M27 扩容自 seed 36）：单方法直查 + paraphrase NL 鲁棒性（同 ground-truth 多种自然语言表述）
+# + 多方法/概念聚合 + 整类/跨类 + 调用链 smoke。样本仓库仅 3 类 ~40 方法锚点，诚实上限靠 paraphrase
+# + 多相关扩到 ~85（非强凑 100）。改后务必跑 --validate 确认近 100% 解析（unresolved 会静默抬高表观质量）。
+version: 1
+target_repos:
+  - { repo: "../data/repo/gitdemo", module: demo, note: "Account / Profile 方法级 chunk" }
+  - { repo: "../data/repo/sample", module: demo, note: "Foo 整文件 chunk" }
+
+queries:
+  # ---- Account：单方法直查 ----
+  - { id: a01, text: "Account 账户存款 deposit 方法是怎么实现的", relevant: ["Account.deposit"] }
+  - { id: a02, text: "账户取款 withdraw 的逻辑", relevant: ["Account.withdraw"] }
+  - { id: a03, text: "怎么获取账户余额 getBalance", relevant: ["Account.getBalance"] }
+  - { id: a04, text: "判断账户能否进行交易 canTransact", relevant: ["Account.canTransact"] }
+  - { id: a05, text: "账户扣除手续费 applyFee", relevant: ["Account.applyFee"] }
+  - { id: a06, text: "查询累计的手续费 getFeeAccumulated", relevant: ["Account.getFeeAccumulated"] }
+  - { id: a07, text: "账户审计日志 audit", relevant: ["Account.audit"] }
+  - { id: a08, text: "账户快照 snapshot", relevant: ["Account.snapshot"] }
+  - { id: a09, text: "账户是否处于激活状态 isActive", relevant: ["Account.isActive"] }
+  - { id: a10, text: "停用账户 deactivate", relevant: ["Account.deactivate"] }
+  - { id: a11, text: "金额是否在限额之内 withinLimit", relevant: ["Account.withinLimit"] }
+  - { id: a12, text: "透支时的通知 notifyOverdraft", relevant: ["Account.notifyOverdraft"] }
+  - { id: a13, text: "重置账户状态 reset", relevant: ["Account.reset"] }
+  - { id: a14, text: "查询账户标识 getAccountId", relevant: ["Account.getAccountId"] }
+  - { id: a15, text: "账户版本号 getVersion 并发控制", relevant: ["Account.getVersion"] }
+
+  # ---- Profile：单方法直查 ----
+  - { id: p01, text: "Profile 修改名字 setName", relevant: ["Profile.setName"] }
+  - { id: p02, text: "设置邮箱地址 setEmail", relevant: ["Profile.setEmail"] }
+  - { id: p03, text: "邮箱格式是否合法 hasValidEmail", relevant: ["Profile.hasValidEmail"] }
+  - { id: p04, text: "个人信息脱敏 masked", relevant: ["Profile.masked"] }
+  - { id: p05, text: "Profile 的摘要信息 summary", relevant: ["Profile.summary"] }
+  - { id: p06, text: "资料是否填写完整 isComplete", relevant: ["Profile.isComplete"] }
+  - { id: p07, text: "格式化显示名称 formatName", relevant: ["Profile.formatName"] }
+  - { id: p08, text: "第一个无效字段 firstInvalidField", relevant: ["Profile.firstInvalidField"] }
+  - { id: p09, text: "调试字符串输出 toDebugString", relevant: ["Profile.toDebugString"] }
+  - { id: p10, text: "是否可以展示 isDisplayable", relevant: ["Profile.isDisplayable"] }
+  - { id: p11, text: "获取更新次数 getUpdates", relevant: ["Profile.getUpdates"] }
+  - { id: p12, text: "查询档案邮箱 getEmail", relevant: ["Profile.getEmail"] }
+  - { id: p13, text: "档案标识 getProfileId", relevant: ["Profile.getProfileId"] }
+  - { id: p14, text: "Profile 版本号 getVersion", relevant: ["Profile.getVersion"] }
+  - { id: p15, text: "档案是否为空 isEmpty", relevant: ["Profile.isEmpty"] }
+  - { id: p16, text: "标记一次外部同步 touch", relevant: ["Profile.touch"] }
+
+  # ---- Foo：整文件 chunk（38 行 < 200，无方法级 chunk，故 relevant 取整文件 chunk "Foo"）----
+  - { id: f01, text: "RocketMQ 本地事务回查 checkLocalTransaction", relevant: ["Foo"] }
+  - { id: f02, text: "Foo 的 run 方法入口", relevant: ["Foo"] }
+  - { id: f03, text: "发送事务回查消息 sendCheckMessage", relevant: ["Foo"] }
+  - { id: f04, text: "Foo 事务消息处理器这个类", relevant: ["Foo"] }
+  - { id: f05, text: "事务消息回查处理器", relevant: ["Foo"] }
+  - { id: f06, text: "本地事务状态检查", relevant: ["Foo"] }
+  - { id: f07, text: "RocketMQ 半消息处理", relevant: ["Foo"] }
+
+  # ---- Account paraphrase：NL 鲁棒性（不点方法名，同 ground-truth 多种自然表述）----
+  - { id: pa01, text: "往账户里存钱", relevant: ["Account.deposit"] }
+  - { id: pa02, text: "把钱打进账户增加余额", relevant: ["Account.deposit"] }
+  - { id: pa03, text: "从账户里取钱", relevant: ["Account.withdraw"] }
+  - { id: pa04, text: "账户扣款逻辑", relevant: ["Account.withdraw"] }
+  - { id: pa05, text: "账户收取手续费", relevant: ["Account.applyFee"] }
+  - { id: pa06, text: "怎么看账户还剩多少钱", relevant: ["Account.getBalance"] }
+  - { id: pa07, text: "查询账户当前余额", relevant: ["Account.getBalance"] }
+  - { id: pa08, text: "关闭停用账户", relevant: ["Account.deactivate"] }
+  - { id: pa09, text: "账户能不能继续交易", relevant: ["Account.canTransact"] }
+  - { id: pa10, text: "账户审计信息", relevant: ["Account.audit"] }
+  - { id: pa11, text: "账户快照字符串", relevant: ["Account.snapshot"] }
+  - { id: pa12, text: "余额有没有超过限额", relevant: ["Account.withinLimit"] }
+  - { id: pa13, text: "累计手续费查询", relevant: ["Account.getFeeAccumulated"] }
+  - { id: pa14, text: "账户透支告警通知", relevant: ["Account.notifyOverdraft"] }
+  - { id: pa15, text: "清空账户余额和手续费", relevant: ["Account.reset"] }
+
+  # ---- Profile paraphrase：NL 鲁棒性 ----
+  - { id: pp01, text: "昵称去掉首尾空格", relevant: ["Profile.formatName"] }
+  - { id: pp02, text: "名字格式化展示", relevant: ["Profile.formatName"] }
+  - { id: pp03, text: "修改档案的邮箱", relevant: ["Profile.setEmail"] }
+  - { id: pp04, text: "邮箱合不合法", relevant: ["Profile.hasValidEmail"] }
+  - { id: pp05, text: "资料都填全了吗", relevant: ["Profile.isComplete"] }
+  - { id: pp06, text: "脱敏后的档案输出", relevant: ["Profile.masked"] }
+  - { id: pp07, text: "设置档案名称", relevant: ["Profile.setName"] }
+  - { id: pp08, text: "档案第一个出错的字段", relevant: ["Profile.firstInvalidField"] }
+  - { id: pp09, text: "名字没填时返回什么", relevant: ["Profile.formatName"] }
+  - { id: pp10, text: "档案的可读摘要", relevant: ["Profile.summary"] }
+
+  # ---- 多方法 / 概念聚合（recall@K 多相关）----
+  - { id: m01, text: "账户资金变动相关的方法", relevant: ["Account.deposit", "Account.withdraw", "Account.applyFee"] }
+  - { id: m02, text: "Profile 信息校验相关", relevant: ["Profile.hasValidEmail", "Profile.isComplete", "Profile.firstInvalidField"] }
+  - { id: m03, text: "账户状态查询方法", relevant: ["Account.getBalance", "Account.isActive", "Account.getVersion"] }
+  - { id: m04, text: "账户所有查询类 getter 方法", relevant: ["Account.getBalance", "Account.getAccountId", "Account.getVersion", "Account.getFeeAccumulated"] }
+  - { id: m05, text: "账户所有会改变余额的方法", relevant: ["Account.deposit", "Account.withdraw", "Account.applyFee", "Account.reset"] }
+  - { id: m06, text: "账户返回布尔值的方法", relevant: ["Account.isActive", "Account.canTransact", "Account.withinLimit"] }
+  - { id: m07, text: "Profile 的 setter 方法", relevant: ["Profile.setName", "Profile.setEmail"] }
+  - { id: m08, text: "Profile 返回字符串的方法", relevant: ["Profile.formatName", "Profile.summary", "Profile.masked", "Profile.toDebugString"] }
+  - { id: m09, text: "账户手续费相关方法", relevant: ["Account.applyFee", "Account.getFeeAccumulated"] }
+  - { id: m10, text: "档案为空或完整的判断", relevant: ["Profile.isEmpty", "Profile.isComplete"] }
+  - { id: m11, text: "账户状态变更方法", relevant: ["Account.deactivate", "Account.reset"] }
+  - { id: m12, text: "生成可读摘要的方法", relevant: ["Account.snapshot", "Account.audit", "Profile.summary", "Profile.masked"] }
+
+  # ---- 跨类（同名方法）----
+  - { id: c01, text: "重置 reset 方法", relevant: ["Account.reset", "Profile.reset"] }
+  - { id: c02, text: "版本号 getVersion", relevant: ["Account.getVersion", "Profile.getVersion"] }
+  - { id: c03, text: "Account 这个账户类整体", relevant: ["Account"] }
+  - { id: c04, text: "Profile 这个档案类整体", relevant: ["Profile"] }
+
+  # ---- 调用链（graph 子集，tags: [call_chain]）----
+  # sample repo 仅 3 条 call_graph 边、且 callee 多为向量可直接命中的方法 → 图遍历增益预计≈0；
+  # 此组用于演示 --graph-subset 子集跑通，并如实暴露「需更丰富调用链 repo 才能量化 §4 +20%」。
+  - { id: cc01, text: "Account 取款 withdraw 时会触发什么通知", relevant: ["Account.notifyOverdraft"], tags: ["call_chain"] }
+  - { id: cc02, text: "Profile 设置邮箱 setEmail 会校验哪个字段", relevant: ["Profile.isEmpty"], tags: ["call_chain"] }
+  - { id: cc03, text: "Profile 摘要 summary 调用的格式化方法", relevant: ["Profile.formatName"], tags: ["call_chain"] }

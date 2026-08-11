@@ -17,9 +17,12 @@ from app.agent.agents._base import run_scenario_agent
 from app.agent.llm import get_chat_model
 from app.agent.state import AgentState
 from app.agent.tools.code_tools import (
+    get_affected_docs,
     get_call_chain,
     get_callers,
+    get_downstream_callers,
     read_code,
+    rerank,
     search_code,
     search_symbol,
 )
@@ -27,18 +30,24 @@ from app.agent.tools.code_tools import (
 CHANGE_IMPACT_PROMPT = (
     "你是 CodeRAG 的【变更影响 Agent】，擅长评估『修改某段代码会波及哪些地方』。\n"
     "工作方式（ReAct）：先定位目标（search_symbol 按名 / search_code 按描述）→ read_code 确认其实现 → "
-    "用 get_callers（上游影响面：谁调用了它）或 get_call_chain(direction=CALLERS/CALLEES/BOTH) "
-    "展开调用链 → 归纳影响范围。\n"
-    "可用工具：search_symbol、search_code、read_code、get_call_chain、get_callers。\n"
+    "用 get_callers（上游影响面：谁调用了它）或 get_downstream_callers（下游依赖：它调用了谁）或 "
+    "get_call_chain(direction=CALLERS/CALLEES/BOTH) 展开调用链 → get_affected_docs 看锚定该代码的文档"
+    "（改代码需同步更新的文档）→ 候选多时用 rerank 聚焦最相关 → 归纳影响范围。\n"
+    "可用工具：search_symbol、search_code、read_code、get_call_chain、get_callers、"
+    "get_downstream_callers、get_affected_docs、rerank。\n"
     "规则：① 影响面结论必须基于调用图检索结果，不要臆造；② 先给『直接受影响的调用方』再给"
     "『间接/跨层』，按层归纳、标注 chunk_id；③ 目标不明确时先 search_symbol **一次**解析出 center id，"
     "拿到 center 后**立即**用 get_callers（或 get_call_chain direction=CALLERS）展开**一次**影响面，"
-    "不要反复搜索/读取同一目标；④ 广泛被调方法用 get_callers（上限更高），小范围用 get_call_chain；"
-    "⑤ 用中文、简洁，控制在 4 步内，**不要重复读取同一个 chunk**，代码用代码块。"
+    "不要反复搜索/读取同一目标；④ 广泛被调方法用 get_callers（上限更高），小范围用 get_call_chain，"
+    "看它依赖什么用 get_downstream_callers；⑤ 文档影响用 get_affected_docs（一次性）；"
+    "⑥ 用中文、简洁，控制在 4 步内，**不要重复读取同一个 chunk**，代码用代码块。"
 )
 
-#: 变更影响 Agent 绑定的工具集（定位 + 确认 + 调用图展开；复用代码工具 + get_callers 放上限）
-IMPACT_TOOLS = [search_symbol, search_code, read_code, get_call_chain, get_callers]
+#: 变更影响 Agent 绑定的工具集（定位 + 确认 + 调用图双向展开 + 文档影响 + 精排聚焦）
+IMPACT_TOOLS = [
+    search_symbol, search_code, read_code, get_call_chain, get_callers,
+    get_downstream_callers, get_affected_docs, rerank,
+]
 
 _agent = None
 

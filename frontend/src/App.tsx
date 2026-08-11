@@ -6,6 +6,8 @@ import DocumentsPage from "./pages/DocumentsPage";
 import GraphPage from "./pages/GraphPage";
 import AgentsPage from "./pages/AgentsPage";
 import StalenessPage from "./pages/StalenessPage";
+import MonitorPage from "./pages/MonitorPage";
+import EvalPage from "./pages/EvalPage";
 import PlaceholderPage from "./pages/PlaceholderPage";
 
 const P = (title: string, stage: string, desc?: string) => (
@@ -25,7 +27,8 @@ export default function App() {
           <Route path="sync" element={<SyncPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="staleness" element={<StalenessPage />} />
-          <Route path="monitor" element={P("系统监控", "Phase 8 (P3)", "检索性能、显存、API 用量。")} />
+          <Route path="monitor" element={<MonitorPage />} />
+          <Route path="eval" element={<EvalPage />} />
           <Route path="settings" element={P("系统设置", "Phase 1 (P3)", "模型配置、API Key 管理。")} />
           <Route path="*" element={P("未知页面", "—")} />
         </Route>

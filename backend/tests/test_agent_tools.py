@@ -6,12 +6,15 @@ from datetime import datetime
 import app.agent.tools.code_tools as ct
 from app.agent.tools import formatting as fmt
 from app.agent.tools.code_tools import (
+    _get_affected_docs,
     _get_call_chain,
     _get_callers,
+    _get_downstream_callers,
     _get_existing_tests,
     _get_metrics,
     _get_recent_changes,
     _read_code,
+    _rerank,
     _search_code,
     _search_symbol,
 )
@@ -447,3 +450,141 @@ async def test_get_existing_tests_tool_emits_citations(monkeypatch):
     step = next(p["data"] for p in pushed if p["event"] == "agent_step")
     assert step["tool"] == "get_existing_tests" and step["args"] == {"center": "class:Account"} and step["n"] == 1
     assert isinstance(out, str) and "AccountTest" in out and "现有测试" in out
+
+
+# ---- get_downstream_callers（下游被调用面；与 get_callers 对称，方向锁 CALLEES）----
+
+
+def test_format_impact_callees():
+    resp = GraphResponse(
+        nodes=[GraphNode(id="c1", name="A.m", type="method", depth=0, class_name="A"),
+               GraphNode(id="c2", name="B.n", type="method", depth=1, class_name="B")],
+        edges=[], center="c1")
+    out = fmt.format_impact_callees(resp)
+    assert "下游被调用" in out and "直接依赖" in out and "A.m" in out and "B.n" in out
+
+
+def test_format_impact_callees_empty():
+    out = fmt.format_impact_callees(GraphResponse(nodes=[], edges=[], center="c1"))
+    assert "无下游被调用" in out
+
+
+async def test_get_downstream_callers(monkeypatch):
+    # 与 _get_callers 同构，但方向锁 CALLEES、max_nodes=120、depth=3
+    resp = GraphResponse(
+        nodes=[GraphNode(id="c1", name="A.m", type="method", depth=0),
+               GraphNode(id="c2", name="B.n", type="method", depth=1)],
+        edges=[], center="c1")
+    seen: dict = {}
+
+    async def fake_gcg(session, center, *, depth=2, direction="BOTH", max_nodes=30):
+        seen.update(direction=direction, max_nodes=max_nodes, depth=depth)
+        return resp
+
+    async def fake_fetch(session, ids):
+        return [{"chunk_id": "c1", "kind": "code", "content": "s1", "class_name": "A", "method_name": "m"},
+                {"chunk_id": "c2", "kind": "code", "content": "s2", "class_name": "B", "method_name": "n"}]
+
+    monkeypatch.setattr("app.services.graph_service.get_call_graph", fake_gcg)
+    monkeypatch.setattr("app.agent.tools.code_tools.fetch_chunks", fake_fetch)
+    res = await _get_downstream_callers("c1", session=None, depth=3)
+    assert seen["direction"] == "CALLEES" and seen["max_nodes"] == 120 and seen["depth"] == 3
+    assert {c["chunk_id"] for c in res.chunks} == {"c1", "c2"}
+    assert "下游" in res.text and "A.m" in res.text  # format_impact_callees 输出
+
+
+# ---- get_affected_docs（锚定到代码的文档；带腐化信号，对接文档维护弧线）----
+
+
+def test_format_affected_docs():
+    rows = [{"chunk_id": "d1", "heading_path": ["事务"],
+             "last_change": {"change_type": "MODIFIED", "git_commit_time": datetime(2026, 7, 28)}}]
+    out = fmt.format_affected_docs(rows, "c1")
+    assert "锚定" in out and "事务" in out and "MODIFIED" in out and "过时" in out
+    assert "未找到锚定" in fmt.format_affected_docs([], "c1")
+
+
+async def test_get_affected_docs_logic():
+    # chunk_id 路径：2 次查询（doc_chunks linked_code_ids 重叠 → change_history 最近变更）
+    doc_rows = [{"chunk_id": "doc_d1", "content": "事务回查说明", "heading_path": ["事务", "回查"]}]
+    change_rows = [{"chunk_id": "c1", "change_type": "MODIFIED",
+                    "git_commit_time": datetime(2026, 7, 28), "commit_message": "fix"}]
+    res = await _get_affected_docs("c1", _SeqSession([doc_rows, change_rows]))
+    assert res.chunks[0]["chunk_id"] == "doc_d1" and res.chunks[0]["kind"] == "doc"
+    assert "锚定" in res.text and "事务 › 回查" in res.text
+    assert "MODIFIED" in res.text and "2026-07-28" in res.text  # 代码最近变更腐化信号
+
+
+async def test_get_affected_docs_none():
+    res = await _get_affected_docs("c1", _SeqSession([[], []]))
+    assert res.chunks == [] and "未找到锚定" in res.text
+
+
+# ---- rerank（精排工具；元数据工具，仅 step 无 citation；无 key/失败降级原序）----
+
+
+def test_format_rerank():
+    out = fmt.format_rerank([
+        {"chunk_id": "c1", "class_name": "A", "method_name": "m", "score": 0.9},
+        {"chunk_id": "c2", "class_name": None, "method_name": None, "score": 0.1},
+    ])
+    assert "重排 2 个" in out and "A.m" in out and "c2" in out and "0.900" in out
+    assert "无候选可重排" in fmt.format_rerank([])
+
+
+async def test_rerank_reorders(monkeypatch):
+    monkeypatch.setattr(ct.settings, "reranker_fine_model", "BAAI/test")
+
+    async def fake_fetch(session, ids):
+        return [{"chunk_id": "c1", "kind": "code", "content": "a", "class_name": "A", "method_name": "x"},
+                {"chunk_id": "c2", "kind": "code", "content": "b", "class_name": "B", "method_name": "y"}]
+
+    async def fake_rerank(query, candidates, *, model, top_n):
+        return [{"chunk_id": "c2", "kind": "code", "content": "b", "score": 0.9},
+                {"chunk_id": "c1", "kind": "code", "content": "a", "score": 0.1}]  # 翻转顺序
+
+    monkeypatch.setattr("app.agent.tools.code_tools.fetch_chunks", fake_fetch)
+    monkeypatch.setattr("app.agent.tools.code_tools.rerank_stage", fake_rerank)
+    ranked, reranked = await _rerank("q", ["c1", "c2"], session=None)
+    assert reranked is True
+    assert [r["chunk_id"] for r in ranked] == ["c2", "c1"]
+
+
+async def test_rerank_degrades_on_failure(monkeypatch):
+    monkeypatch.setattr(ct.settings, "reranker_fine_model", "BAAI/test")
+
+    async def fake_fetch(session, ids):
+        return [{"chunk_id": "c1", "kind": "code", "content": "a"}]
+
+    async def boom(*a, **k):
+        raise RuntimeError("no reranker key")
+
+    monkeypatch.setattr("app.agent.tools.code_tools.fetch_chunks", fake_fetch)
+    monkeypatch.setattr("app.agent.tools.code_tools.rerank_stage", boom)
+    ranked, reranked = await _rerank("q", ["c1"], session=None)
+    assert reranked is False                                   # 降级：保持原序
+    assert [r["chunk_id"] for r in ranked] == ["c1"]
+
+
+async def test_rerank_tool_step_only(monkeypatch):
+    # 元数据工具：只发 agent_step（n=候选数），不发 citation（chunks 已由先前检索工具引用过）
+    pushed: list[dict] = []
+    monkeypatch.setattr(ct, "get_stream_writer", lambda: lambda d: pushed.append(d))
+    monkeypatch.setattr(ct.settings, "reranker_fine_model", "BAAI/test")
+
+    async def fake_fetch(session, ids):
+        return [{"chunk_id": "c1", "kind": "code", "content": "a", "class_name": "A", "method_name": "m"}]
+
+    async def fake_rerank(query, candidates, *, model, top_n):
+        return [{"chunk_id": "c1", "kind": "code", "content": "a", "score": 0.95}]
+
+    monkeypatch.setattr("app.agent.tools.code_tools.fetch_chunks", fake_fetch)
+    monkeypatch.setattr("app.agent.tools.code_tools.rerank_stage", fake_rerank)
+
+    out = await ct.rerank.ainvoke(
+        {"query": "q", "chunk_ids": ["c1"]}, {"configurable": {"session": None, "top_k": 8}},
+    )
+    assert [p["event"] for p in pushed] == ["agent_step"]      # 仅 step，无 citation
+    step = pushed[0]["data"]
+    assert step["tool"] == "rerank" and step["args"]["n"] == 1
+    assert isinstance(out, str) and "重排" in out and "已按相关性重排" in out

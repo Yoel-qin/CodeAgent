@@ -11,10 +11,13 @@ import {
   DashboardOutlined,
   SettingOutlined,
   SearchOutlined,
+  BarChartOutlined,
 } from "@ant-design/icons";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "../stores/app";
 import ContextPanel from "../components/ContextPanel";
+import CommandPalette from "../components/CommandPalette";
+import { useHotkey } from "../hooks/useHotkey";
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Text } = Typography;
@@ -40,6 +43,7 @@ const navItems = [
       { key: "/agents", label: "Agent 面板", icon: <RobotOutlined /> },
       { key: "/staleness", label: "腐化审批", icon: <WarningOutlined /> },
       { key: "/monitor", label: "系统监控", icon: <DashboardOutlined /> },
+      { key: "/eval", label: "检索评测", icon: <BarChartOutlined /> },
       { key: "/settings", label: "系统设置", icon: <SettingOutlined /> },
     ],
   },
@@ -51,6 +55,8 @@ export default function Workbench() {
   const { token } = theme.useToken();
   const health = useAppStore((s) => s.health);
   const fetchHealth = useAppStore((s) => s.fetchHealth);
+  const setCmdkOpen = useAppStore((s) => s.setCmdkOpen);
+  useHotkey();
 
   useEffect(() => {
     fetchHealth();
@@ -82,8 +88,9 @@ export default function Workbench() {
         <Input
           prefix={<SearchOutlined style={{ color: token.colorTextQuaternary }} />}
           placeholder="全局搜索…  (⌘K)"
-          style={{ maxWidth: 420, marginLeft: 16 }}
-          disabled
+          style={{ maxWidth: 420, marginLeft: 16, cursor: "pointer" }}
+          readOnly
+          onClick={() => setCmdkOpen(true)}
         />
         <div style={{ flex: 1 }} />
         <Tag color={ok ? "success" : health ? "warning" : "default"}>
@@ -126,6 +133,7 @@ export default function Workbench() {
           </Text>
         </Space>
       </Footer>
+      <CommandPalette />
     </Layout>
   );
 }

@@ -5,6 +5,7 @@ from app.db.base import Base
 from app.db.models.chat import ChatMessage, Conversation
 from app.db.models.code import CallGraph, CodeChunk, CodeFile
 from app.db.models.doc import DocChunk, DocFile, DocResource
+from app.db.models.eval import EvalRun
 from app.db.models.graph import GraphEmbedding
 from app.db.models.history import ChangeHistory, DocUpdateProposal, RollbackHistory, SyncTask
 from app.db.models.relation import AnchorMapping, ChunkRelation
@@ -18,6 +19,7 @@ __all__ = [
     "DocFile",
     "DocChunk",
     "DocResource",
+    "EvalRun",
     "ChunkRelation",
     "AnchorMapping",
     "ChangeHistory",

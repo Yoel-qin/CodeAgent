@@ -100,7 +100,9 @@ def strategy() -> str:
 def ingest_embed(kind: str, texts: list[str]) -> list[list[float]]:
     """入库嵌入（同步）。
     unified → 一律 BGE-M3 API；
-    dual    → code 用 CodeBERT(model_server)，doc 用 BGE-M3 API。
+    dual    → code 用 CodeBERT(model_server)，doc 用 BGE-M3 API；
+            → "code_bge"（M25 代码的 BGE-M3 镜像，1024d）落 BGE-M3 分支（dispatch 仅对 kind=="code"
+              严格走 CodeBERT，"code_bge" 走默认 BGE）。无需特殊处理——collection 由 milvus_client 按 kind 选。
     """
     if settings.embedding_strategy == "dual" and kind == "code":
         return embed_code_sync(texts)

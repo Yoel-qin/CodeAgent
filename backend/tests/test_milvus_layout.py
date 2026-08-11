@@ -18,6 +18,16 @@ def test_dual_layout_two_collections_without_kind_field():
     assert milvus_client.collection_for("dual", None) == ("doc_vectors", 1024, False)
 
 
+def test_dual_code_bge_collection():
+    """M25：dual 模式 code_bge 伪 kind → BGE-M3 代码镜像 collection（1024d，无 kind 字段）。"""
+    assert milvus_client.collection_for("dual", "code_bge") == ("code_vectors_bge", 1024, False)
+
+
+def test_unified_ignores_code_bge_kind():
+    """unified 下无 code_bge 专用 collection → 兜底 coderag_vectors（无 unified 调用方传 code_bge）。"""
+    assert milvus_client.collection_for("unified", "code_bge") == ("coderag_vectors", 1024, True)
+
+
 def test_layout_defaults_to_current_strategy():
     """strategy=None 时回落 settings.embedding_strategy（显式钉住，避免依赖 .env）。"""
     saved = settings.embedding_strategy

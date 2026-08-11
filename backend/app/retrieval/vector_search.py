@@ -2,7 +2,9 @@
 
 按 embedding_strategy 双框架：
   unified → 查询用 BGE-M3 编码，搜单一 coderag_vectors（kind 过滤可选，混检 code+doc）。
-  dual    → 查询分别用 CodeBERT(→code_vectors) 与 BGE-M3(→doc_vectors) 编码，两路合并。
+  dual    → 查询分别用 CodeBERT(→code_vectors) 与 BGE-M3(→doc_vectors) 编码，两路合并；
+            + M25：额外用 BGE-M3 查询向量检索代码镜像索引 code_vectors_bge，让多语言 BGE-M3
+              也能找回代码（修 CodeBERT 对中文 NL 代码查询召回弱——见 docs/嵌入向量方案.md §二.3）。
 任一编码器/Milvus 不可用 → 该路返回空，管道降级到 BM25+图遍历。
 """
 from __future__ import annotations
@@ -32,6 +34,19 @@ async def vector_recall(session: AsyncSession, query: str, *, top_k: int = 20) -
             hits.extend(h)
         except Exception:
             continue
+    # M25：dual 模式额外用 BGE-M3 查询向量（vecs["doc"]）检索代码镜像索引 code_vectors_bge——
+    # 让多语言 BGE-M3 也能找回代码（CodeBERT 无中文，对中文 NL 查询召回弱）。复用已算好的 doc 向量不重算；
+    # unified 无 vecs["doc"] → 跳过；空/未建 collection → search 返 [] no-op；top_k 位置参。
+    if (settings.embedding_strategy == "dual"
+            and settings.dual_code_bgem3_enabled
+            and vecs.get("doc") is not None):
+        try:
+            h = await asyncio.to_thread(
+                milvus_client.search, settings.embedding_strategy, "code_bge", vecs["doc"], top_k,
+            )
+            hits.extend(h)
+        except Exception:
+            pass
     if not hits:
         return []
     score_map = {h["chunk_id"]: h["score"] for h in hits}

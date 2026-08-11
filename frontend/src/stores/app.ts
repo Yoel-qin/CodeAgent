@@ -14,6 +14,8 @@ interface AppState {
   fetchHealth: () => Promise<void>;
   focused: FocusedCitation | null;
   setFocused: (c: FocusedCitation | null) => void;
+  cmdkOpen: boolean;
+  setCmdkOpen: (b: boolean) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -32,4 +34,6 @@ export const useAppStore = create<AppState>((set) => ({
   },
   focused: null,
   setFocused: (c) => set({ focused: c }),
+  cmdkOpen: false,
+  setCmdkOpen: (b) => set({ cmdkOpen: b }),
 }));

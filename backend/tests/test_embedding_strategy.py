@@ -70,6 +70,30 @@ def test_ingest_embed_dual_routes_code_to_codebert(monkeypatch, reset_strategy):
     assert out_doc == [[0.1] * 1024]
 
 
+def test_ingest_embed_dual_code_bge_uses_bge(monkeypatch, reset_strategy):
+    """M25：dual 下 code_bge（代码的 BGE-M3 镜像，1024d）走 BGE 分支，不走 CodeBERT。
+
+    dispatch 仅对 kind=='code' 严格走 CodeBERT；'code_bge' 落默认 BGE → 无需特殊处理。
+    """
+    settings.embedding_strategy = "dual"
+    calls: dict[str, list] = {}
+
+    def fake_doc(texts):
+        calls["doc"] = list(texts)
+        return [[0.1] * 1024] * len(texts)
+
+    def fake_code(texts):
+        calls["code"] = list(texts)
+        return [[9.9] * 768] * len(texts)
+
+    monkeypatch.setattr(embedding_client, "embed_doc_texts_sync", fake_doc)
+    monkeypatch.setattr(embedding_client, "embed_code_sync", fake_code)
+
+    out = embedding_client.ingest_embed("code_bge", ["x"])
+    assert calls["doc"] == ["x"] and "code" not in calls
+    assert out == [[0.1] * 1024]
+
+
 async def test_query_embed_unified_returns_single_role(monkeypatch, reset_strategy):
     settings.embedding_strategy = "unified"
     monkeypatch.setattr(embedding_client, "enabled", lambda: True)

@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.retrieval.graph_traverse import fetch_chunks
 from app.retrieval.pipeline import pipeline
+from app.retrieval.query_understanding import extract_query_terms
 from app.services import graph_service
 from app.services.chat_service import _citation
 
@@ -122,6 +123,40 @@ async def _get_related_code(center: str, session: AsyncSession, *, depth: int = 
     return ToolResult(fmt.format_related_code(resp), chunks)
 
 
+async def _search_media(query: str, session: AsyncSession, *, media_type: str, top_k: int = 8) -> ToolResult:
+    """按描述检索图片/表格文档段（media_type='image'/'table'）。
+
+    image → ``image_description``，table → ``table_description``。命中：描述 ILIKE query 子串，
+    **或** keywords 与 query 分词（``extract_query_terms``）重叠。按关键词重叠数打分（ILIKE 命中
+    给基础分 0.3）。区别于 ``_search_docs``（按 content 检索全 doc 池）——本工具专攻带描述的媒体段，
+    能找回 content 为空但描述详尽的图/表。返回 doc chunks（可引用）。
+    """
+    terms = [t.lower() for t in extract_query_terms(query)]
+    desc_col = "image_description" if media_type == "image" else "table_description"
+    sql = sql_text(f"""
+        SELECT chunk_id, content, heading_path, keywords, {desc_col} AS description
+        FROM doc_chunks
+        WHERE is_deleted = false AND chunk_content_type = :mt
+          AND ({desc_col} ILIKE :q OR keywords ?| cast(:terms as text[]))
+    """)
+    rows = (await session.execute(sql, {
+        "mt": media_type, "q": f"%{query}%", "terms": list({*terms, query.lower()}),
+    })).mappings().all()
+    scored = []
+    for r in rows:
+        kws = {k.lower() for k in (r["keywords"] or [])}
+        score = max(0.3, float(len(kws & set(terms))))
+        scored.append((score, dict(r)))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:top_k]
+    chunks = [_norm({
+        "chunk_id": r["chunk_id"], "kind": "doc",
+        "content": r.get("description") or r.get("content") or "",
+        "heading_path": r.get("heading_path") or [],
+    }, score=s) for s, r in top]
+    return ToolResult(fmt.format_media_search([r for _, r in top], media_type), chunks)
+
+
 # ---- @tool 包装（供 create_react_agent 绑定；config 注入 session/top_k）----
 
 
@@ -162,5 +197,33 @@ async def get_related_code(center: str, config: RunnableConfig) -> str:
     return res.text
 
 
+@tool
+async def image_search(query: str, config: RunnableConfig) -> str:
+    """在文档库中按描述检索图片文档段（架构图/流程图/示意图/截图等）。当用户问“某张图/示意图/
+    流程图”或想看可视化说明时用本工具（普通文字检索用 search_docs）。返回图片文档段列表
+    （含 chunk_id 与图片描述）。"""
+
+    session: AsyncSession = config["configurable"]["session"]
+    top_k = config["configurable"].get("top_k", 8)
+    res = await _search_media(query, session, media_type="image", top_k=top_k)
+    _emit_citations(res.chunks)
+    _emit_step("image_search", {"query": query}, len(res.chunks))
+    return res.text
+
+
+@tool
+async def table_search(query: str, config: RunnableConfig) -> str:
+    """在文档库中按描述检索表格文档段（配置表/参数表/映射表/对照表等）。当用户问“某张表/
+    参数表/对照表”或想要结构化数据时用本工具（普通文字检索用 search_docs）。返回表格文档段
+    列表（含 chunk_id 与表格描述）。"""
+
+    session: AsyncSession = config["configurable"]["session"]
+    top_k = config["configurable"].get("top_k", 8)
+    res = await _search_media(query, session, media_type="table", top_k=top_k)
+    _emit_citations(res.chunks)
+    _emit_step("table_search", {"query": query}, len(res.chunks))
+    return res.text
+
+
 #: 文档问答 Agent 绑定的工具集
-DOC_TOOLS = [search_docs, read_doc, get_related_code]
+DOC_TOOLS = [search_docs, read_doc, get_related_code, image_search, table_search]

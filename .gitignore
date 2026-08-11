@@ -66,3 +66,6 @@ logs/
 /mcp工具集合.md
 /技术难点.md
 /嵌入向量方案.md
+
+# Internal design / progress docs directory (kept local, not pushed)
+docs/

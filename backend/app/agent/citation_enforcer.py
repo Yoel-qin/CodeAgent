@@ -8,6 +8,7 @@ opt-in（``CITATION_ENFORCE_ENABLED``，默认 off）；关 = 零行为变更。
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 # 代码标识符形状：
 # 1) dotted 限定：com.foo.Bar / Bar.method / Account.getBalance（句末句点不匹配：点后须跟标识符）
@@ -52,3 +53,58 @@ def extract_identifiers(answer: str) -> list[str]:
         seen.add(tok)
         out.append(tok)
     return out
+
+
+def _citation_blobs(citations: list[dict]) -> list[str]:
+    """每个 citation 的元数据文本 blob（小写），供子串匹配。
+
+    blob = label + class + method + path + chunk_id（过滤空值）。注意：citation 不含 chunk 正文，
+    故匹配基于元数据——只在正文出现、未进元数据的标识符可能被误判未验证（见 spec §4.4 已知限制）。
+    """
+    blobs: list[str] = []
+    for c in citations:
+        parts = [c.get("label"), c.get("class"), c.get("method"),
+                 c.get("path"), c.get("chunk_id")]
+        blobs.append(" ".join(str(p) for p in parts if p).lower())
+    return blobs
+
+
+def enforce(
+    answer: str,
+    citations: list[dict],
+    *,
+    whitelist: Callable[[str], bool] | None = None,
+    min_unverified: int = 1,
+    max_listed: int = 10,
+) -> dict:
+    """校验回答里的代码标识符是否在 citation 元数据中找到验证。
+
+    返回 ``{verified_count, unverified_ids, ratio, notice}``。``notice`` 为 None 表示无需标注
+    （无 citation / 无未验证 / 未达 ``min_unverified``）。纯函数：不读 settings、不 I/O。
+    调用方（适配器）仍 try/except 兜底，确保请求永不中断。
+    """
+    result: dict = {"verified_count": 0, "unverified_ids": [], "ratio": 0.0, "notice": None}
+    if not citations:
+        return result
+    blobs = _citation_blobs(citations)
+    verified = 0
+    unverified: list[str] = []
+    for identifier in extract_identifiers(answer):
+        needle = identifier.lower()
+        last = needle.rsplit(".", 1)[-1]  # dotted：也用末段匹配（Account.getBalance → getbalance）
+        if whitelist and whitelist(identifier):
+            verified += 1
+        elif any((needle in b) or (last in b) for b in blobs):
+            verified += 1
+        else:
+            unverified.append(identifier)
+    total = verified + len(unverified)
+    result["verified_count"] = verified
+    result["unverified_ids"] = unverified
+    result["ratio"] = round(len(unverified) / total, 3) if total else 0.0
+    if unverified and len(unverified) >= min_unverified:
+        shown = unverified[:max_listed]
+        head = "、".join(shown)
+        tail = f"（等 {len(unverified)} 项）" if len(unverified) > max_listed else ""
+        result["notice"] = f"⚠️ 以下标识符未在检索结果中找到验证：{head}{tail}"
+    return result

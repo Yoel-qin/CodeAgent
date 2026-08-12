@@ -106,5 +106,5 @@ def enforce(
         shown = unverified[:max_listed]
         head = "、".join(shown)
         tail = f"（等 {len(unverified)} 项）" if len(unverified) > max_listed else ""
-        result["notice"] = f"⚠️ 以下标识符未在检索结果中找到验证：{head}{tail}"
+        result["notice"] = f"\n\n⚠️ 以下标识符未在检索结果中找到验证：{head}{tail}"
     return result

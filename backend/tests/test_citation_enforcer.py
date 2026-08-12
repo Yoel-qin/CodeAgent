@@ -142,7 +142,7 @@ def test_enforce_into_stream_on_with_notice(monkeypatch):
     citations = [_cit(label="Account.getBalance", klass="Account", method="getBalance")]
     meta: dict = {}
     answer, tokens = sm._enforce_into_stream("FooService.bar 逻辑", citations, meta)
-    assert tokens and tokens[0]["content"].startswith("⚠️")
+    assert tokens and tokens[0]["content"].startswith("\n\n⚠️")
     assert "FooService.bar" in answer  # notice 已并入 answer
     assert meta["enforcement"]["enabled"] is True
     assert "FooService.bar" in meta["enforcement"]["unverified_ids"]

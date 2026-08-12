@@ -171,3 +171,38 @@ async def test_query_analysis_sets_intent(monkeypatch):
     assert out["semantic_query"] == "A.m1 做了什么"
     assert "Foo" in out["keywords"]
     assert out["rewritten"] is True
+
+
+# ---- web 意图（联网 MCP Agent）----
+
+
+def test_rule_intent_web():
+    # 联网强信号（联网/网上/search the web）→ web 意图（优先级最高，避免被 doc/code 吞）
+    assert _rule_intent("帮我联网搜一下最新的库用法") == "web"
+    assert _rule_intent("search the web for spring boot") == "web"
+
+
+async def test_route_web_when_tools_present(monkeypatch):
+    import app.agent.tools.web_tools as wt
+    monkeypatch.setattr(router_mod, "configured", lambda: True)
+    monkeypatch.setattr(wt, "_web_tools", [object()])
+    assert router_mod.route({"intent": "web"}) == "web_search"
+    # 显式 agent_type 优先于 intent
+    assert router_mod.route({"agent_type": "WEB_SEARCH", "intent": "code"}) == "web_search"
+
+
+async def test_route_web_falls_back_when_no_tools(monkeypatch):
+    import app.agent.tools.web_tools as wt
+    monkeypatch.setattr(router_mod, "configured", lambda: True)
+    monkeypatch.setattr(wt, "_web_tools", [])
+    # MCP 未启用/不可达 → web 意图回落 KB retrieve，不留死路
+    assert router_mod.route({"intent": "web"}) == "retrieve"
+    assert router_mod.route({"agent_type": "WEB_SEARCH"}) == "retrieve"
+
+
+async def test_route_web_not_configured(monkeypatch):
+    # 无 LLM key → 即便有 web 工具也走 retrieve（Agent 需要 LLM）
+    import app.agent.tools.web_tools as wt
+    monkeypatch.setattr(router_mod, "configured", lambda: False)
+    monkeypatch.setattr(wt, "_web_tools", [object()])
+    assert router_mod.route({"intent": "web"}) == "retrieve"

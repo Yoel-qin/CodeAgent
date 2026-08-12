@@ -1,6 +1,8 @@
 """CitationEnforcer 纯函数单测（M34）—— 无 infra/网络。"""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from app.agent.citation_enforcer import enforce, extract_identifiers
 
 
@@ -110,3 +112,51 @@ def test_enforce_ratio():
     assert res["verified_count"] == 1
     assert res["unverified_ids"] == ["FooBar"]
     assert res["ratio"] == round(1 / 2, 3)
+
+
+# ---- Task 3: 配置开关 + 适配器接入 ----
+
+
+def test_config_defaults():
+    from app.core.config import settings
+    assert settings.citation_enforce_enabled is False
+    assert settings.citation_enforce_min_unverified == 1
+    assert settings.citation_enforce_max_listed == 10
+
+
+def test_enforce_into_stream_off(monkeypatch):
+    import app.agent.streaming as sm
+    monkeypatch.setattr(sm, "settings", SimpleNamespace(citation_enforce_enabled=False))
+    meta: dict = {}
+    answer, tokens = sm._enforce_into_stream("FooBar 逻辑", [], meta)
+    assert answer == "FooBar 逻辑"
+    assert tokens == []
+    assert meta["enforcement"] == {"enabled": False}
+
+
+def test_enforce_into_stream_on_with_notice(monkeypatch):
+    import app.agent.streaming as sm
+    monkeypatch.setattr(sm, "settings", SimpleNamespace(
+        citation_enforce_enabled=True,
+        citation_enforce_min_unverified=1, citation_enforce_max_listed=10))
+    citations = [_cit(label="Account.getBalance", klass="Account", method="getBalance")]
+    meta: dict = {}
+    answer, tokens = sm._enforce_into_stream("FooService.bar 逻辑", citations, meta)
+    assert tokens and tokens[0]["content"].startswith("⚠️")
+    assert "FooService.bar" in answer  # notice 已并入 answer
+    assert meta["enforcement"]["enabled"] is True
+    assert "FooService.bar" in meta["enforcement"]["unverified_ids"]
+
+
+def test_enforce_into_stream_on_all_verified(monkeypatch):
+    import app.agent.streaming as sm
+    monkeypatch.setattr(sm, "settings", SimpleNamespace(
+        citation_enforce_enabled=True,
+        citation_enforce_min_unverified=1, citation_enforce_max_listed=10))
+    citations = [_cit(klass="Account", method="getBalance")]
+    meta: dict = {}
+    answer, tokens = sm._enforce_into_stream("Account.getBalance 做了什么", citations, meta)
+    assert tokens == []                       # 无未验证 → 无 notice token
+    assert answer == "Account.getBalance 做了什么"
+    assert meta["enforcement"]["enabled"] is True
+    assert meta["enforcement"]["unverified_ids"] == []

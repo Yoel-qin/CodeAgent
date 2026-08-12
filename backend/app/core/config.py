@@ -109,6 +109,18 @@ class Settings(BaseSettings):
     # 历史 来源=chat_messages（真相源），非 checkpointer——见 chat_service.load_conversation_history。
     conversation_history_turns: int = 6
 
+    # M34 CitationEnforcer（回答幻觉校验，opt-in；默认 off = 零行为变更）
+    citation_enforce_enabled: bool = False
+    citation_enforce_min_unverified: int = 1
+    citation_enforce_max_listed: int = 10
+
+    # ---- 联网 MCP 工具（让场景 Agent 调用远程/在线 MCP server）----
+    # 仅 rag_engine=langgraph 生效（新增 WEB_SEARCH 场景 Agent）。mcp_servers 为 JSON 数组字符串：
+    # [{"name":"...","url":"http://host:port/sse","transport":"sse|streamable_http"}]。
+    # 关闭/空/连接失败 → web 意图回落 KB retrieve，后端不崩（与缺 API key 同一套降级惯例）。
+    mcp_enabled: bool = False
+    mcp_servers: str = ""
+
     # ---- 入库 / 向量化补偿 ----
     # embedding_client / milvus_client 均无批处理（整列表一次请求），在 pipeline.indexing 层切片。
     embed_batch_size: int = 32            # embedding + Milvus upsert 批大小

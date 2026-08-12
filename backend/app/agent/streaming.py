@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator
 from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.citation_enforcer import enforce
 from app.agent.graph import get_graph
 from app.core.config import settings
 from app.db.models.chat import Conversation
@@ -25,6 +26,34 @@ from app.services.chat_service import (
     open_conversation,
     persist_retrieval_log,
 )
+
+
+def _enforce_into_stream(answer: str, citations: list[dict], retrieval_meta: dict
+                         ) -> tuple[str, list[dict]]:
+    """opt-in 跑 CitationEnforcer；返回 (含 notice 的 answer, 额外 token 事件 data 列表)；
+    把指标塞 ``retrieval_meta['enforcement']``。读 settings；关 = 空操作（仅写 enabled:false）。"""
+    if not settings.citation_enforce_enabled:
+        retrieval_meta["enforcement"] = {"enabled": False}
+        return answer, []
+    try:
+        res = enforce(
+            answer, citations,
+            min_unverified=settings.citation_enforce_min_unverified,
+            max_listed=settings.citation_enforce_max_listed,
+        )
+    except Exception:  # noqa: BLE001  纯函数兜底：永不中断请求
+        retrieval_meta["enforcement"] = {"enabled": True, "error": True}
+        return answer, []
+    retrieval_meta["enforcement"] = {
+        "enabled": True,
+        "verified_count": res["verified_count"],
+        "unverified_ids": res["unverified_ids"],
+        "ratio": res["ratio"],
+    }
+    notice = res["notice"]
+    if notice:
+        return answer + notice, [{"content": notice}]
+    return answer, []
 
 
 async def stream_graph(
@@ -88,6 +117,10 @@ async def stream_graph(
 
     # ---- 3. 检索日志 + assistant 消息 + done（同 legacy）----
     answer = "".join(answer_parts)
+    # M34：opt-in 幻觉校验——跑完图后、持久化前；notice 作 token 事件流出 + 并入 answer。
+    answer, _enforce_tokens = _enforce_into_stream(answer, citations, retrieval_meta)
+    for _td in _enforce_tokens:
+        yield ("token", _td)
     rlog = await persist_retrieval_log(session, query, retrieval_meta, citations, agent_steps)
     assistant_id = await add_assistant_message(
         session, conv, answer, citations, rlog.log_id, agent_type,

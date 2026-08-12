@@ -82,12 +82,12 @@ def test_registry_data_registers_all_agents():
     assert r.get("DOC_MAINTAIN").intent is None           # 不接 intent
 
 
-def test_route_target_web_without_tools_falls_back():
+def test_route_target_web_without_tools_falls_back(monkeypatch):
     """WEB_SEARCH route_guard 在无工具时回落 retrieve（等价旧 router 特判）。"""
     import app.agent.tools.web_tools as wt
     from app.agent.registry import get_registry
 
-    wt._web_tools = []  # 模拟 MCP 未启用
+    monkeypatch.setattr(wt, "_web_tools", [])  # 模拟 MCP 未启用
     assert get_registry().route_target(agent_type="WEB_SEARCH", intent=None) == "retrieve"
-    wt._web_tools = [object()]  # 模拟有工具
+    monkeypatch.setattr(wt, "_web_tools", [object()])  # 模拟有工具
     assert get_registry().route_target(agent_type="WEB_SEARCH", intent=None) == "web_search"

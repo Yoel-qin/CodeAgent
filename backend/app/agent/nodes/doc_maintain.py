@@ -1,6 +1,6 @@
 """文档维护 HITL 节点（Phase 7 Milestone 10 人在回路中断 + Milestone 13 完整 ReAct）。
 
-主图 4 节点链，由显式 ``agent_type=DOC_MAINTAIN`` 触发（router 经 ``_AGENT_TYPE_TO_NODE``
+主图 4 节点链，由显式 ``agent_type=DOC_MAINTAIN`` 触发（router 经 AgentRegistry
 路由到 ``propose``）。**interrupt() 放在主图节点**（非嵌套 create_react_agent 内）——
 resume 才可靠（详见 milestone 设计：子图内 interrupt 的 resume 会重启而非续跑）。
 

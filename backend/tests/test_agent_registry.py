@@ -1,7 +1,7 @@
 """AgentRegistry / AgentSpec 单测（M33）—— 纯逻辑，不触 LangGraph/DB。"""
 from __future__ import annotations
 
-from app.agent.registry import AgentSpec, AgentRegistry
+from app.agent.registry import AgentRegistry, AgentSpec
 
 
 def _spec(agent_type="X", node_name="x", intent=None, route_guard=None):
@@ -84,8 +84,8 @@ def test_registry_data_registers_all_agents():
 
 def test_route_target_web_without_tools_falls_back():
     """WEB_SEARCH route_guard 在无工具时回落 retrieve（等价旧 router 特判）。"""
-    from app.agent.registry import get_registry
     import app.agent.tools.web_tools as wt
+    from app.agent.registry import get_registry
 
     wt._web_tools = []  # 模拟 MCP 未启用
     assert get_registry().route_target(agent_type="WEB_SEARCH", intent=None) == "retrieve"

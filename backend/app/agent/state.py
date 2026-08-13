@@ -63,4 +63,7 @@ class AgentState(TypedDict, total=False):
     # 成本计数器（operator.add 累积，跨层共享；每层读累积值判超限、返回本轮消耗 delta）
     collab_llm_calls: Annotated[int, operator.add]
     collab_tool_calls: Annotated[int, operator.add]
+    # M37 领域包：请求期 resolve 的激活包 name（None=无包）；节点经 registry.get(name) 取 pack 对象。
+    # 轻量字符串进 state（非整个 pack 对象）——避免 checkpoint 序列化大对象；pack 是启动期加载的进程级常量。
+    active_pack_name: str | None
 

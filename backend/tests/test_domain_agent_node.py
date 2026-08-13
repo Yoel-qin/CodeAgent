@@ -58,18 +58,25 @@ async def test_diagnose_node(monkeypatch):
     from app.agent.agents import diagnose as mod
     monkeypatch.setattr(mod, "_pack_from_state", lambda state: _pack())
     monkeypatch.setattr(mod, "get_chat_model", lambda: "FAKE_MODEL")
+    prompt_box = {}
 
     # Mock agent with astream method
     class MockAgent:
+        def __init__(self, prompt):
+            self.prompt = prompt
+            prompt_box["v"] = prompt
+
         async def astream(self, *args, **kwargs):
             return
             yield
 
-    monkeypatch.setattr(mod, "create_react_agent", lambda model, tools, *, prompt: MockAgent())
+    monkeypatch.setattr(mod, "create_react_agent",
+                        lambda model, tools, *, prompt: MockAgent(prompt))
     captured = {}
 
     async def fake_run(state, config, *, agent_name, tools, build_agent, degrade_label):
         captured.update(agent_name=agent_name, tools=tools, degrade_label=degrade_label)
+        build_agent()                       # 触发 create_react_agent，捕获 prompt
         return {}
 
     monkeypatch.setattr(mod, "run_scenario_agent", fake_run)
@@ -77,6 +84,8 @@ async def test_diagnose_node(monkeypatch):
     assert captured["agent_name"] == "DIAGNOSE"
     assert captured["degrade_label"] == "故障诊断"
     assert captured["tools"] == mod.DIAGNOSE_TOOLS
+    assert "msg_accumulation" in prompt_box["v"]   # pack 知识注入
+    assert "故障诊断" in prompt_box["v"]            # base 角色
 
 
 @pytest.mark.asyncio
@@ -84,18 +93,25 @@ async def test_tune_node(monkeypatch):
     from app.agent.agents import tune as mod
     monkeypatch.setattr(mod, "_pack_from_state", lambda state: _pack())
     monkeypatch.setattr(mod, "get_chat_model", lambda: "FAKE_MODEL")
+    prompt_box = {}
 
     # Mock agent with astream method
     class MockAgent:
+        def __init__(self, prompt):
+            self.prompt = prompt
+            prompt_box["v"] = prompt
+
         async def astream(self, *args, **kwargs):
             return
             yield
 
-    monkeypatch.setattr(mod, "create_react_agent", lambda model, tools, *, prompt: MockAgent())
+    monkeypatch.setattr(mod, "create_react_agent",
+                        lambda model, tools, *, prompt: MockAgent(prompt))
     captured = {}
 
     async def fake_run(state, config, *, agent_name, tools, build_agent, degrade_label):
         captured.update(agent_name=agent_name, tools=tools, degrade_label=degrade_label)
+        build_agent()                       # 触发 create_react_agent，捕获 prompt
         return {}
 
     monkeypatch.setattr(mod, "run_scenario_agent", fake_run)
@@ -103,3 +119,5 @@ async def test_tune_node(monkeypatch):
     assert captured["agent_name"] == "TUNE"
     assert captured["degrade_label"] == "性能调优"
     assert captured["tools"] == mod.TUNE_TOOLS
+    assert "maxReconsumeTimes" in prompt_box["v"]  # pack 知识注入
+    assert "性能调优" in prompt_box["v"]             # base 角色

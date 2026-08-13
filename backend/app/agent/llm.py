@@ -21,6 +21,11 @@ from app.domain_packs.models import DomainPack
 IntentLabel = Literal["code", "doc", "graph", "bug", "review", "test", "web",
                       "trace", "diagnose", "tune", "mixed", "chitchat"]
 
+# 无领域包时 LLM 结构化输出的合法标签（排除 trace/diagnose/tune 领域意图）。
+# IntentSchemaBase 用于 with_structured_output，确保 LLM 不可能产出领域标签。
+_IntentLabelBase = Literal["code", "doc", "graph", "bug", "review", "test", "web",
+                            "mixed", "chitchat"]
+
 _CHAT_MODEL: ChatOpenAI | None = None
 
 
@@ -47,13 +52,27 @@ def configured() -> bool:
 
 
 class IntentSchema(BaseModel):
-    """用户提问意图 + 是否需多 Agent 协作。"""
+    """用户提问意图 + 是否需多 Agent 协作（12 标签，含领域意图 trace/diagnose/tune）。
+
+    pack 激活时由 ``with_structured_output(IntentSchema)`` 使用。
+    """
 
     intent: IntentLabel = Field(description="用户提问的意图类别")
     needs_collab: bool = Field(
         default=False,
         description="是否需多 Agent 协作（复杂诊断：多阶段推理/排查根因/消息堆积/死锁/泄漏等）",
     )
+
+
+class _IntentSchemaBase(IntentSchema):
+    """无领域包时 LLM 结构化输出用的 schema（9 标签，intent 字段 narrow 到 _IntentLabelBase）。
+
+    pydantic v2 子类合法 narrowing——with_structured_output 发布的 JSON schema enum
+    只含 _IntentLabelBase 的 9 个标签，LLM 结构化输出不可能返回 trace/diagnose/tune。
+    实例 isinstance(IntentSchema)，query_analysis 消费不变。
+    """
+
+    intent: _IntentLabelBase = Field(description="用户提问的意图类别")
 
 
 _INTENT_SYS = (
@@ -154,7 +173,8 @@ async def classify_intent_and_collab(query: str,
         return IntentSchema(intent=intent, needs_collab=_rule_needs_collab(query, intent))
     try:
         sys_prompt = _INTENT_SYS_DOMAIN if pack_active else _INTENT_SYS
-        structured = get_chat_model().with_structured_output(IntentSchema)
+        schema = IntentSchema if pack_active else _IntentSchemaBase
+        structured = get_chat_model().with_structured_output(schema)
         return await structured.ainvoke([
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": query},

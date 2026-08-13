@@ -22,6 +22,7 @@ def test_domain_intent_no_pack_falls_to_retrieve(monkeypatch):
     monkeypatch.setattr("app.agent.nodes.router.settings", type("S", (), {"multi_agent_collab_enabled": False})())
     assert router_mod.route({"intent": "trace"}) == "retrieve"
     assert router_mod.route({"intent": "diagnose"}) == "retrieve"
+    assert router_mod.route({"intent": "tune"}) == "retrieve"
 
 
 def test_domain_intent_pack_without_agent_falls_to_retrieve(monkeypatch):

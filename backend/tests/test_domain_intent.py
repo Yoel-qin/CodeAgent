@@ -1,8 +1,14 @@
-"""M37 领域 intent：规则兜底 pack_active 门控 + classify 的 system prompt 变体选择。"""
+"""M37 领域 intent：规则兜底 pack_active 门控 + classify 的 system prompt 变体选择 + schema 分离。"""
 from __future__ import annotations
 
 from app.agent import llm
-from app.agent.llm import _INTENT_SYS, _INTENT_SYS_DOMAIN, _rule_intent, classify_intent_and_collab
+from app.agent.llm import (
+    _INTENT_SYS,
+    _INTENT_SYS_DOMAIN,
+    _IntentSchemaBase,
+    _rule_intent,
+    classify_intent_and_collab,
+)
 from app.domain_packs.models import DomainPack, Manifest
 
 
@@ -66,3 +72,49 @@ def test_classify_with_pack_uses_domain_sys(monkeypatch):
     asyncio.run(classify_intent_and_collab("any", pack=_pack()))
     assert captured["sys"] == _INTENT_SYS_DOMAIN
     assert "领域意图" in captured["sys"]
+
+
+def test_classify_no_pack_uses_base_schema(monkeypatch):
+    """pack=None 时 with_structured_output 收到 _IntentSchemaBase（9 标签），非 IntentSchema（12 标签）。"""
+    captured_schema = {}
+
+    class _FakeStructured:
+        def __init__(self, schema):
+            captured_schema["v"] = schema
+
+        async def ainvoke(self, messages):
+            return llm.IntentSchema(intent="code", needs_collab=False)
+
+    class _FakeModel:
+        def with_structured_output(self, schema):
+            return _FakeStructured(schema)
+
+    monkeypatch.setattr(llm, "configured", lambda: True)
+    monkeypatch.setattr(llm, "get_chat_model", lambda: _FakeModel())
+    import asyncio
+    asyncio.run(classify_intent_and_collab("any", pack=None))
+    # 无包必须用 _IntentSchemaBase（9 标签），排除领域标签
+    assert captured_schema["v"] is _IntentSchemaBase
+
+
+def test_classify_with_pack_uses_full_schema(monkeypatch):
+    """pack 激活时 with_structured_output 收到 IntentSchema（12 标签）。"""
+    captured_schema = {}
+
+    class _FakeStructured:
+        def __init__(self, schema):
+            captured_schema["v"] = schema
+
+        async def ainvoke(self, messages):
+            return llm.IntentSchema(intent="trace", needs_collab=False)
+
+    class _FakeModel:
+        def with_structured_output(self, schema):
+            return _FakeStructured(schema)
+
+    monkeypatch.setattr(llm, "configured", lambda: True)
+    monkeypatch.setattr(llm, "get_chat_model", lambda: _FakeModel())
+    import asyncio
+    asyncio.run(classify_intent_and_collab("any", pack=_pack()))
+    # 有包必须用完整 IntentSchema（12 标签）
+    assert captured_schema["v"] is llm.IntentSchema

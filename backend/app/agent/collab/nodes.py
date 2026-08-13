@@ -68,11 +68,23 @@ async def _bounded_tool_loop(*, system_prompt: str, user_prompt: str, tools: lis
         run_calls = calls if len(calls) <= afford else calls[:afford]
 
         async def _exec(tc):  # 同层并行
-            obs = await tool_by_name[tc["name"]].ainvoke(tc.get("args", {}), config=config)
+            tool = tool_by_name.get(tc["name"])  # I-3: 防工具名幻觉（None→跳过该工具）
+            if tool is None:
+                return tc, None
+            obs = await tool.ainvoke(tc.get("args", {}), config=config)
             return tc, obs
 
-        results = await asyncio.gather(*[_exec(c) for c in run_calls])
-        for tc, obs in results:
+        # I-3: return_exceptions=True —— 单工具异常记 step、不炸层（spec §7.2）
+        results = await asyncio.gather(*[_exec(c) for c in run_calls], return_exceptions=True)
+        for r in results:
+            if isinstance(r, Exception):
+                _emit_agent_step(layer_name, "(error)", {"error": type(r).__name__})
+                continue
+            tc, obs = r
+            if obs is None:
+                # 工具名幻觉（schema 外 name）→ 记 step、跳过该工具，不 KeyError
+                _emit_agent_step(layer_name, "(unknown_tool)", {"name": tc["name"]})
+                continue
             tool_used += 1
             args = tc.get("args", {})
             tool_steps.append({"agent": layer_name, "tool": tc["name"], "args": args})
@@ -132,22 +144,40 @@ async def _run_layer(state, config, *, layer: str, prompt: str, tools: list, sch
     """三层共性：_bounded_tool_loop（检索）+ 结构化提取。返回 state delta。
 
     预算：从 state 读已消耗数算余量；extract 的 1 次 LLM 调用也计入 collab_llm_calls。
+
+    I-1（per-layer try/except）：单层 LLM/工具异常 → catch、记一条 step、返回空 delta，
+    用已有 WorkingMemory 继续下层（不炸整个子图）。
+    I-2（refine 优雅收尾）：refine 层末尾无论 extract 成功与否都 emit 报告 token（防空响应）。
+    I-4（retrieval meta）：refine 层末尾 emit 一条 mode="collab" retrieval 指标事件。
     """
     if not configured():
+        # 无 LLM key：refine 层仍兜底汇总（用已累积 WM），避免空响应
+        if schema is memory.SuggestionList:
+            _emit_report_token(state, None)
+            _emit_collab_retrieval_meta(state, 0, 0, 0)
         return {}
     used_l = int(state.get("collab_llm_calls", 0))
     used_t = int(state.get("collab_tool_calls", 0))
-    loop_res = await _bounded_tool_loop(
-        system_prompt=prompt, user_prompt=_layer_input(state, layer), tools=tools,
-        max_rounds=settings.collab_max_rounds_per_layer,
-        llm_budget_left=budget.remaining(used_l, settings.collab_max_llm_calls),
-        tool_budget_left=budget.remaining(used_t, settings.collab_max_tool_calls),
-        layer_name=f"collab.{layer}", config=config)
+    try:
+        loop_res = await _bounded_tool_loop(
+            system_prompt=prompt, user_prompt=_layer_input(state, layer), tools=tools,
+            max_rounds=settings.collab_max_rounds_per_layer,
+            llm_budget_left=budget.remaining(used_l, settings.collab_max_llm_calls),
+            tool_budget_left=budget.remaining(used_t, settings.collab_max_tool_calls),
+            layer_name=f"collab.{layer}", config=config)
+    except Exception as e:  # noqa: BLE001  I-1: 单层异常 → 跳过、用已有 WM 继续
+        _emit_agent_step(f"collab.{layer}", "(layer_error)",
+                         {"error": type(e).__name__, "msg": str(e)})
+        if schema is memory.SuggestionList:
+            _emit_report_token(state, None)
+            _emit_collab_retrieval_meta(state, used_l, used_t, 0)
+        return {}
     out: dict = {
         "tool_steps": loop_res["tool_steps"],
         "collab_llm_calls": loop_res["collab_llm_calls"],
         "collab_tool_calls": loop_res["collab_tool_calls"],
     }
+    extracted = None
     if budget.remaining(used_l + loop_res["collab_llm_calls"], settings.collab_max_llm_calls) > 0:
         extracted = await _extract(schema, prompt, loop_res["observations"])
         if extracted is not None:
@@ -158,21 +188,72 @@ async def _run_layer(state, config, *, layer: str, prompt: str, tools: list, sch
                 out["collab_findings"] = [f.model_dump() for f in extracted.findings]
             elif schema is memory.SuggestionList:
                 out["collab_suggestions"] = [s.model_dump() for s in extracted.suggestions]
-                _emit_report_token(state, extracted)
+    # I-2/I-4: refine 层优雅收尾——无论 extract 是否成功，都 emit 报告 token + retrieval meta
+    if schema is memory.SuggestionList:
+        _emit_report_token(state, extracted)
+        total_l = used_l + int(out.get("collab_llm_calls", 0))
+        total_t = used_t + int(out.get("collab_tool_calls", 0))
+        _emit_collab_retrieval_meta(state, total_l, total_t,
+                                    len(out.get("collab_suggestions", [])))
     return out
 
 
 def _emit_report_token(state: dict, suggestions) -> None:
-    """refine 层：把诊断报告作为 token 事件流出（用户在 SSE 流看到完整报告）。"""
+    """refine 层：把诊断报告作为 token 事件流出（用户在 SSE 流看到完整报告）。
+
+    ``suggestions`` 为 ``SuggestionList`` 或 ``None``（extract 失败/预算耗尽）；
+    None 时用已累积 WM + 空 suggestions 兜底汇总（I-2：保证至少一条 token，避免空响应）。
+    """
     if (w := _safe_writer()) is None:
         return
+    sug_list = ([s.model_dump() for s in suggestions.suggestions]
+                if suggestions is not None else [])
     report = budget.build_collab_report(
         state.get("collab_hypotheses") or [],
         state.get("collab_findings") or [],
-        [s.model_dump() for s in suggestions.suggestions],
+        sug_list,
     )
     try:
         w({"event": "token", "data": {"content": report}})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _emit_collab_retrieval_meta(state: dict, llm_calls: int, tool_calls: int,
+                                suggestions_count: int) -> None:
+    """refine 层收尾 emit 一条协作专用 retrieval meta（spec §8 / I-4）。
+
+    ``mode="collab"`` + ``collab`` 指标段（hypotheses/findings/suggestions 计数 + LLM/工具
+    调用数 + budget_exceeded），随 ``stream_graph`` 落 ``retrieval_logs`` JSONB，
+    供 MonitorPage / 评测识别 collab 模式。
+    """
+    if (w := _safe_writer()) is None:
+        return
+    meta = {
+        "mode": "collab",
+        "tools": [t.name for t in (_DIAGNOSE_TOOLS + _VERIFY_TOOLS + _REFINE_TOOLS)],
+        "terms": state.get("keywords", []),
+        "recall": {"vector": 0, "lexical": 0, "graph": 0},
+        "merged": 0,
+        "coarse": None,
+        "fine": 0,
+        "rerank_on": False,
+        "rewritten": state.get("rewritten", False),
+        "embedding_strategy": settings.embedding_strategy,
+        "collab": {
+            "hypotheses": len(state.get("collab_hypotheses") or []),
+            "findings": len(state.get("collab_findings") or []),
+            "suggestions": suggestions_count,
+            "llm_calls": llm_calls,
+            "tool_calls": tool_calls,
+            "budget_exceeded": (
+                llm_calls >= settings.collab_max_llm_calls
+                or tool_calls >= settings.collab_max_tool_calls
+            ),
+        },
+    }
+    try:
+        w({"event": "retrieval", "data": meta})
     except Exception:  # noqa: BLE001
         pass
 

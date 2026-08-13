@@ -10,6 +10,9 @@
             ├─ code_review     （create_react_agent 自动 Agent，代码审查/度量工具）
             ├─ test_generation （create_react_agent 自动 Agent，测试生成/JUnit 工具）
             ├─ web_search      （create_react_agent 自动 Agent，联网 MCP 工具，库外问题）
+            ├─ collab（M35：多 Agent 协作子图 diagnose→verify→refine，opt-in 且 needs_collab
+            │        时切；collab_node wrapper 手动 astream 子图 + 桥接 custom 事件到父流 +
+            │        整体 try/except→_degrade 降级伞，请求永不中断；retrieval_meta.mode="collab"）
             ├─ propose→confirm→apply|reject（HITL 文档维护，opt-in 显式 DOC_MAINTAIN；
             │                              M13：propose 已是 ReAct Agent，interrupt() 仍在主图 confirm 节点）
             └─ retrieve → generate        （兜底：现有 3 路→rerank→生成）
@@ -20,8 +23,10 @@
 """
 from __future__ import annotations
 
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
+from app.agent.agents._base import _degrade
 from app.agent.agents.bug_diagnosis import bug_diagnosis
 from app.agent.agents.change_impact import change_impact
 from app.agent.agents.code_review import code_review
@@ -47,6 +52,39 @@ from app.agent.nodes.router import route
 from app.agent.state import AgentState
 
 _graph_app = None
+_collab_subgraph = None  # M35：协作子图惰性单例（首次 collab_node 调用时编译）
+
+
+def _safe_writer():
+    """主图 custom 流 writer；非 LangGraph 运行上下文（如单测）下返回 None。"""
+    try:
+        return get_stream_writer()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def collab_node(state, config) -> dict:
+    """M35 多 Agent 协作主图节点：包裹协作子图执行 + 事件桥接 + 整体降级伞。
+
+    - **事件桥接（I-5）**：手动 ``astream(subgraph, stream_mode="custom")`` 消费子图节点
+      经 ``get_stream_writer`` 推的 ``agent_step``/``citation``/``token``/``retrieval`` 事件，
+      转发到父图 custom 流（与 ``_base.run_scenario_agent`` 同款嵌套转发模式）。
+    - **降级伞（I-1）**：子图任一未兜住的异常 → 复用 ``_base._degrade``（单跑
+      ``pipeline.recall`` + 流式作答），请求永不中断（spec §7.2）。
+    - **return {}**：``collab_*`` WorkingMemory 字段仅在子图内部流转，主图后续 ``post_process``
+      透传，无需把子图 state delta 带回主图。
+    """
+    global _collab_subgraph
+    parent_writer = _safe_writer()
+    if _collab_subgraph is None:
+        _collab_subgraph = build_collab_subgraph()
+    try:
+        async for chunk in _collab_subgraph.astream(state, config=config, stream_mode="custom"):
+            if parent_writer and isinstance(chunk, dict):
+                parent_writer(chunk)
+    except Exception as e:  # noqa: BLE001  I-1: 子图整体降级伞
+        await _degrade(state, config, e, degrade_label="多 Agent 协作")
+    return {}
 
 
 def build_graph():
@@ -59,7 +97,7 @@ def build_graph():
     graph.add_node("code_review", code_review)
     graph.add_node("test_generation", test_generation)
     graph.add_node("web_search", web_search)
-    graph.add_node("collab", build_collab_subgraph())  # M35：多 Agent 协作子图（opt-in）
+    graph.add_node("collab", collab_node)  # M35：协作 wrapper（子图 + 事件桥接 + 降级伞；opt-in）
     graph.add_node("retrieve", retrieve)
     graph.add_node("generate", generate)
     graph.add_node("post_process", post_process)

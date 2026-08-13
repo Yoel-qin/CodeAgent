@@ -65,3 +65,32 @@ def test_pack_from_state_resolves_via_registry(monkeypatch):
     assert _pack_from_state({"active_pack_name": None}) is None
     assert _pack_from_state({}) is None                     # 缺键 → None
     assert _pack_from_state({"active_pack_name": "missing"}) is None
+
+
+def test_build_domain_prompt_real_rocketmq_pack_trace():
+    """M38：真实 rocketmq 包——trace prompt 含 base + 领域 hint（prompts/trace.md）+ trace_templates。"""
+    from pathlib import Path
+
+    from app.domain_packs.loader import load_pack
+    repo_root = Path(__file__).resolve().parents[1]
+    pack = load_pack(repo_root / "domain_packs" / "rocketmq")
+    out = build_domain_prompt("trace", pack)
+    assert _BASE_ROLE["trace"] in out                 # base 角色
+    assert "RocketMQ 链路追踪专属指引" in out          # prompts/trace.md 注入（loader 修复后 key="trace" 生效）
+    assert "normal_message_send" in out               # trace_templates 序列化
+    assert "DefaultMQProducer.send" in out
+
+
+def test_build_domain_prompt_real_rocketmq_pack_diagnose_and_tune():
+    """M38：真实 rocketmq 包——diagnose/tune prompt 含领域 hint + 序列化内容。"""
+    from pathlib import Path
+
+    from app.domain_packs.loader import load_pack
+    repo_root = Path(__file__).resolve().parents[1]
+    pack = load_pack(repo_root / "domain_packs" / "rocketmq")
+    d_out = build_domain_prompt("diagnose", pack)
+    assert "RocketMQ 故障诊断专属指引" in d_out
+    assert "message_accumulation" in d_out
+    t_out = build_domain_prompt("tune", pack)
+    assert "RocketMQ 性能调优专属指引" in t_out
+    assert "high_throughput" in t_out

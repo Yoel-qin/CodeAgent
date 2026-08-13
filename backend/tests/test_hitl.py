@@ -399,9 +399,9 @@ class _FakeGraph:
 
 
 def _patch_stream_graph_deps(monkeypatch, *, chunks, snap, assistant_status_seen: dict):
-    conv = SimpleNamespace(title="t", agent_type="DOC_MAINTAIN", conversation_id="conv_1")
+    conv = SimpleNamespace(title="t", agent_type="DOC_MAINTAIN", conversation_id="conv_1", target_repo=None)
 
-    async def fake_open(session, query, agent_type, cid):
+    async def fake_open(session, query, agent_type, cid, *, target_repo=None):
         return conv, "conv_1"
 
     async def fake_add_user(session, conv, query, agent_type):

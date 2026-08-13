@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,7 @@ from app.agent.citation_enforcer import enforce
 from app.agent.graph import get_graph
 from app.core.config import settings
 from app.db.models.chat import Conversation
+from app.domain_packs.registry import build_whitelist, get_registry
 from app.services.chat_service import (
     add_assistant_message,
     add_user_message,
@@ -28,7 +29,15 @@ from app.services.chat_service import (
 )
 
 
-def _enforce_into_stream(answer: str, citations: list[dict], retrieval_meta: dict
+def resolve_active_pack(conv) -> object | None:
+    """请求期解析激活的领域包：conv.target_repo → settings.domain_pack_default_repo
+    (or repo_path) → registry.active_for_repo。无包/无匹配 → None。"""
+    repo = conv.target_repo or settings.domain_pack_default_repo or settings.repo_path
+    return get_registry().active_for_repo(repo)
+
+
+def _enforce_into_stream(answer: str, citations: list[dict], retrieval_meta: dict,
+                         *, whitelist: Callable[[str], bool] | None = None,
                          ) -> tuple[str, list[dict]]:
     """opt-in 跑 CitationEnforcer；返回 (含 notice 的 answer, 额外 token 事件 data 列表)；
     把指标塞 ``retrieval_meta['enforcement']``。读 settings；关 = 空操作（仅写 enabled:false）。"""
@@ -38,6 +47,7 @@ def _enforce_into_stream(answer: str, citations: list[dict], retrieval_meta: dic
     try:
         res = enforce(
             answer, citations,
+            whitelist=whitelist,
             min_unverified=settings.citation_enforce_min_unverified,
             max_listed=settings.citation_enforce_max_listed,
         )
@@ -58,11 +68,11 @@ def _enforce_into_stream(answer: str, citations: list[dict], retrieval_meta: dic
 
 async def stream_graph(
     session: AsyncSession, query: str, *, top_k: int = 8, agent_type: str | None = None,
-    conversation_id: str | None = None,
+    conversation_id: str | None = None, target_repo: str | None = None,
 ) -> AsyncIterator[tuple[str, dict]]:
     """产出 SSE 事件并落库。事件序：conversation → retrieval → citation(s) → token(s) → done。"""
     # ---- 1. 会话 + user 消息（同 legacy）----
-    conv, conversation_id = await open_conversation(session, query, agent_type, conversation_id)
+    conv, conversation_id = await open_conversation(session, query, agent_type, conversation_id, target_repo=target_repo)
     yield ("conversation", {"conversation_id": conversation_id, "title": conv.title,
                             "agent_type": conv.agent_type})
     current_msg_id = await add_user_message(session, conv, query, agent_type)
@@ -117,8 +127,12 @@ async def stream_graph(
 
     # ---- 3. 检索日志 + assistant 消息 + done（同 legacy）----
     answer = "".join(answer_parts)
+    # M36：请求期解析激活领域包，构造 whitelist（无包→None，M34 既有行为不变）
+    active_pack = resolve_active_pack(conv)
+    collab_whitelist = build_whitelist(active_pack)
     # M34：opt-in 幻觉校验——跑完图后、持久化前；notice 作 token 事件流出 + 并入 answer。
-    answer, _enforce_tokens = _enforce_into_stream(answer, citations, retrieval_meta)
+    answer, _enforce_tokens = _enforce_into_stream(answer, citations, retrieval_meta,
+                                                   whitelist=collab_whitelist)
     for _td in _enforce_tokens:
         yield ("token", _td)
     rlog = await persist_retrieval_log(session, query, retrieval_meta, citations, agent_steps)

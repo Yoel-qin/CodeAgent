@@ -149,7 +149,7 @@ def _citation(r: dict) -> dict:
 
 async def open_conversation(
     session: AsyncSession, query: str, agent_type: str | None,
-    conversation_id: str | None,
+    conversation_id: str | None, target_repo: str | None = None,
 ) -> tuple[Conversation, str]:
     """解析或新建会话（首条消息自动建会话，标题取首问）。返回 (conv, conversation_id)。"""
     conv: Conversation | None = None
@@ -159,7 +159,7 @@ async def open_conversation(
         conversation_id = prefixed_id("conv")
         conv = Conversation(
             conversation_id=conversation_id, title=_derive_title(query),
-            agent_type=agent_type, message_count=0,
+            agent_type=agent_type, message_count=0, target_repo=target_repo,
         )
         session.add(conv)
         await session.flush()

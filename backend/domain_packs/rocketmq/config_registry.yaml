@@ -1,7 +1,50 @@
-# 配置项白名单（CitationEnforcer 幻觉校验用——回答里的配置项须在此命中）。骨架占位。
+# 配置项白名单（CitationEnforcer 幻觉校验用——回答里的配置项须在此命中）。
+# 全部为 RocketMQ 4.x 真实配置项，待领域专家确认 allowed_values。
+# client（消费者）
 - key: maxReconsumeTimes
-  description: 最大重试消费次数
-  allowed_values: ["0", "16"]
+  description: 最大重试消费次数（默认 16）
+  allowed_values: []
 - key: consumeThreadMin
-  description: 最小消费线程数
+  description: 消费者最小线程数（默认 20）
+  allowed_values: []
+- key: consumeThreadMax
+  description: 消费者最大线程数（默认 64）
+  allowed_values: []
+- key: pullBatchSize
+  description: 消费者单次拉取消息数（默认 32）
+  allowed_values: []
+- key: consumeTimeout
+  description: 消费超时分钟数（默认 15）
+  allowed_values: []
+- key: consumeMessageBatchMaxSize
+  description: 批量消费最大条数（默认 1）
+  allowed_values: []
+- key: pullInterval
+  description: 拉取间隔毫秒（默认 0）
+  allowed_values: []
+# producer
+- key: sendMsgTimeout
+  description: 发送超时毫秒（默认 3000）
+  allowed_values: []
+- key: retryTimesWhenSendFailed
+  description: 同步发送失败重试次数（默认 2）
+  allowed_values: []
+- key: retryTimesWhenSendAsyncFailed
+  description: 异步发送失败重试次数（默认 2）
+  allowed_values: []
+- key: maxMessageSize
+  description: 单条消息最大字节（默认 4194304 / 4MB）
+  allowed_values: []
+# broker
+- key: messageDelayLevel
+  description: 延迟级别配置（broker 端 ScheduleMessageService，默认 "1s 5s 10s 30s 1m 2m 3m 4m 5m 6m 7m 8m 9m 10m 20m 30m 1h 2h"）
+  allowed_values: []
+- key: brokerRole
+  description: broker 角色（ASYNC_MASTER / SYNC_MASTER / SLAVE）
+  allowed_values: ["ASYNC_MASTER", "SYNC_MASTER", "SLAVE"]
+- key: flushDiskType
+  description: 刷盘方式（SYNC_FLUSH / ASYNC_FLUSH）
+  allowed_values: ["SYNC_FLUSH", "ASYNC_FLUSH"]
+- key: autoMessageSubscriptionGroup
+  description: 是否自动创建订阅组（默认 true）
   allowed_values: []

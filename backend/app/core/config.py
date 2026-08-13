@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -127,6 +127,12 @@ class Settings(BaseSettings):
     mcp_enabled: bool = False
     mcp_servers: str = ""
 
+    # M36 领域知识包（DomainPackRegistry）：domain_packs_dir 为扫描目录（相对 backend/ 运行目录）；
+    # domain_pack_default_repo 为会话 target_repo 未绑定时的回落仓库标识。
+    # 无 opt-in 开关——机制默认就绪，空目录即 no-op（无包激活=零行为变更）。
+    domain_packs_dir: str = "domain_packs"
+    domain_pack_default_repo: str = ""   # 空 → resolve 时回落 settings.repo_path
+
     # ---- 入库 / 向量化补偿 ----
     # embedding_client / milvus_client 均无批处理（整列表一次请求），在 pipeline.indexing 层切片。
     embed_batch_size: int = 32            # embedding + Milvus upsert 批大小
@@ -186,6 +192,13 @@ class Settings(BaseSettings):
     # （async LLM + 同步 MinIO），故 cap 低、N 放大会阻塞事件循环。
     sweep_rewrite_top_n_default: int = 10          # 默认处理关系数
     sweep_rewrite_top_n_max: int = 50              # 硬上限
+
+    @model_validator(mode="after")
+    def _resolve_domain_pack_default_repo(self) -> Settings:
+        """空 domain_pack_default_repo 回落 repo_path（spec §10：默认同 repo_path）。"""
+        if not self.domain_pack_default_repo:
+            self.domain_pack_default_repo = self.repo_path
+        return self
 
     @property
     def database_url(self) -> str:

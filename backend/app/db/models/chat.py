@@ -29,6 +29,7 @@ class Conversation(Base):
     conversation_id: Mapped[str] = mapped_column(String(40), primary_key=True)
     title: Mapped[str] = mapped_column(String(256), nullable=False)
     agent_type: Mapped[str | None] = mapped_column(String(64))
+    target_repo: Mapped[str | None] = mapped_column(String(256))   # M36：会话绑定的目标仓库（领域包激活用）
     message_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[DateTime] = mapped_column(

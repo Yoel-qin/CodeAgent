@@ -145,6 +145,10 @@ async def lifespan(app: FastAPI):
     # LangGraph postgres 检查点（仅 rag_engine=langgraph & langgraph_checkpoint=postgres 时建池+建表）；
     # memory/legacy 模式为 no-op。务必在 yield 前 await，使首个图请求能用上已初始化的 saver。
     await init_checkpointer()
+    # 领域知识包（M36）：扫描 domain_packs/ + load_pack + register。同步纯文件 I/O；
+    # 失败包跳过+log，不抛。yield 前调用，使首个请求能用上已加载的 registry。空目录=no-op。
+    from app.domain_packs.registry import init_domain_pack_registry
+    init_domain_pack_registry()
     # 联网 MCP 工具（web 意图）：仅 mcp_enabled 时建连 + load 工具。init_* 对未启用/失败均 no-op；
     # 必在 yield 前 await，使首个 web 请求能用上已缓存的 _web_tools。
     if settings.mcp_enabled:

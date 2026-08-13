@@ -67,7 +67,7 @@ def test_load_pack_prompts_loaded(tmp_path):
 
 def test_load_rocketmq_skeleton_pack():
     """加载仓库内真实的 RocketMQ 骨架包（整链路 fixture）。"""
-    repo_root = Path(__file__).resolve().parents[2]   # backend/
+    repo_root = Path(__file__).resolve().parents[1]   # backend/
     pack_dir = repo_root / "domain_packs" / "rocketmq"
     pack = load_pack(pack_dir)
     assert pack.manifest.name == "rocketmq"

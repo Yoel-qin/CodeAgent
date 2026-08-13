@@ -40,7 +40,7 @@ def load_pack(pack_dir: Path) -> DomainPack:
         prompts_dir = pack_dir / "prompts"
         if prompts_dir.is_dir():
             data["prompts"] = {
-                p.name: p.read_text(encoding="utf-8")
+                p.stem: p.read_text(encoding="utf-8")   # p.stem 去 .md：key=agent_name（trace/diagnose/tune），匹配 build_domain_prompt
                 for p in prompts_dir.glob("*.md")
             }
         return DomainPack.model_validate(data)

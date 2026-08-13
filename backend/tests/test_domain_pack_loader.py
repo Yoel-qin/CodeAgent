@@ -62,7 +62,7 @@ def test_load_pack_prompts_loaded(tmp_path):
         "prompts/trace.md": "你是链路追踪 Agent。",
     })
     pack = load_pack(tmp_path)
-    assert pack.prompts == {"trace.md": "你是链路追踪 Agent。"}
+    assert pack.prompts == {"trace": "你是链路追踪 Agent。"}
 
 
 def test_load_rocketmq_skeleton_pack():
@@ -76,3 +76,27 @@ def test_load_rocketmq_skeleton_pack():
     # 骨架 yaml 含占位示例条目（非空，验证 schema）
     assert isinstance(pack.trace_templates, list)
     assert isinstance(pack.config_registry, list)
+
+
+def test_load_rocketmq_full_content():
+    """M38：rocketmq 包填充完整内容后加载——4 trace / 3 diagnosis。"""
+    repo_root = Path(__file__).resolve().parents[1]   # backend/
+    pack = load_pack(repo_root / "domain_packs" / "rocketmq")
+    assert pack.manifest.version == "0.2.0"
+    # trace 4 链路
+    trace_names = [t.name for t in pack.trace_templates]
+    assert "normal_message_send" in trace_names
+    assert "transaction_message" in trace_names
+    assert "delay_message" in trace_names
+    assert "orderly_message" in trace_names
+    assert len(pack.trace_templates) == 4
+    # normal 链路含关键方法
+    normal = next(t for t in pack.trace_templates if t.name == "normal_message_send")
+    assert "DefaultMQProducer.send" in normal.method_sequence
+    assert "CommitLog.putMessage" in normal.method_sequence
+    # diagnosis 3 树
+    diag_names = [d.name for d in pack.diagnosis_trees]
+    assert "message_accumulation" in diag_names
+    assert "message_loss" in diag_names
+    assert "message_rebalance" in diag_names
+    assert len(pack.diagnosis_trees) == 3

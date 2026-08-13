@@ -1,6 +1,6 @@
-# RocketMQ 领域知识包元信息（M36 骨架；真实内容 M38 填）。
+# RocketMQ 领域知识包元信息。
 name: rocketmq
 target_repo: apache/rocketmq        # 目标仓库标识（会话 target_repo 匹配此值激活）
-version: "0.1.0-skeleton"
-active_agents: [trace, diagnose, tune]   # M37 领域 Agent（trace_route/diagnose/tune）
-description: Apache RocketMQ 消息中间件领域知识包——链路追踪/故障诊断/性能调优（骨架，内容待 M38 充实）
+version: "0.2.0"                    # 0.1.0-skeleton → 0.2.0（内容填充）
+active_agents: [trace, diagnose, tune]   # M37 领域 Agent
+description: Apache RocketMQ 消息中间件领域知识包——链路追踪/故障诊断/性能调优（4 链路 + 3 诊断树 + 5 调优规则 + 15 配置项；基于 4.x 源码，待领域专家校验）

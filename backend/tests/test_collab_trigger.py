@@ -59,7 +59,7 @@ async def test_query_analysis_needs_collab_off_when_disabled(monkeypatch):
     async def fake_rw(q):
         return {"semantic_query": q, "extra_keywords": []}
 
-    async def fake_classify(q):
+    async def fake_classify(q, *, pack=None):
         return llm_mod.IntentSchema(intent="bug", needs_collab=True)
 
     monkeypatch.setattr("app.agent.nodes.query_analysis.rewrite_query", fake_rw)
@@ -74,7 +74,7 @@ async def test_query_analysis_needs_collab_on_when_enabled(monkeypatch):
     async def fake_rw(q):
         return {"semantic_query": q, "extra_keywords": []}
 
-    async def fake_classify(q):
+    async def fake_classify(q, *, pack=None):
         return llm_mod.IntentSchema(intent="bug", needs_collab=True)
 
     monkeypatch.setattr("app.agent.nodes.query_analysis.rewrite_query", fake_rw)

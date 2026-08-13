@@ -29,6 +29,7 @@ from app.agent.agents.code_understand import code_understand
 from app.agent.agents.doc_answer import doc_answer
 from app.agent.agents.test_generation import test_generation
 from app.agent.agents.web import web_search
+from app.agent.collab.subgraph import build_collab_subgraph
 from app.agent.memory.checkpointer import get_checkpointer
 from app.agent.nodes.doc_maintain import (
     after_confirm,
@@ -58,6 +59,7 @@ def build_graph():
     graph.add_node("code_review", code_review)
     graph.add_node("test_generation", test_generation)
     graph.add_node("web_search", web_search)
+    graph.add_node("collab", build_collab_subgraph())  # M35：多 Agent 协作子图（opt-in）
     graph.add_node("retrieve", retrieve)
     graph.add_node("generate", generate)
     graph.add_node("post_process", post_process)
@@ -72,6 +74,7 @@ def build_graph():
          "change_impact": "change_impact", "bug_diagnosis": "bug_diagnosis",
          "code_review": "code_review", "test_generation": "test_generation",
          "web_search": "web_search",
+         "collab": "collab",
          "retrieve": "retrieve", "propose": "propose"},
     )
     graph.add_conditional_edges(
@@ -89,6 +92,7 @@ def build_graph():
     graph.add_edge("code_review", "post_process")
     graph.add_edge("test_generation", "post_process")
     graph.add_edge("web_search", "post_process")
+    graph.add_edge("collab", "post_process")
     graph.add_edge("retrieve", "generate")
     graph.add_edge("generate", "post_process")
     graph.add_edge("post_process", END)

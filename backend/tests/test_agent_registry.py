@@ -82,6 +82,19 @@ def test_registry_data_registers_all_agents():
     assert r.get("DOC_MAINTAIN").intent is None           # 不接 intent
 
 
+def test_domain_agents_registered():
+    """M37：trace_route/diagnose/tune 三个领域 agent 已登记，intent 对应。"""
+    from app.agent.registry import get_registry
+    reg = get_registry()
+    by_intent = {s.intent: s for s in reg.specs() if s.intent}
+    assert by_intent["trace"].agent_type == "TRACE_ROUTE"
+    assert by_intent["trace"].node_name == "trace_route"
+    assert by_intent["diagnose"].agent_type == "DIAGNOSE"
+    assert by_intent["diagnose"].node_name == "diagnose"
+    assert by_intent["tune"].agent_type == "TUNE"
+    assert by_intent["tune"].node_name == "tune"
+
+
 def test_route_target_web_without_tools_falls_back(monkeypatch):
     """WEB_SEARCH route_guard 在无工具时回落 retrieve（等价旧 router 特判）。"""
     import app.agent.tools.web_tools as wt

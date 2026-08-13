@@ -11,8 +11,11 @@ from app.agent.agents.bug_diagnosis import bug_diagnosis
 from app.agent.agents.change_impact import change_impact
 from app.agent.agents.code_review import code_review
 from app.agent.agents.code_understand import code_understand
+from app.agent.agents.diagnose import diagnose
 from app.agent.agents.doc_answer import doc_answer
 from app.agent.agents.test_generation import test_generation
+from app.agent.agents.trace_route import trace_route
+from app.agent.agents.tune import tune
 from app.agent.agents.web import web_search
 from app.agent.nodes.doc_maintain import propose
 from app.agent.registry import AgentSpec, register
@@ -32,4 +35,10 @@ register(AgentSpec(agent_type="TEST_GENERATION", node_name="test_generation",
                   node_fn=test_generation, intent="test"))
 register(AgentSpec(agent_type="WEB_SEARCH", node_name="web_search",
                   node_fn=web_search, intent="web", route_guard=get_web_tools))
+register(AgentSpec(agent_type="TRACE_ROUTE", node_name="trace_route",
+                  node_fn=trace_route, intent="trace"))
+register(AgentSpec(agent_type="DIAGNOSE", node_name="diagnose",
+                  node_fn=diagnose, intent="diagnose"))
+register(AgentSpec(agent_type="TUNE", node_name="tune",
+                  node_fn=tune, intent="tune"))
 register(AgentSpec(agent_type="DOC_MAINTAIN", node_name="propose", node_fn=propose))

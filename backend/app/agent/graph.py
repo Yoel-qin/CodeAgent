@@ -31,8 +31,11 @@ from app.agent.agents.bug_diagnosis import bug_diagnosis
 from app.agent.agents.change_impact import change_impact
 from app.agent.agents.code_review import code_review
 from app.agent.agents.code_understand import code_understand
+from app.agent.agents.diagnose import diagnose
 from app.agent.agents.doc_answer import doc_answer
 from app.agent.agents.test_generation import test_generation
+from app.agent.agents.trace_route import trace_route
+from app.agent.agents.tune import tune
 from app.agent.agents.web import web_search
 from app.agent.collab.subgraph import build_collab_subgraph
 from app.agent.memory.checkpointer import get_checkpointer
@@ -97,6 +100,9 @@ def build_graph():
     graph.add_node("code_review", code_review)
     graph.add_node("test_generation", test_generation)
     graph.add_node("web_search", web_search)
+    graph.add_node("trace_route", trace_route)   # M37：领域 Agent（包驱动，opt-in）
+    graph.add_node("diagnose", diagnose)
+    graph.add_node("tune", tune)
     graph.add_node("collab", collab_node)  # M35：协作 wrapper（子图 + 事件桥接 + 降级伞；opt-in）
     graph.add_node("retrieve", retrieve)
     graph.add_node("generate", generate)
@@ -112,6 +118,7 @@ def build_graph():
          "change_impact": "change_impact", "bug_diagnosis": "bug_diagnosis",
          "code_review": "code_review", "test_generation": "test_generation",
          "web_search": "web_search",
+         "trace_route": "trace_route", "diagnose": "diagnose", "tune": "tune",
          "collab": "collab",
          "retrieve": "retrieve", "propose": "propose"},
     )
@@ -130,6 +137,9 @@ def build_graph():
     graph.add_edge("code_review", "post_process")
     graph.add_edge("test_generation", "post_process")
     graph.add_edge("web_search", "post_process")
+    graph.add_edge("trace_route", "post_process")
+    graph.add_edge("diagnose", "post_process")
+    graph.add_edge("tune", "post_process")
     graph.add_edge("collab", "post_process")
     graph.add_edge("retrieve", "generate")
     graph.add_edge("generate", "post_process")

@@ -13,10 +13,13 @@ from pydantic import BaseModel, Field
 
 from app.clients.llm_client import llm as legacy_llm
 from app.core.config import settings
+from app.domain_packs.models import DomainPack
 
 # 意图标签：router 据此条件路由（code → 代码理解；doc → 文档问答；graph → 变更影响；
-# bug → 缺陷诊断；review → 代码审查；test → 测试生成；mixed/chitchat → retrieve 兜底）
-IntentLabel = Literal["code", "doc", "graph", "bug", "review", "test", "web", "mixed", "chitchat"]
+# bug → 缺陷诊断；review → 代码审查；test → 测试生成；mixed/chitchat → retrieve 兜底；
+# M37 领域意图：trace=调用链路梳理，diagnose=领域诊断决策树，tune=性能调优规则）
+IntentLabel = Literal["code", "doc", "graph", "bug", "review", "test", "web",
+                      "trace", "diagnose", "tune", "mixed", "chitchat"]
 
 _CHAT_MODEL: ChatOpenAI | None = None
 
@@ -66,6 +69,23 @@ _INTENT_SYS = (
     "消息堆积/死锁/泄漏/多代码段关联分析）时为 true；简单单点查询为 false。"
 )
 
+_INTENT_SYS_DOMAIN = _INTENT_SYS + (
+    "\n领域意图（仅当激活领域包时使用）：\n"
+    "trace=梳理某场景的完整方法调用链路/消息流程（如「发送链路」「消费流程」「完整调用路径」）；"
+    "diagnose=按领域诊断决策树排查中间件故障症状（如「消息堆积」「消息丢失」「rebalance」「消费不下」）；"
+    "tune=按调优规则给配置/参数性能建议（如「提高吞吐」「降低延迟」「调优」「高并发参数」）。"
+    "这些领域意图优先于通用的 code/bug/review——当查询明显是上述领域场景时选领域标签。"
+)
+
+# M37 领域意图强信号（仅 pack_active=True 时启用；刻意选消息中间件场景短语，
+# 区别于通用 _BUG_HINTS 报错词与 _REVIEW_HINTS 审查词）。
+_TRACE_HINTS = ("链路", "完整调用", "消息流程", "发送流程", "消费流程", "调用流程",
+                "trace 链路", "完整路径")
+_DIAGNOSE_HINTS = ("消息堆积", "堆积", "消息丢失", "丢消息", "消费不下", "不消费",
+                   "rebalance", "重平衡", "消息积压")
+_TUNE_HINTS = ("调优", "提高吞吐", "降低延迟", "高并发参数", "性能优化", "tune",
+               "吞吐量", "优化性能")
+
 _CODE_HINTS = ("方法", "函数", "类", "接口", "调用", "实现", "逻辑", "这段代码", "源码",
                "method", "function", "class", "调用链", "做了什么", "为什么这么")
 _DOC_HINTS = ("文档", "配置", "怎么用", "怎么配置", "使用说明", "参数", "等级", "重试", "手册")
@@ -85,11 +105,18 @@ _WEB_HINTS = ("联网", "网上", "在线搜索", "search online", "search the w
 _COLLAB_HINTS = ("排查", "诊断", "堆积", "死锁", "泄漏", "性能劣化", "为什么", "导致", "根因")
 
 
-def _rule_intent(query: str) -> IntentLabel:
-    """关键词规则兜底（无 key / 分类失败时）。优先级：web > graph > bug > review > test > doc > code。"""
+def _rule_intent(query: str, *, pack_active: bool = False) -> IntentLabel:
+    """关键词规则兜底（无 key / 分类失败时）。优先级：web > [领域，仅 pack_active] > graph > bug > review > test > doc > code。"""
     q = query.lower()
     if any(h in q for h in _WEB_HINTS):
         return "web"
+    if pack_active:
+        if any(h in q for h in _DIAGNOSE_HINTS):   # 领域诊断优先于通用 bug
+            return "diagnose"
+        if any(h in q for h in _TRACE_HINTS):
+            return "trace"
+        if any(h in q for h in _TUNE_HINTS):
+            return "tune"
     if any(h in q for h in _GRAPH_HINTS) and any(h in q for h in _CODE_HINTS):
         return "graph"
     if any(h in q for h in _BUG_HINTS):
@@ -113,20 +140,27 @@ def _rule_needs_collab(query: str, intent: IntentLabel) -> bool:
     return any(h in q for h in _COLLAB_HINTS)
 
 
-async def classify_intent_and_collab(query: str) -> IntentSchema:
+async def classify_intent_and_collab(query: str,
+                                     pack: DomainPack | None = None) -> IntentSchema:
     """意图分类 + 协作判定：一次结构化 LLM 调用产 IntentSchema（intent + needs_collab）；
-    失败/未配置 → 规则兜底（intent=_rule_intent，needs_collab=_rule_needs_collab）。"""
+    失败/未配置 → 规则兜底。
+
+    pack 非空（激活领域包）→ 用领域版 system prompt（含 trace/diagnose/tune 判定）+ 规则兜底带 pack_active；
+    pack=None → 现状（9 标签，不产领域 intent，逐字同 M36）。
+    """
+    pack_active = pack is not None
     if not configured():
-        intent = _rule_intent(query)
+        intent = _rule_intent(query, pack_active=pack_active)
         return IntentSchema(intent=intent, needs_collab=_rule_needs_collab(query, intent))
     try:
+        sys_prompt = _INTENT_SYS_DOMAIN if pack_active else _INTENT_SYS
         structured = get_chat_model().with_structured_output(IntentSchema)
         return await structured.ainvoke([
-            {"role": "system", "content": _INTENT_SYS},
+            {"role": "system", "content": sys_prompt},
             {"role": "user", "content": query},
         ])
     except Exception:  # noqa: BLE001
-        intent = _rule_intent(query)
+        intent = _rule_intent(query, pack_active=pack_active)
         return IntentSchema(intent=intent, needs_collab=_rule_needs_collab(query, intent))
 
 

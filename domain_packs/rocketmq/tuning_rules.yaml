@@ -1,0 +1,6 @@
+# 调优规则：按场景给参数建议（M37 tune Agent 用）。骨架占位。
+- scenario: message_accumulation
+  parameter: consumeThreadMin
+  suggestion: 提高最小消费线程数
+  tradeoff: 增大 CPU 开销
+  code_ref: 占位（M38 补 chunk_id）

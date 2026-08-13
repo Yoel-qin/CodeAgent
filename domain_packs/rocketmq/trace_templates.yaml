@@ -1,0 +1,5 @@
+# 链路模板：消息发送的完整方法序列（M37 trace Agent 用）。骨架占位——真实序列 M38 据源码补。
+- name: normal_message_send
+  scenario: normal
+  method_sequence: [DefaultMQProducer.send, DefaultMQPullConsumer.pullBlockIfNotFound]
+  notes: 占位示例（M38 据 RocketMQ 源码补完整链路）

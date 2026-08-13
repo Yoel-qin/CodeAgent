@@ -63,3 +63,16 @@ def test_load_pack_prompts_loaded(tmp_path):
     })
     pack = load_pack(tmp_path)
     assert pack.prompts == {"trace.md": "你是链路追踪 Agent。"}
+
+
+def test_load_rocketmq_skeleton_pack():
+    """加载仓库内真实的 RocketMQ 骨架包（整链路 fixture）。"""
+    repo_root = Path(__file__).resolve().parents[2]   # backend/
+    pack_dir = repo_root / "domain_packs" / "rocketmq"
+    pack = load_pack(pack_dir)
+    assert pack.manifest.name == "rocketmq"
+    assert pack.manifest.target_repo == "apache/rocketmq"
+    assert "trace" in pack.manifest.active_agents
+    # 骨架 yaml 含占位示例条目（非空，验证 schema）
+    assert isinstance(pack.trace_templates, list)
+    assert isinstance(pack.config_registry, list)

@@ -1,0 +1,5 @@
+# 诊断决策树：典型故障的假设→验证→调优（M37 diagnose / M35 collab refine 用）。骨架占位。
+- name: message_accumulation
+  symptoms: [消费滞后, 堆积]
+  hypothesis_checks: [查消费者并发数, 查消费耗时, 查生产速率]
+  tuning_hints: [扩容消费者, 调 consume_thread_min]

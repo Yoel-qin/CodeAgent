@@ -1,0 +1,7 @@
+# 配置项白名单（CitationEnforcer 幻觉校验用——回答里的配置项须在此命中）。骨架占位。
+- key: maxReconsumeTimes
+  description: 最大重试消费次数
+  allowed_values: ["0", "16"]
+- key: consumeThreadMin
+  description: 最小消费线程数
+  allowed_values: []

@@ -114,6 +114,12 @@ class Settings(BaseSettings):
     citation_enforce_min_unverified: int = 1
     citation_enforce_max_listed: int = 10
 
+    # M35 多 Agent 协作（LangGraph 三层诊断 DAG + WorkingMemory，opt-in；默认 off = 零行为变更）
+    multi_agent_collab_enabled: bool = False
+    collab_max_llm_calls: int = 9        # 单次协作总 LLM ainvoke 上限（≈3 层 × 3 轮）
+    collab_max_tool_calls: int = 12      # 单次协作总工具调用上限
+    collab_max_rounds_per_layer: int = 3 # 每层 tool-cycling 轮数硬界
+
     # ---- 联网 MCP 工具（让场景 Agent 调用远程/在线 MCP server）----
     # 仅 rag_engine=langgraph 生效（新增 WEB_SEARCH 场景 Agent）。mcp_servers 为 JSON 数组字符串：
     # [{"name":"...","url":"http://host:port/sse","transport":"sse|streamable_http"}]。

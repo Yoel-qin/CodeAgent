@@ -54,3 +54,13 @@ class AgentState(TypedDict, total=False):
     proposal: str | None
     decision: dict | None
     stale_anchors: list[dict] | None  # M13：ReAct 可提议多锚点（M10 单 stale_anchor 升级为列表）
+    # M35 多 Agent 协作（query_analysis 产、router 读；无 reducer，单分支流转）
+    needs_collab: bool
+    # WorkingMemory（collab 子图读写；operator.add 累积，跨层传递）
+    collab_hypotheses: Annotated[list[dict], operator.add]   # [{hypothesis, confidence, rationale}]
+    collab_findings: Annotated[list[dict], operator.add]     # [{chunk_id, finding, hypothesis_id, verdict}]
+    collab_suggestions: Annotated[list[dict], operator.add]  # [{suggestion, doc_chunk_id, rationale}]
+    # 成本计数器（operator.add 累积，跨层共享；每层读累积值判超限、返回本轮消耗 delta）
+    collab_llm_calls: Annotated[int, operator.add]
+    collab_tool_calls: Annotated[int, operator.add]
+

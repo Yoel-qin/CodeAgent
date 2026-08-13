@@ -84,8 +84,11 @@ async def stream_graph(
         session, conversation_id, exclude_message_id=current_msg_id,
         limit=settings.conversation_history_turns,
     )
+    # M37：请求期 resolve 激活包，name 注入 state（图节点经 registry.get(name) 取 pack 对象）。
+    active_pack = resolve_active_pack(conv)
     state = {"query": query, "conversation_id": conversation_id,
-             "agent_type": agent_type, "history": history}
+             "agent_type": agent_type, "history": history,
+             "active_pack_name": active_pack.manifest.name if active_pack else None}
     # 运行时上下文经 configurable 传入（不进被 checkpoint 的 state）。
     config = {"configurable": {
         "thread_id": conversation_id,
@@ -128,8 +131,7 @@ async def stream_graph(
 
     # ---- 3. 检索日志 + assistant 消息 + done（同 legacy）----
     answer = "".join(answer_parts)
-    # M36：请求期解析激活领域包，构造 whitelist（无包→None，M34 既有行为不变）
-    active_pack = resolve_active_pack(conv)
+    # M36/M37：active_pack 已在 state 构建前 resolve（M37 注入 active_pack_name 复用之）。
     collab_whitelist = build_whitelist(active_pack)
     # M34：opt-in 幻觉校验——跑完图后、持久化前；notice 作 token 事件流出 + 并入 answer。
     answer, _enforce_tokens = _enforce_into_stream(answer, citations, retrieval_meta,

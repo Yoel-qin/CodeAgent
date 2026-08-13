@@ -18,6 +18,7 @@ from app.agent.citation_enforcer import enforce
 from app.agent.graph import get_graph
 from app.core.config import settings
 from app.db.models.chat import Conversation
+from app.domain_packs.models import DomainPack
 from app.domain_packs.registry import build_whitelist, get_registry
 from app.services.chat_service import (
     add_assistant_message,
@@ -29,7 +30,7 @@ from app.services.chat_service import (
 )
 
 
-def resolve_active_pack(conv) -> object | None:
+def resolve_active_pack(conv: Conversation) -> DomainPack | None:
     """请求期解析激活的领域包：conv.target_repo → settings.domain_pack_default_repo
     (or repo_path) → registry.active_for_repo。无包/无匹配 → None。"""
     repo = conv.target_repo or settings.domain_pack_default_repo or settings.repo_path

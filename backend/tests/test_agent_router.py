@@ -157,14 +157,16 @@ async def test_classify_intent_llm_failure_falls_back(monkeypatch):
 
 
 async def test_query_analysis_sets_intent(monkeypatch):
+    from app.agent.llm import IntentSchema
+
     async def fake_rw(q):
         return {"semantic_query": q, "extra_keywords": ["Foo"]}
 
     async def fake_classify(q):
-        return "code"
+        return IntentSchema(intent="code", needs_collab=False)
 
     monkeypatch.setattr("app.agent.nodes.query_analysis.rewrite_query", fake_rw)
-    monkeypatch.setattr("app.agent.nodes.query_analysis.classify_intent", fake_classify)
+    monkeypatch.setattr("app.agent.nodes.query_analysis.classify_intent_and_collab", fake_classify)
 
     out = await query_analysis({"query": "A.m1 做了什么"})
     assert out["intent"] == "code"

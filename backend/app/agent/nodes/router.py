@@ -6,6 +6,8 @@
 复刻了旧 ``or`` 短路与 WEB_SEARCH 特判（现以 ``AgentSpec.route_guard`` 表达）。未配置 LLM
 时不进任何 Agent（走 retrieve→generate，其自身降级）。
 
+M35 新增 collab 守卫：multi_agent_collab_enabled 且 needs_collab → collab（多 Agent 协作子图）。
+
 加一个场景 Agent = 在 ``registry_data.py`` 登记一行 + ``graph.py`` 加节点/边（本文件不再需要改）。
 """
 from __future__ import annotations
@@ -13,15 +15,19 @@ from __future__ import annotations
 from app.agent.llm import configured
 from app.agent.registry import get_registry
 from app.agent.state import AgentState
+from app.core.config import settings
 
 
 def route(state: AgentState) -> str:
-    """返回下一节点名：某场景 Agent 节点 | retrieve（兜底）。
+    """返回下一节点名：collab | 场景 Agent | retrieve。
 
-    优先级：显式 agent_type > 意图；未配置 LLM / 无匹配 / guard 假 → retrieve。
+    优先级：未配置 LLM → retrieve；multi_agent_collab_enabled 且 needs_collab → collab；
+    否则按 registry（agent_type > intent）。
     """
     if not configured():
         return "retrieve"
+    if settings.multi_agent_collab_enabled and state.get("needs_collab"):
+        return "collab"
     return get_registry().route_target(
         agent_type=state.get("agent_type"),
         intent=state.get("intent"),

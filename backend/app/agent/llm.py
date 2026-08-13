@@ -44,12 +44,13 @@ def configured() -> bool:
 
 
 class IntentSchema(BaseModel):
-    """用户提问意图。code=代码理解/方法逻辑/调用关系；doc=文档/配置/用法；graph=依赖/结构；
-    bug=报错/异常/崩溃/为何失败/根因诊断；review=代码审查/质量评估/潜在问题/改进建议/重构；
-    test=生成测试/单元测试/JUnit/测试用例；web=需联网/知识库之外（最新资讯/官方文档/第三方库用法）；
-    mixed=代码+文档混合；chitchat=闲聊/寒暄。"""
+    """用户提问意图 + 是否需多 Agent 协作。"""
 
     intent: IntentLabel = Field(description="用户提问的意图类别")
+    needs_collab: bool = Field(
+        default=False,
+        description="是否需多 Agent 协作（复杂诊断：多阶段推理/排查根因/消息堆积/死锁/泄漏等）",
+    )
 
 
 _INTENT_SYS = (
@@ -60,7 +61,9 @@ _INTENT_SYS = (
     "test=生成测试/单元测试/JUnit/测试用例/测试代码；"
     "mixed=同时涉及代码与文档；chitchat=寒暄/与代码库无关。\n"
     "web=需要联网/知识库之外的信息（最新资讯、官方文档、第三方库用法、外部概念）；"
-    "默认偏向 code（这是一个代码知识库）。"
+    "默认偏向 code（这是一个代码知识库）。\n"
+    "needs_collab：当问题是复杂诊断（需多阶段推理：先提假设再回代码验证、排查根因/性能问题/"
+    "消息堆积/死锁/泄漏/多代码段关联分析）时为 true；简单单点查询为 false。"
 )
 
 _CODE_HINTS = ("方法", "函数", "类", "接口", "调用", "实现", "逻辑", "这段代码", "源码",
@@ -78,6 +81,8 @@ _REVIEW_HINTS = ("审查", "review", "代码质量", "改进建议", "优化建�
 _TEST_HINTS = ("测试", "junit", "mockito", "unit test", "test case", "写测试", "生成测试")
 # 联网检索强信号（明确「搜互联网」；用高精确度短语，避免与 doc 的「文档」/code 的「最近变更」误撞）。
 _WEB_HINTS = ("联网", "网上", "在线搜索", "search online", "search the web", "互联网")
+# M35 协作触发信号（复杂诊断强信号）。规则兜底用：intent=mixed 或命中这些词 → needs_collab。
+_COLLAB_HINTS = ("排查", "诊断", "堆积", "死锁", "泄漏", "性能劣化", "为什么", "导致", "根因")
 
 
 def _rule_intent(query: str) -> IntentLabel:
@@ -100,19 +105,34 @@ def _rule_intent(query: str) -> IntentLabel:
     return "code"  # 代码库产品默认
 
 
-async def classify_intent(query: str) -> IntentLabel:
-    """意图分类：LLM 结构化输出；失败/未配置 → 规则兜底。"""
+def _rule_needs_collab(query: str, intent: IntentLabel) -> bool:
+    """协作判定的规则兜底：mixed 意图或命中复杂诊断信号词。"""
+    if intent == "mixed":
+        return True
+    q = query.lower()
+    return any(h in q for h in _COLLAB_HINTS)
+
+
+async def classify_intent_and_collab(query: str) -> IntentSchema:
+    """意图分类 + 协作判定：一次结构化 LLM 调用产 IntentSchema（intent + needs_collab）；
+    失败/未配置 → 规则兜底（intent=_rule_intent，needs_collab=_rule_needs_collab）。"""
     if not configured():
-        return _rule_intent(query)
+        intent = _rule_intent(query)
+        return IntentSchema(intent=intent, needs_collab=_rule_needs_collab(query, intent))
     try:
         structured = get_chat_model().with_structured_output(IntentSchema)
-        result = await structured.ainvoke([
+        return await structured.ainvoke([
             {"role": "system", "content": _INTENT_SYS},
             {"role": "user", "content": query},
         ])
-        return result.intent
     except Exception:  # noqa: BLE001
-        return _rule_intent(query)
+        intent = _rule_intent(query)
+        return IntentSchema(intent=intent, needs_collab=_rule_needs_collab(query, intent))
+
+
+async def classify_intent(query: str) -> IntentLabel:
+    """意图分类（保留旧契约：返回 IntentLabel）。委托 classify_intent_and_collab。"""
+    return (await classify_intent_and_collab(query)).intent
 
 
 # ---- token → SSE 回调：自动 Agent 作答轮逐 token 推 custom 事件 ----

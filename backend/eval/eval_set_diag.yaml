@@ -1,0 +1,88 @@
+# 诊断评测集（M38 数据；M40 diagnosis kind runner 按 rubric LLMJudge 打分）。
+# expected 是评分锚点（LLMJudge 判断模型答案是否点到 root_cause/relevant_code/config_suggestions）。
+# relevant_code 用类名锚点（RocketMQ 源码未入库，M40 runner 用文本匹配，非 chunk_id 解析）。
+# 内容基于 RocketMQ 4.x，待领域专家校验。
+version: 1
+rubric_weights_default: {root_cause: 0.4, code_ref: 0.3, config_advice: 0.2, reasoning: 0.1}
+
+queries:
+  - id: d01
+    text: RocketMQ 消费者消息堆积严重，怎么排查根因？
+    intent: diagnose
+    expected:
+      root_cause_hints: [消费者并发不足, 消费耗时过高, 生产速率突增, 消费者处理阻塞, 消费者实例数少于队列数]
+      relevant_code: [ConsumeMessageConcurrentlyService, ConsumeMessageOrderlyService, ProcessQueue]
+      config_suggestions: [consumeThreadMin, consumeThreadMax, pullBatchSize]
+    rubric: {root_cause: 0.4, code_ref: 0.3, config_advice: 0.2, reasoning: 0.1}
+  - id: d02
+    text: RocketMQ producer 发送成功但消费端没收到消息，可能哪里丢了？
+    intent: diagnose
+    expected:
+      root_cause_hints: [异步刷盘宕机丢失, broker 未同步副本, consumer offset 异常, tag 过滤, 消费失败耗尽进 DLQ]
+      relevant_code: [SendMessageProcessor, MessageStore, CommitLog]
+      config_suggestions: [flushDiskType, brokerRole]
+    rubric: {root_cause: 0.5, code_ref: 0.2, config_advice: 0.2, reasoning: 0.1}
+  - id: d03
+    text: RocketMQ 消费者频繁 rebalance 导致消费抖动，怎么处理？
+    intent: diagnose
+    expected:
+      root_cause_hints: [消费者实例频繁上下线, rebalanceInterval 过短, 分配策略不当, 网络分区]
+      relevant_code: [RebalanceImpl, AllocateMessageQueueStrategy]
+      config_suggestions: []
+    rubric: {root_cause: 0.5, code_ref: 0.3, config_advice: 0.0, reasoning: 0.2}
+  - id: d04
+    text: RocketMQ 顺序消息消费出现乱序，排查方向？
+    intent: diagnose
+    expected:
+      root_cause_hints: [MessageQueueSelector 选错 queue, 消费未用 ConsumeMessageOrderlyService, 消费失败未阻塞重试]
+      relevant_code: [ConsumeMessageOrderlyService, MessageQueueSelector, ProcessQueue]
+      config_suggestions: [maxReconsumeTimes]
+    rubric: {root_cause: 0.4, code_ref: 0.4, config_advice: 0.1, reasoning: 0.1}
+  - id: d05
+    text: RocketMQ 事务消息的 half message 一直没有 commit，会怎样？
+    intent: diagnose
+    expected:
+      root_cause_hints: [本地事务未执行或超时, TransactionListener 未实现, 回查机制触发]
+      relevant_code: [EndTransactionProcessor, TransactionMQProducerImpl, TransactionalMessageService]
+      config_suggestions: []
+    rubric: {root_cause: 0.4, code_ref: 0.4, config_advice: 0.0, reasoning: 0.2}
+  - id: d06
+    text: RocketMQ 如何提高消费吞吐量？
+    intent: tune
+    expected:
+      root_cause_hints: [并发不足, 拉取批量小, 同步发送瓶颈]
+      relevant_code: [DefaultMQPushConsumer, ConsumeMessageConcurrentlyService]
+      config_suggestions: [pullBatchSize, consumeThreadMin, consumeThreadMax]
+    rubric: {root_cause: 0.3, code_ref: 0.2, config_advice: 0.4, reasoning: 0.1}
+  - id: d07
+    text: RocketMQ 如何保证消息不丢？
+    intent: tune
+    expected:
+      root_cause_hints: [刷盘方式, 副本同步]
+      relevant_code: [MessageStore, CommitLog]
+      config_suggestions: [flushDiskType, brokerRole]
+    rubric: {root_cause: 0.3, code_ref: 0.3, config_advice: 0.3, reasoning: 0.1}
+  - id: d08
+    text: RocketMQ 延迟消息没有按时投递，排查？
+    intent: diagnose
+    expected:
+      root_cause_hints: [delayLevel 设置错误, ScheduleMessageService 异常, broker 时间偏移]
+      relevant_code: [ScheduleMessageService, DeliverDelayedMessageTimerTask]
+      config_suggestions: [messageDelayLevel]
+    rubric: {root_cause: 0.4, code_ref: 0.4, config_advice: 0.1, reasoning: 0.1}
+  - id: d09
+    text: 描述 RocketMQ 普通消息从发送到落盘的完整链路。
+    intent: trace
+    expected:
+      root_cause_hints: []
+      relevant_code: [DefaultMQProducer, DefaultMQProducerImpl, MQClientAPIImpl, SendMessageProcessor, CommitLog]
+      config_suggestions: []
+    rubric: {root_cause: 0.0, code_ref: 0.6, config_advice: 0.0, reasoning: 0.4}
+  - id: d10
+    text: 描述 RocketMQ 事务消息的完整链路（half message → 本地事务 → commit/rollback）。
+    intent: trace
+    expected:
+      root_cause_hints: []
+      relevant_code: [TransactionMQProducerImpl, EndTransactionProcessor, TransactionalMessageService, TransactionListener]
+      config_suggestions: []
+    rubric: {root_cause: 0.0, code_ref: 0.6, config_advice: 0.0, reasoning: 0.4}

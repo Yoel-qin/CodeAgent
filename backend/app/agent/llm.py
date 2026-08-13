@@ -16,7 +16,7 @@ from app.core.config import settings
 
 # 意图标签：router 据此条件路由（code → 代码理解；doc → 文档问答；graph → 变更影响；
 # bug → 缺陷诊断；review → 代码审查；test → 测试生成；mixed/chitchat → retrieve 兜底）
-IntentLabel = Literal["code", "doc", "graph", "bug", "review", "test", "mixed", "chitchat"]
+IntentLabel = Literal["code", "doc", "graph", "bug", "review", "test", "web", "mixed", "chitchat"]
 
 _CHAT_MODEL: ChatOpenAI | None = None
 
@@ -46,7 +46,8 @@ def configured() -> bool:
 class IntentSchema(BaseModel):
     """用户提问意图。code=代码理解/方法逻辑/调用关系；doc=文档/配置/用法；graph=依赖/结构；
     bug=报错/异常/崩溃/为何失败/根因诊断；review=代码审查/质量评估/潜在问题/改进建议/重构；
-    test=生成测试/单元测试/JUnit/测试用例；mixed=代码+文档混合；chitchat=闲聊/寒暄。"""
+    test=生成测试/单元测试/JUnit/测试用例；web=需联网/知识库之外（最新资讯/官方文档/第三方库用法）；
+    mixed=代码+文档混合；chitchat=闲聊/寒暄。"""
 
     intent: IntentLabel = Field(description="用户提问的意图类别")
 
@@ -58,6 +59,7 @@ _INTENT_SYS = (
     "review=代码审查/质量评估/潜在问题/改进建议/重构；"
     "test=生成测试/单元测试/JUnit/测试用例/测试代码；"
     "mixed=同时涉及代码与文档；chitchat=寒暄/与代码库无关。\n"
+    "web=需要联网/知识库之外的信息（最新资讯、官方文档、第三方库用法、外部概念）；"
     "默认偏向 code（这是一个代码知识库）。"
 )
 
@@ -74,11 +76,15 @@ _REVIEW_HINTS = ("审查", "review", "代码质量", "改进建议", "优化建�
 # 测试生成强信号（主动生成测试代码）。用中文「测试」(CJK 零英文误匹配) + 英文具体词；
 # **不收裸 test/mock**——否则子串匹配会把 "latest changes"(la**test**) 误判为 test。
 _TEST_HINTS = ("测试", "junit", "mockito", "unit test", "test case", "写测试", "生成测试")
+# 联网检索强信号（明确「搜互联网」；用高精确度短语，避免与 doc 的「文档」/code 的「最近变更」误撞）。
+_WEB_HINTS = ("联网", "网上", "在线搜索", "search online", "search the web", "互联网")
 
 
 def _rule_intent(query: str) -> IntentLabel:
-    """关键词规则兜底（无 key / 分类失败时）。优先级：graph > bug > review > test > doc > code。"""
+    """关键词规则兜底（无 key / 分类失败时）。优先级：web > graph > bug > review > test > doc > code。"""
     q = query.lower()
+    if any(h in q for h in _WEB_HINTS):
+        return "web"
     if any(h in q for h in _GRAPH_HINTS) and any(h in q for h in _CODE_HINTS):
         return "graph"
     if any(h in q for h in _BUG_HINTS):

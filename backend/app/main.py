@@ -13,7 +13,9 @@ from sqlalchemy.orm import Session
 
 from app import __version__
 from app.agent.memory.checkpointer import close_checkpointer, init_checkpointer
+from app.agent.tools.web_tools import init_web_tools
 from app.api.v1.router import api_router
+from app.clients.mcp_client import close_mcp_client, init_mcp_client
 from app.core.config import settings
 from app.core.logging import setup_logging
 
@@ -143,6 +145,11 @@ async def lifespan(app: FastAPI):
     # LangGraph postgres 检查点（仅 rag_engine=langgraph & langgraph_checkpoint=postgres 时建池+建表）；
     # memory/legacy 模式为 no-op。务必在 yield 前 await，使首个图请求能用上已初始化的 saver。
     await init_checkpointer()
+    # 联网 MCP 工具（web 意图）：仅 mcp_enabled 时建连 + load 工具。init_* 对未启用/失败均 no-op；
+    # 必在 yield 前 await，使首个 web 请求能用上已缓存的 _web_tools。
+    if settings.mcp_enabled:
+        await init_mcp_client()
+        await init_web_tools()
     # 运营维护循环（M14）：仅 langgraph 启用；每轮跑 HITL 超时过期 + 检查点清理。
     maintenance_task = None
     if settings.rag_engine == "langgraph" and settings.maintenance_enabled:
@@ -203,6 +210,8 @@ async def lifespan(app: FastAPI):
             engine.dispose()
         # 关闭检查点连接池（postgres 模式）；其余模式 no-op。
         await close_checkpointer()
+        # 关闭联网 MCP 客户端会话；未启用时 no-op。
+        await close_mcp_client()
 
 
 app = FastAPI(

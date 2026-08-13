@@ -2,11 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **`AGENTS.md` is the Codex-targeted twin of this file and must stay in lockstep.** When you change architecture, run commands, or platform gotchas, update both.
+
 ## What this is
 
-CodeRAG — a RAG knowledge base over large Java codebases. Fuses a **switchable dual-encoder embedding** (unified BGE-M3, or dual: CodeBERT for code + BGE-M3 for docs, per `docs/嵌入向量方案.md` 方案一) + BM25 + PG graph traversal + 3-stage reranking, behind a FastAPI backend, a React frontend, and a **LangGraph multi-agent layer** (6 read-only scenario agents + 1 write-action HITL agent). **Graph *vectors* (GNN / path C) and GraphRAG have been dropped**; graph *traversal* (PG `call_graph` BFS) is kept.
+CodeRAG — a RAG knowledge base over large Java codebases. Fuses a **switchable dual-encoder embedding** (unified BGE-M3, or dual: CodeBERT for code + BGE-M3 for docs, per `docs/嵌入向量方案.md` 方案一) + BM25 + PG graph traversal + 3-stage reranking, behind a FastAPI backend, a React frontend, and a **LangGraph multi-agent layer** (7 read-only scenario agents — incl. a **WEB_SEARCH** 联网检索 agent backed by remote MCP servers — + 1 write-action HITL agent). **Graph *vectors* (GNN / path C) and GraphRAG have been dropped**; graph *traversal* (PG `call_graph` BFS) is kept.
 
-Progress is well past the Phase-1 minimal loop (parse → chunk → index → 3-path recall → streaming LLM → SSE → chat UI). As of milestone **M27** the system also has: incremental sync + git rollback, multimodal docs (PDF/Word/txt + structured tables + OCR'd images), a knowledge-graph viewer, the full agent layer with cross-restart checkpointing + HITL, a **document self-healing arc** (detect stale doc↔code anchors → LLM-rewrite → human-approve → write back to PG/MinIO + re-embed + open a git PR), system monitoring, retrieval evaluation (CLI + API + UI), and a ⌘K global search. `docs/项目状态.md` is the authoritative per-milestone ledger — trust it over the README.
+Progress is well past the Phase-1 minimal loop (parse → chunk → index → 3-path recall → streaming LLM → SSE → chat UI). As of milestone **M27** the system also has: incremental sync + git rollback, multimodal docs (PDF/Word/txt + structured tables + OCR'd images), a knowledge-graph viewer, the full agent layer with cross-restart checkpointing + HITL, a **document self-healing arc** (detect stale doc↔code anchors → LLM-rewrite → human-approve → write back to PG/MinIO + re-embed + open a git PR), system monitoring, retrieval evaluation (CLI + API + UI), and a ⌘K global search. Newest addition: a **WEB_SEARCH scenario agent** that answers knowledge-base-external questions via remote MCP servers. `docs/项目状态.md` is the authoritative per-milestone ledger — trust it over the README.
 
 Repo comments and all root-level design docs are in **Chinese**. Code comments frequently reference design sections like "§10" (DDL) or "§11" (retrieval) — these point into `coderag后端设计方案.md` / `coderag前端设计方案 .md`.
 
@@ -76,6 +78,7 @@ Missing API keys **degrade gracefully, they don't crash**: empty `LLM_API_KEY` �
 - `LANGGRAPH_CHECKPOINT` = `memory` (default) | `postgres`. `postgres` uses `AsyncPostgresSaver` so thread state (`thread_id = conversation_id`) survives process restart — required for HITL resume across restarts. On win32 this triggers the uvicorn loop-factory patch in `app/main.py` (see Platform gotchas).
 - `CONVERSATION_HISTORY_TURNS` (default 6, `0` disables) — prior turns loaded from `chat_messages` and injected into the LLM so "它/刚才那个" resolves. History source is `chat_messages`, not the checkpointer.
 - `DUAL_CODE_BGEM3_ENABLED` (default on, `dual` only) — the M25 **BGE-M3 code mirror index** `code_vectors_bge` that fixes CodeBERT's Chinese-NL blindness; off → reverts to the pre-M25 behavior.
+- `MCP_ENABLED` (default off) + `MCP_SERVERS` (JSON-array string: `[{"name":"...","url":"http://host:port/sse","transport":"sse|streamable_http"}]`) — powers the **WEB_SEARCH** agent by connecting to remote/online MCP servers (web search/fetch) at lifespan startup via `langchain-mcp-adapters` `MultiServerMCPClient`. Off/empty/unreachable → the `web` intent falls back to KB `retrieve` (no dead-end; the backend never crashes on MCP — same opt-in/soft-fail contract as a missing API key).
 - Document-self-healing / ops toggles (all default *off* or safe in dev): `MAINTENANCE_ENABLED`, `HITL_INTERRUPT_TIMEOUT_HOURS`, `CHECKPOINT_RETENTION_DAYS`, `STALENESS_SWEEP_ENABLED`+`_INTERVAL_SECONDS`, `SWEEP_REWRITE_*`, `EAGER_REEMBED_ENABLED` (default on), `DOC_GIT_ENABLED`/`DOC_GIT_PUSH_ENABLED` (real git PR landing is opt-in).
 
 ## Backend architecture
@@ -91,7 +94,7 @@ Layered FastAPI app under `backend/app/`:
 | Pipeline | `pipeline/` | Ingest: parse → chunk → metadata → relations; sync (git) + rollback |
 | Agent | `agent/` | LangGraph StateGraph: intent routing → scenario agents; tools; streaming bridge; checkpointer |
 | Eval | `eval/` | Pure-fn IR metrics + `run_eval`/`run_ab` over the real funnel (cross-cutting, read-only) |
-| Clients | `clients/` | External I/O: `llm_client`, `embedding_client`, `es_client`, `milvus_client`, `minio_client`, `reranker_client` |
+| Clients | `clients/` | External I/O: `llm_client`, `embedding_client`, `es_client`, `milvus_client`, `minio_client`, `reranker_client`, `mcp_client` (remote MCP servers → WEB_SEARCH agent) |
 | DB | `db/` | SQLAlchemy 2.0 async engine/session + ORM models |
 | Core | `core/` | `config.Settings`, `logging` |
 
@@ -123,9 +126,9 @@ The `retrieval` SSE event carries the full funnel as meta: `recall` per-path cou
 
 A LangGraph StateGraph (`agent/graph.py`) gated behind `RAG_ENGINE` (`legacy` default | `langgraph`). Under `langgraph`, `chat_service.stream_chat` dispatches to `agent.streaming.stream_graph` instead of the legacy retrieve→generate path; the SSE event contract is **identical** (`conversation → retrieval → citation → token → done`, plus `interrupt` for HITL), so the frontend doesn't care which engine ran. `graph.py` is compiled once with a checkpointer from `agent/memory/checkpointer.py`.
 
-**Graph topology**: `query_analysis` (Stage-0 rewrite + LLM intent classify: code/doc/graph/bug/review/test/mixed/chitchat, rule fallback if no key) → `router` (conditional edge, two dispatch tables `_INTENT_TO_AGENT_TYPE` + `_AGENT_TYPE_TO_NODE` in `agent/nodes/router.py`) → either a **scenario-agent node** or the `retrieve → generate` fallback → `post_process → END`. Per-request resources (async `session`, `top_k`) travel in `RunnableConfig.configurable`, **not** in checkpointed state.
+**Graph topology**: `query_analysis` (Stage-0 rewrite + LLM intent classify: code/doc/graph/bug/review/test/web/mixed/chitchat, rule fallback if no key) → `router` (conditional edge, two dispatch tables `_INTENT_TO_AGENT_TYPE` + `_AGENT_TYPE_TO_NODE` in `agent/nodes/router.py`) → either a **scenario-agent node** or the `retrieve → generate` fallback → `post_process → END`. Per-request resources (async `session`, `top_k`) travel in `RunnableConfig.configurable`, **not** in checkpointed state.
 
-**6 read-only scenario agents** (`agent/agents/`) — each is a thin wrapper around `_base.run_scenario_agent(state, config, *, agent_name, tools, build_agent, degrade_label)`, the shared skeleton. The skeleton runs a nested `langgraph.prebuilt.create_react_agent` via `astream(stream_mode="custom")`, bridges its `agent_step`/`citation`/`token` events up to the parent stream, and on **any** exception or recursion overflow calls `_degrade()` → plain `pipeline.recall` + streaming answer (the request never breaks; no-LLM-key short-circuits straight to degrade). Citations are emitted as stream events and accumulated by the adapter — agents deliberately do **not** use `Command`/write graph state for them.
+**7 read-only scenario agents** (`agent/agents/`) — each is a thin wrapper around `_base.run_scenario_agent(state, config, *, agent_name, tools, build_agent, degrade_label)`, the shared skeleton. The skeleton runs a nested `langgraph.prebuilt.create_react_agent` via `astream(stream_mode="custom")`, bridges its `agent_step`/`citation`/`token` events up to the parent stream, and on **any** exception or recursion overflow calls `_degrade()` → plain `pipeline.recall` + streaming answer (the request never breaks; no-LLM-key short-circuits straight to degrade). Citations are emitted as stream events and accumulated by the adapter — agents deliberately do **not** use `Command`/write graph state for them.
 
 | Intent | Node | Tools (subset of `agent/tools/`) |
 |---|---|---|
@@ -135,8 +138,11 @@ A LangGraph StateGraph (`agent/graph.py`) gated behind `RAG_ENGINE` (`legacy` de
 | `bug` | `bug_diagnosis` | code set + get_callers, get_recent_changes |
 | `review` | `code_review` | code set + get_code_metrics, get_recent_changes, rerank |
 | `test` | `test_generation` | code set + get_existing_tests |
+| `web` | `web_search` | remote MCP tools loaded at startup (`web_tools.py`); KB-external Qs |
 
 Tools (`agent/tools/{code,doc,maintain,formatting}_tools.py`) follow one shape: a pure async logic fn returning `ToolResult(text, chunks)`, wrapped by `@tool` which pulls `session`/`top_k` from `configurable`, emits citations + an `agent_step` via `get_stream_writer()`, and returns the text observation to the LLM. **Metadata-only tools** (`get_recent_changes`, `get_code_metrics`, `rerank`) emit a step but no citation (avoid duplicating `read_code`). `formatting.py` are pure text formatters, not tools. (`neo4j_query`/`get_javadoc` were explicitly **not** built — no Neo4j in this system, and `read_code` already returns signatures+javadoc.)
+
+**WEB_SEARCH (联网检索, the 7th scenario agent)** answers KB-external questions (latest news, official docs, third-party-library usage) by calling **remote MCP servers**. Unlike the other agents' static module-level `TOOLS`, its tools load once at **lifespan startup**: `clients/mcp_client.py` (`init_mcp_client`/`get_mcp_client`/`close_mcp_client` — a process-level singleton managed in `main.py` lifespan, mirroring the checkpointer pattern) opens a `langchain-mcp-adapters` `MultiServerMCPClient` (transport `sse`/`streamable_http`, **not** stdio); `agent/tools/web_tools.py` then pulls the remote `BaseTool`s, wraps each so a call emits an `agent_step` (a single failed tool degrades to a text notice, not an Agent crash), and caches them in `_web_tools` (sync `get_web_tools()` read at request time). **Web results emit only `agent_step` traces — no citation** (they aren't KB chunks), so the frontend needs zero changes. Degradation chain: MCP off/unreachable/load-fail → `_web_tools=[]` → `get_web_agent()` returns `None` → `router.route` reroutes `web`/`WEB_SEARCH` to `retrieve` instead of `web_search` — no dead-end, no crash.
 
 **Observability**: every tool call → `agent_step` SSE event, accumulated in `streaming.stream_graph`, persisted as `retrieval_logs.agent_steps` (JSONB; migration `b7e2d09af3c1`), and replayed as the `agent` segment of `GET /v1/chat/messages/{id}/retrieval`. The trace is keyed on `agent_steps` being non-empty (not on `meta.mode=="agent"`), so steps taken before a degrade are still shown. The same column feeds the `/v1/agents/stats` KPIs (`services/agent_stats_service.py`).
 

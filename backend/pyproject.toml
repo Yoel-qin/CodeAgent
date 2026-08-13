@@ -31,6 +31,8 @@ dependencies = [
     "langgraph>=1.0",
     "langchain-core>=0.3",
     "langchain-openai>=0.3",
+    # langchain-mcp-adapters：让场景 Agent 调用远程/在线 MCP server（WEB_SEARCH Agent）。
+    "langchain-mcp-adapters>=0.1",
     # ---- 以下依赖随阶段递增 ----
     # Phase 1.5: PyMuPDF, pdfplumber, python-docx, mammoth, paddleocr
     # Phase 2/5: sentence-transformers, torch, dgl (model_server)

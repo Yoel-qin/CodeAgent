@@ -9,6 +9,7 @@
             ├─ bug_diagnosis   （create_react_agent 自动 Agent，缺陷诊断/回归排查工具）
             ├─ code_review     （create_react_agent 自动 Agent，代码审查/度量工具）
             ├─ test_generation （create_react_agent 自动 Agent，测试生成/JUnit 工具）
+            ├─ web_search      （create_react_agent 自动 Agent，联网 MCP 工具，库外问题）
             ├─ propose→confirm→apply|reject（HITL 文档维护，opt-in 显式 DOC_MAINTAIN；
             │                              M13：propose 已是 ReAct Agent，interrupt() 仍在主图 confirm 节点）
             └─ retrieve → generate        （兜底：现有 3 路→rerank→生成）
@@ -27,6 +28,7 @@ from app.agent.agents.code_review import code_review
 from app.agent.agents.code_understand import code_understand
 from app.agent.agents.doc_answer import doc_answer
 from app.agent.agents.test_generation import test_generation
+from app.agent.agents.web import web_search
 from app.agent.memory.checkpointer import get_checkpointer
 from app.agent.nodes.doc_maintain import (
     after_confirm,
@@ -55,6 +57,7 @@ def build_graph():
     graph.add_node("bug_diagnosis", bug_diagnosis)
     graph.add_node("code_review", code_review)
     graph.add_node("test_generation", test_generation)
+    graph.add_node("web_search", web_search)
     graph.add_node("retrieve", retrieve)
     graph.add_node("generate", generate)
     graph.add_node("post_process", post_process)
@@ -68,6 +71,7 @@ def build_graph():
         {"code_understand": "code_understand", "doc_answer": "doc_answer",
          "change_impact": "change_impact", "bug_diagnosis": "bug_diagnosis",
          "code_review": "code_review", "test_generation": "test_generation",
+         "web_search": "web_search",
          "retrieve": "retrieve", "propose": "propose"},
     )
     graph.add_conditional_edges(
@@ -84,6 +88,7 @@ def build_graph():
     graph.add_edge("bug_diagnosis", "post_process")
     graph.add_edge("code_review", "post_process")
     graph.add_edge("test_generation", "post_process")
+    graph.add_edge("web_search", "post_process")
     graph.add_edge("retrieve", "generate")
     graph.add_edge("generate", "post_process")
     graph.add_edge("post_process", END)

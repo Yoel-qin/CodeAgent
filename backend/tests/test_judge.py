@@ -146,3 +146,32 @@ async def test_judge_no_scoring_hints_omits_anchor_section():
     )
     user_msg2 = next(m["content"] for m in client2.captured if m["role"] == "user")
     assert "评分锚点" not in user_msg2
+
+
+@pytest.mark.asyncio
+async def test_judge_diag_anchors_injected_into_prompt():
+    """M40 诊断 expected 三元组 → 根因提示/相关代码/配置建议注入评分锚点段。"""
+    client = _CapturingLLM()
+    judge = LLMJudge(client=client)
+    hints = {
+        "root_cause_hints": ["消费者并发不足", "消费耗时过高"],
+        "relevant_code": ["ConsumeMessageConcurrentlyService"],
+        "config_suggestions": ["consumeThreadMin"],
+    }
+    await judge.judge("Q", "A", "ctx", [], rubric=QA_RUBRIC, scoring_hints=hints)
+    user_msg = next(m["content"] for m in client.captured if m["role"] == "user")
+    assert "=== 评分锚点 ===" in user_msg
+    assert "根因提示" in user_msg and "消费者并发不足" in user_msg
+    assert "相关代码" in user_msg and "ConsumeMessageConcurrentlyService" in user_msg
+    assert "配置建议" in user_msg and "consumeThreadMin" in user_msg
+
+
+@pytest.mark.asyncio
+async def test_judge_diag_empty_lists_omit_anchor_section():
+    """诊断三元组全为空列表 → 不渲染评分锚点段(向后兼容,d09/d10 无 root_cause_hints)。"""
+    client = _CapturingLLM()
+    judge = LLMJudge(client=client)
+    hints = {"root_cause_hints": [], "relevant_code": [], "config_suggestions": []}
+    await judge.judge("Q", "A", "ctx", [], rubric=QA_RUBRIC, scoring_hints=hints)
+    user_msg = next(m["content"] for m in client.captured if m["role"] == "user")
+    assert "评分锚点" not in user_msg

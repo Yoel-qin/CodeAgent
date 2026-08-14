@@ -63,7 +63,7 @@ def _build_prompt(question, answer, context, citations, rubric, *, scoring_hints
         f"=== 问题 ===\n{question}\n\n=== 检索到的 context ===\n{context[:3000]}\n\n"
         f"=== 引用 ===\n{cit_blob}\n\n=== 待评回答 ===\n{answer[:2000]}"
     )
-    # 评分锚点（spec §10）：should_mention / should_not_hallucinate 注入为评分锚点，跳过空子表。
+    # 评分锚点(spec §10):QA 的 should_mention/should_not_hallucinate + M40 诊断三元组注入为评分锚点,跳过空子表。
     if scoring_hints:
         anchor_lines: list[str] = []
         sm = scoring_hints.get("should_mention") or []
@@ -72,6 +72,16 @@ def _build_prompt(question, answer, context, citations, rubric, *, scoring_hints
         snh = scoring_hints.get("should_not_hallucinate") or []
         if snh:
             anchor_lines.append(f"不应捏造: {', '.join(map(str, snh))}")
+        # M40 诊断锚点:expected 三元组(与 QA keys 并列,空列表跳过)
+        rch = scoring_hints.get("root_cause_hints") or []
+        if rch:
+            anchor_lines.append(f"根因提示: {', '.join(map(str, rch))}")
+        rc = scoring_hints.get("relevant_code") or []
+        if rc:
+            anchor_lines.append(f"相关代码: {', '.join(map(str, rc))}")
+        cs = scoring_hints.get("config_suggestions") or []
+        if cs:
+            anchor_lines.append(f"配置建议: {', '.join(map(str, cs))}")
         if anchor_lines:
             user_msg += "\n\n=== 评分锚点 ===\n" + "\n".join(anchor_lines)
     return [{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}]

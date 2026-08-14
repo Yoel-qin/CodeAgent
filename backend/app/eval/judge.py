@@ -11,9 +11,6 @@ from dataclasses import dataclass
 from app.clients.llm_client import llm
 from app.core.config import settings
 
-# 维度方向：high_good=越高越好；low_bad=越低越好（hallucination/unverified）
-Direction = str  # "high_good" | "low_bad"
-
 
 @dataclass
 class DimensionScore:
@@ -39,6 +36,8 @@ def _parse(raw: str, rubric: dict) -> JudgeResult:
     try:
         obj = json.loads(text)
     except (json.JSONDecodeError, TypeError):
+        return JudgeResult(scores=scores, rationale="judge parse failed", raw=raw)
+    if not isinstance(obj, dict):
         return JudgeResult(scores=scores, rationale="judge parse failed", raw=raw)
     rationale = str(obj.get("rationale", ""))
     for k in rubric:
@@ -79,10 +78,14 @@ class LLMJudge:
         kw = {}
         if self._model:
             kw["model"] = self._model
-        raw = await self._client.chat(
-            _build_prompt(question, answer, context, citations, rubric),
-            temperature=0, max_tokens=512, **kw,
-        )
+        try:
+            raw = await self._client.chat(
+                _build_prompt(question, answer, context, citations, rubric),
+                temperature=0, max_tokens=512, **kw,
+            )
+        except Exception as exc:
+            scores = {k: DimensionScore(None, cfg["weight"]) for k, cfg in rubric.items()}
+            return JudgeResult(scores=scores, rationale=f"llm call failed: {exc}", raw="")
         return _parse(raw, rubric)
 
 

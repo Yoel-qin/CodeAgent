@@ -150,3 +150,74 @@ class ABRunListResponse(BaseModel):
 
     total: int
     items: list[ABRunSummary]
+
+
+# ===== QA / 幻觉 eval（M39；config.kind="qa"，复用 eval_runs，零迁移）=====
+
+
+class QARunRequest(BaseModel):
+    """``POST /v1/eval/qa`` 请求。"""
+
+    top_k: int = 8
+    rewrite: Literal["off", "auto"] = "off"
+    eval_set: str | None = None  # 缺省用 backend/eval/eval_set_qa.yaml
+    persist: bool = True
+
+
+class QADimensionScore(BaseModel):
+    score: float | None = None
+    weight: float = 1.0
+
+
+class QAPerQueryRow(BaseModel):
+    """单条 QA query 评判结果。"""
+
+    id: str
+    text: str
+    answer: str
+    citations_n: int = 0
+    unverified_rate: float | None = None
+    judge_scores: dict[str, Any] = {}  # {dim: float|None}
+    rationale: str = ""
+    weighted_score: float | None = None
+    error: str | None = None
+
+
+class QAAggregate(BaseModel):
+    """QA 宏平均：5 维均值（4 judge + unverified_rate）+ weighted_quality（仅 rubric 4 维）。"""
+
+    n: int
+    means: dict[str, float | None]
+    weighted_quality: float | None = None
+
+
+class QARunSummary(BaseModel):
+    """QA 历史列表项（不含 per_query）。"""
+
+    run_id: int
+    status: str
+    trigger: str
+    top_k: int
+    rewrite: str
+    embedding_strategy: str
+    n_queries: int
+    n_evaluable: int
+    duration_ms: int | None
+    aggregate: QAAggregate | None = None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    error_message: str | None = None
+    kind: str = "qa"
+
+
+class QARunDetail(QARunSummary):
+    """QA 详情：附 per_query + config。"""
+
+    per_query: list[dict[str, Any]] | None = None
+    config: dict[str, Any] | None = None
+
+
+class QARunListResponse(BaseModel):
+    total: int
+    items: list[QARunSummary]

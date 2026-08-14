@@ -133,6 +133,9 @@ class Settings(BaseSettings):
     domain_packs_dir: str = "domain_packs"
     domain_pack_default_repo: str = ""   # 空 → resolve 时回落 settings.repo_path
 
+    # M39 LLMJudge 模型（缺省 "" → 回落 llm_model）；DeepSeek 原生无 JSON mode，靠 prompt+解析容错。
+    judge_model: str = ""
+
     # ---- 入库 / 向量化补偿 ----
     # embedding_client / milvus_client 均无批处理（整列表一次请求），在 pipeline.indexing 层切片。
     embed_batch_size: int = 32            # embedding + Milvus upsert 批大小

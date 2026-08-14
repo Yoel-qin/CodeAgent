@@ -55,17 +55,18 @@ const REWRITE_OPTIONS = [
   { value: "auto", label: "改写: auto" },
 ];
 
-// 5 维 judge_scores 的方向标注：high_good = 分高好，low_bad = 分低好（unverified_rate）
+// 5 维 judge_scores 的方向标注：high_good = 分高好，low_bad = 分低好（hallucination/unverified_rate）
+// 键严格对齐后端 QA_RUBRIC（judge.py）4 维 + M34 enforce 算的 unverified_rate（非 judge 维）。
 const DIM_META: Record<string, { label: string; direction: "high_good" | "low_bad" }> = {
-  relevance: { label: "相关性", direction: "high_good" },
   faithfulness: { label: "忠实度", direction: "high_good" },
-  completeness: { label: "完整性", direction: "high_good" },
-  clarity: { label: "清晰度", direction: "high_good" },
+  answer_relevance: { label: "相关性", direction: "high_good" },
+  citation_accuracy: { label: "引用准确度", direction: "high_good" },
+  hallucination: { label: "幻觉", direction: "low_bad" },
   unverified_rate: { label: "未验证率", direction: "low_bad" },
 };
 
 // 维度列表（固定顺序，用于 KPI 行 + per_query 列）
-const DIM_KEYS = ["relevance", "faithfulness", "completeness", "clarity", "unverified_rate"];
+const DIM_KEYS = ["faithfulness", "answer_relevance", "citation_accuracy", "hallucination", "unverified_rate"];
 
 // ---- 历史表列 ----
 const qaHistoryColumns = (onDetail: (id: number) => void): ColumnsType<QARunSummary> => [
@@ -266,7 +267,7 @@ export default function QAEvalTab() {
           </Col>
         </Row>
         <Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
-          LLM 评判生成答案的相关性、忠实度、完整性、清晰度（1-5 分）+ 未验证率（幻觉信号），
+          LLM 评判生成答案的忠实度、相关性、引用准确度、幻觉（0-1）+ 未验证率（幻觉信号），
           加权质量 = 4 维加权均值。每 query 走真实检索→生成→评判全链路。
         </Paragraph>
       </Card>

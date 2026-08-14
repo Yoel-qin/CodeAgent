@@ -23,6 +23,19 @@ class _ExplodingLLM:
         raise ConnectionError("timed out")
 
 
+class _CapturingLLM:
+    """捕获发往 LLM 的 messages，供断言评分锚点是否注入。"""
+    configured = True
+
+    def __init__(self, text: str = '{"faithfulness": 1.0}'):
+        self._text = text
+        self.captured = None
+
+    async def chat(self, messages, **kw):
+        self.captured = messages
+        return self._text
+
+
 @pytest.mark.asyncio
 async def test_judge_parses_valid_json():
     judge = LLMJudge(client=_FakeLLM('{"faithfulness": 0.9, "answer_relevance": 0.8, '
@@ -98,3 +111,38 @@ def test_judge_missing_dimension_key_is_none():
     )
     assert res.scores["faithfulness"].score == 0.8
     assert res.scores["hallucination"].score is None
+
+
+@pytest.mark.asyncio
+async def test_judge_scoring_hints_injected_into_prompt():
+    """非空 scoring_hints → 评分锚点（should_mention / should_not_hallucinate）注入 prompt。"""
+    client = _CapturingLLM()
+    judge = LLMJudge(client=client)
+    hints = {
+        "should_mention": ["余额增加", "记录交易"],
+        "should_not_hallucinate": ["编造并发机制"],
+    }
+    await judge.judge("Q", "A", "ctx", [], rubric=QA_RUBRIC, scoring_hints=hints)
+    user_msg = next(m["content"] for m in client.captured if m["role"] == "user")
+    assert "=== 评分锚点 ===" in user_msg
+    assert "余额增加" in user_msg and "记录交易" in user_msg
+    assert "不应捏造" in user_msg and "编造并发机制" in user_msg
+
+
+@pytest.mark.asyncio
+async def test_judge_no_scoring_hints_omits_anchor_section():
+    """无 scoring_hints（默认 None / 空）→ prompt 不含评分锚点段（向后兼容）。"""
+    client = _CapturingLLM()
+    judge = LLMJudge(client=client)
+    await judge.judge("Q", "A", "ctx", [], rubric=QA_RUBRIC)  # scoring_hints 省略
+    user_msg = next(m["content"] for m in client.captured if m["role"] == "user")
+    assert "评分锚点" not in user_msg
+
+    # 空子表（两列表都空）也应省略
+    client2 = _CapturingLLM()
+    await LLMJudge(client=client2).judge(
+        "Q", "A", "ctx", [], rubric=QA_RUBRIC,
+        scoring_hints={"should_mention": [], "should_not_hallucinate": []},
+    )
+    user_msg2 = next(m["content"] for m in client2.captured if m["role"] == "user")
+    assert "评分锚点" not in user_msg2

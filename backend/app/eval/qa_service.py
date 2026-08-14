@@ -165,7 +165,8 @@ async def run_qa_eval(
             unverified_rate = None
         try:
             jr = await _judge.judge(
-                q.text, answer, _ctx_from(citations), citations, rubric=rubric
+                q.text, answer, _ctx_from(citations), citations, rubric=rubric,
+                scoring_hints=q.scoring_hints,
             )
             scores = {k: v.score for k, v in jr.scores.items()}
             rationale = jr.rationale

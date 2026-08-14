@@ -50,7 +50,7 @@ def _parse(raw: str, rubric: dict) -> JudgeResult:
     return JudgeResult(scores=scores, rationale=rationale, raw=raw)
 
 
-def _build_prompt(question, answer, context, citations, rubric) -> list[dict]:
+def _build_prompt(question, answer, context, citations, rubric, *, scoring_hints: dict | None = None) -> list[dict]:
     dims = "\n".join(f"- {k}（{cfg['direction']}，0-1）：{cfg['desc']}" for k, cfg in rubric.items())
     keys = list(rubric.keys())
     fmt_keys = ", ".join(f'"{k}": <0-1分数>' for k in keys)
@@ -63,6 +63,17 @@ def _build_prompt(question, answer, context, citations, rubric) -> list[dict]:
         f"=== 问题 ===\n{question}\n\n=== 检索到的 context ===\n{context[:3000]}\n\n"
         f"=== 引用 ===\n{cit_blob}\n\n=== 待评回答 ===\n{answer[:2000]}"
     )
+    # 评分锚点（spec §10）：should_mention / should_not_hallucinate 注入为评分锚点，跳过空子表。
+    if scoring_hints:
+        anchor_lines: list[str] = []
+        sm = scoring_hints.get("should_mention") or []
+        if sm:
+            anchor_lines.append(f"期望提及: {', '.join(map(str, sm))}")
+        snh = scoring_hints.get("should_not_hallucinate") or []
+        if snh:
+            anchor_lines.append(f"不应捏造: {', '.join(map(str, snh))}")
+        if anchor_lines:
+            user_msg += "\n\n=== 评分锚点 ===\n" + "\n".join(anchor_lines)
     return [{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}]
 
 
@@ -71,7 +82,9 @@ class LLMJudge:
         self._client = client or llm
         self._model = model or settings.judge_model or None
 
-    async def judge(self, question, answer, context, citations, *, rubric: dict) -> JudgeResult:
+    async def judge(
+        self, question, answer, context, citations, *, rubric: dict, scoring_hints: dict | None = None
+    ) -> JudgeResult:
         if not self._client.configured:
             scores = {k: DimensionScore(None, cfg["weight"]) for k, cfg in rubric.items()}
             return JudgeResult(scores=scores, rationale="no llm key", raw="")
@@ -80,7 +93,7 @@ class LLMJudge:
             kw["model"] = self._model
         try:
             raw = await self._client.chat(
-                _build_prompt(question, answer, context, citations, rubric),
+                _build_prompt(question, answer, context, citations, rubric, scoring_hints=scoring_hints),
                 temperature=0, max_tokens=512, **kw,
             )
         except Exception as exc:

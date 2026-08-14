@@ -10,7 +10,7 @@ from app.eval.qa_service import QAQuery, aggregate_qa, run_qa_eval
 class _StubJudge:
     """固定返回 4 维满分（hallucination low_bad → 0.0 表示无幻觉）。"""
 
-    async def judge(self, question, answer, context, citations, *, rubric):
+    async def judge(self, question, answer, context, citations, *, rubric, scoring_hints=None):
         from app.eval.judge import DimensionScore, JudgeResult
 
         scores = {}
@@ -25,7 +25,7 @@ class _StubJudge:
 class _FailingJudge:
     """模拟无内部容错的 DI judge，抛异常。"""
 
-    async def judge(self, question, answer, context, citations, *, rubric):
+    async def judge(self, question, answer, context, citations, *, rubric, scoring_hints=None):
         raise RuntimeError("judge oops")
 
 
@@ -83,7 +83,7 @@ async def test_run_qa_eval_n_evaluable_excludes_errors():
     results = []
 
     class _SelectiveJudge:
-        async def judge(self, question, answer, context, citations, *, rubric):
+        async def judge(self, question, answer, context, citations, *, rubric, scoring_hints=None):
             results.append(question)
             if question == "bad-judge":
                 raise RuntimeError("judge boom")

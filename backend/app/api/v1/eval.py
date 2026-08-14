@@ -21,6 +21,9 @@ from app.schemas.eval import (
     ABRunRequest,
     ABRunSummary,
     ABVariantResult,
+    DiagRunDetail,
+    DiagRunListResponse,
+    DiagRunSummary,
     EvalAggregate,
     EvalRunDetail,
     EvalRunListResponse,
@@ -43,8 +46,9 @@ def _kind(run: EvalRun) -> str:
 
 def _common(run: EvalRun) -> dict:
     """Summary/Detail 共用的字段映射。aggregate 经 ``EvalAggregate`` 校验；unresolved_count 派生。
-    QA kind 的 aggregate 由 ``_qa_aggregate`` 覆盖，此处跳过 IR 校验。"""
+    QA/diagnosis kind 的 aggregate 由各自专用覆盖，此处跳过 IR 校验。"""
     is_qa = _kind(run) == "qa"
+    is_diag = _kind(run) == "diagnosis"
     return dict(
         run_id=run.run_id,
         status=run.status,
@@ -57,7 +61,7 @@ def _common(run: EvalRun) -> dict:
         rerank_on_count=run.rerank_on_count,
         duration_ms=run.duration_ms,
         unresolved_count=len(run.unresolved or []),
-        aggregate=None if is_qa else (EvalAggregate.model_validate(run.aggregate) if run.aggregate else None),
+        aggregate=None if (is_qa or is_diag) else (EvalAggregate.model_validate(run.aggregate) if run.aggregate else None),
         started_at=run.started_at,
         completed_at=run.completed_at,
         created_at=run.created_at,
@@ -99,7 +103,7 @@ async def run(
 @router.get("/runs", response_model=EvalRunListResponse)
 async def list_runs(
     limit: int = Query(50, ge=1, le=200),
-    kind: str | None = Query(None, pattern="^(single|ab|qa)$"),
+    kind: str | None = Query(None, pattern="^(single|ab|qa|diagnosis)$"),
     session: AsyncSession = Depends(get_db),
 ) -> EvalRunListResponse:
     """评测历史列表（最新在前；不含 per_query）。``kind`` 可过滤单次/A-B。"""
@@ -275,3 +279,55 @@ async def get_qa_run(
     if run is None or _kind(run) != "qa":
         raise HTTPException(status_code=404, detail="评测任务不存在")
     return _to_qa_detail(run)
+
+
+# ===== 诊断 eval(M40;触发走 CLI scripts/diag_eval.py,API 只读)=====
+
+
+def _diag_aggregate(run: EvalRun):
+    agg = run.aggregate
+    if not agg:
+        return None
+    from app.schemas.eval import DiagAggregate
+
+    return DiagAggregate.model_validate(agg)
+
+
+def _to_diag_summary(run: EvalRun) -> DiagRunSummary:
+    base = _common(run)
+    return DiagRunSummary(
+        **{k: base[k] for k in DiagRunSummary.model_fields if k in base and k != "aggregate"},
+        aggregate=_diag_aggregate(run),
+    )
+
+
+def _to_diag_detail(run: EvalRun) -> DiagRunDetail:
+    base = _common(run)
+    return DiagRunDetail(
+        **{k: base[k] for k in DiagRunDetail.model_fields if k in base and k != "aggregate"},
+        aggregate=_diag_aggregate(run),
+        per_query=run.per_query, config=run.config,
+    )
+
+
+@router.get("/diag-runs", response_model=DiagRunListResponse)
+async def list_diag_runs(
+    limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_db),
+) -> DiagRunListResponse:
+    """诊断 eval 历史列表(最新在前;轻量,无 per_query)。触发走 CLI(diag_eval.py)。"""
+    runs = await eval_run_service.list_runs(session, limit=limit, kind="diagnosis")
+    items = [_to_diag_summary(r) for r in runs]
+    return DiagRunListResponse(total=len(items), items=items)
+
+
+@router.get("/diag-runs/{run_id}", response_model=DiagRunDetail)
+async def get_diag_run(
+    run_id: int,
+    session: AsyncSession = Depends(get_db),
+) -> DiagRunDetail:
+    """单条诊断 eval 详情(含 per_query)。非 diagnosis kind → 404。"""
+    run = await eval_run_service.get_run(session, run_id)
+    if run is None or _kind(run) != "diagnosis":
+        raise HTTPException(status_code=404, detail="评测任务不存在")
+    return _to_diag_detail(run)

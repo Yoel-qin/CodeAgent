@@ -221,3 +221,46 @@ class QARunDetail(QARunSummary):
 class QARunListResponse(BaseModel):
     total: int
     items: list[QARunSummary]
+
+
+# ===== 诊断 eval(M40;config.kind="diagnosis",复用 eval_runs,零迁移;触发走 CLI,API 只读)=====
+
+
+class DiagAggregate(BaseModel):
+    """诊断宏平均:4 维均值 + overall(per-query weighted 均值,逐 query rubric)。"""
+
+    n: int
+    means: dict[str, float | None]
+    overall: float | None = None
+
+
+class DiagRunSummary(BaseModel):
+    """诊断 eval 历史列表项(不含 per_query)。"""
+
+    run_id: int
+    status: str
+    trigger: str
+    top_k: int
+    rewrite: str
+    embedding_strategy: str
+    n_queries: int
+    n_evaluable: int
+    duration_ms: int | None
+    aggregate: DiagAggregate | None = None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    error_message: str | None = None
+    kind: str = "diagnosis"
+
+
+class DiagRunDetail(DiagRunSummary):
+    """诊断详情:附 per_query + config。"""
+
+    per_query: list[dict[str, Any]] | None = None
+    config: dict[str, Any] | None = None
+
+
+class DiagRunListResponse(BaseModel):
+    total: int
+    items: list[DiagRunSummary]

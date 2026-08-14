@@ -332,3 +332,74 @@ async def test_eval_qa_endpoints(monkeypatch):
         assert r5.json()["total"] == 2
     finally:
         app.dependency_overrides.pop(get_db, None)
+
+
+# ===== 诊断 eval 端点(M40;触发走 CLI,此处只读)=====
+
+
+def _diag_run(rid: int) -> EvalRun:
+    """canned diagnosis EvalRun(config.kind="diagnosis",诊断形状 aggregate)。"""
+    return EvalRun(
+        run_id=rid, status="COMPLETED", trigger="cli", top_k=8, rewrite="off",
+        embedding_strategy="unified", n_queries=10, n_evaluable=10,
+        rerank_on_count=0, duration_ms=4321,
+        aggregate={"n": 10, "means": {"root_cause": 0.85, "code_ref": 0.7,
+                                      "config_advice": 0.6, "reasoning": 0.9},
+                   "overall": 0.78},
+        config={"kind": "diagnosis", "top_k": 8, "rewrite": "off"},
+        per_query=[{"id": "d01", "text": "堆积排查", "intent": "diagnose", "answer": "...",
+                    "citations_n": 4, "judge_scores": {"root_cause": 0.9, "code_ref": 0.8,
+                                                       "config_advice": 0.7, "reasoning": 0.9},
+                    "rationale": "ok", "weighted_score": 0.85, "error": None}],
+        unresolved=[], error_message=None,
+        started_at=datetime.now(UTC), completed_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+    )
+
+
+async def test_eval_diag_endpoints(monkeypatch):
+    """GET /diag-runs + /diag-runs/{id};GET /runs kind 正则接受 diagnosis;非 diagnosis kind 404。"""
+    from fastapi.testclient import TestClient
+
+    from app.api.deps import get_db
+    from app.main import app
+
+    async def fake_list_runs(session, *, limit=50, kind=None):
+        if kind == "diagnosis":
+            return [_diag_run(2), _diag_run(1)]
+        return []
+
+    async def fake_get_run(session, rid):
+        return _diag_run(rid) if rid == 1 else None
+
+    monkeypatch.setattr(svc, "list_runs", fake_list_runs)
+    monkeypatch.setattr(svc, "get_run", fake_get_run)
+
+    async def _override():
+        return None
+
+    app.dependency_overrides[get_db] = _override
+    try:
+        client = TestClient(app)
+
+        r = client.get("/v1/eval/diag-runs", params={"limit": 50})
+        assert r.status_code == 200, r.text
+        lst = r.json()
+        assert lst["total"] == 2
+        item = lst["items"][0]
+        assert item["kind"] == "diagnosis"
+        assert "per_query" not in item
+        assert item["aggregate"]["overall"] == 0.78
+        assert item["aggregate"]["means"]["root_cause"] == 0.85
+
+        r2 = client.get("/v1/eval/diag-runs/1")
+        assert r2.status_code == 200 and r2.json()["per_query"][0]["id"] == "d01"
+
+        # 不存在的 id → 404
+        assert client.get("/v1/eval/diag-runs/99").status_code == 404
+
+        # GET /runs 的 kind 正则接受 diagnosis
+        r3 = client.get("/v1/eval/runs", params={"kind": "diagnosis"})
+        assert r3.status_code == 200
+    finally:
+        app.dependency_overrides.pop(get_db, None)

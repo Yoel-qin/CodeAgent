@@ -1,0 +1,15 @@
+{
+  "metrics": {
+    "root_cause": 0.3,
+    "code_ref": 0.3667,
+    "config_advice": 0.2333,
+    "reasoning": 0.4333,
+    "overall": 0.3267
+  },
+  "meta": {
+    "date": "2026-08-14T09:29:23.072271+00:00",
+    "n_queries": 10,
+    "top_k": 8,
+    "run_id": 4
+  }
+}

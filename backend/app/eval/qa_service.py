@@ -163,8 +163,18 @@ async def run_qa_eval(
             unverified_rate = ce["ratio"]
         except Exception:
             unverified_rate = None
-        jr = await _judge.judge(q.text, answer, _ctx_from(citations), citations, rubric=rubric)
-        scores = {k: v.score for k, v in jr.scores.items()}
+        try:
+            jr = await _judge.judge(
+                q.text, answer, _ctx_from(citations), citations, rubric=rubric
+            )
+            scores = {k: v.score for k, v in jr.scores.items()}
+            rationale = jr.rationale
+            judge_error = None
+        except Exception as e:  # DI judge 可能无内部容错，不中断整轮
+            logger.warning("qa eval query %s judge failed: %s", q.id, e)
+            scores = {k: None for k in rubric}
+            rationale = ""
+            judge_error = f"judge failed: {type(e).__name__}: {e}"
         per_query.append(
             {
                 "id": q.id,
@@ -173,9 +183,9 @@ async def run_qa_eval(
                 "citations_n": len(citations),
                 "unverified_rate": unverified_rate,
                 "judge_scores": scores,
-                "rationale": jr.rationale,
+                "rationale": rationale,
                 "weighted_score": None,
-                "error": None,
+                "error": judge_error,
             }
         )
 
@@ -196,7 +206,7 @@ async def run_qa_eval(
         config={"top_k": top_k, "rewrite": rewrite},
         aggregate=agg,
         n_queries=len(queries),
-        n_evaluable=len(per_query),
+        n_evaluable=sum(1 for pq in per_query if not pq["error"]),
         per_query=per_query,
         unresolved=unresolved,
     )

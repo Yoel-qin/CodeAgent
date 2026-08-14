@@ -26,3 +26,14 @@ def test_eval_set_well_formed():
         assert q.relevant, f"empty relevant in {q.id}"
         for rel in q.relevant:
             assert _RELEVANT_RE.match(rel), f"bad relevant {rel!r} in {q.id}"
+
+
+def test_eval_set_qa_structure():
+    """eval_set_qa.yaml：每条有 id/text/scoring_hints，无 dup id。"""
+    from app.eval.qa_service import load_qa_queries
+    from app.services.eval_run_service import DEFAULT_QA_EVAL_SET
+    qs = load_qa_queries(str(DEFAULT_QA_EVAL_SET))
+    assert len(qs) >= 8
+    ids = [q.id for q in qs]
+    assert len(ids) == len(set(ids))  # 无重复
+    assert all(q.text and isinstance(q.scoring_hints, dict) for q in qs)

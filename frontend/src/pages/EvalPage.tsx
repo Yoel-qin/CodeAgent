@@ -29,6 +29,7 @@ import {
 import { PlayCircleOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import Sparkline from "../components/Sparkline";
+import QAEvalTab from "./eval/QAEvalTab";
 import {
   getAbRun,
   getEvalRun,
@@ -874,6 +875,11 @@ export default function EvalPage() {
             key: "ab",
             label: "A/B 消融",
             children: <AbEvalTab />,
+          },
+          {
+            key: "qa",
+            label: "LLM 评判",
+            children: <QAEvalTab />,
           },
         ]}
       />

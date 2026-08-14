@@ -154,3 +154,60 @@ export const listAbRuns = (limit = 50) =>
 
 export const getAbRun = (id: number, diagnose = false) =>
   api.get<ABRunDetail>(`/v1/eval/ab-runs/${id}`, { params: { diagnose } }).then((r) => r.data);
+
+// ===== QA / 幻觉 eval（M39）=====
+
+export interface QAAggregate {
+  n: number;
+  means: Record<string, number | null>;
+  weighted_quality: number | null;
+}
+
+export interface QARunSummary {
+  run_id: number;
+  status: string;
+  trigger: string;
+  top_k: number;
+  rewrite: string;
+  embedding_strategy: string;
+  n_queries: number;
+  n_evaluable: number;
+  duration_ms: number | null;
+  aggregate: QAAggregate | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  error_message: string | null;
+  kind: "qa";
+}
+
+export interface QAPerQueryRow {
+  id: string;
+  text: string;
+  answer: string;
+  citations_n: number;
+  unverified_rate: number | null;
+  judge_scores: Record<string, number | null>;
+  rationale: string;
+  weighted_score: number | null;
+  error: string | null;
+}
+
+export interface QARunDetail extends QARunSummary {
+  per_query: QAPerQueryRow[] | null;
+  config: Record<string, unknown> | null;
+}
+
+export interface QARunListResponse {
+  total: number;
+  items: QARunSummary[];
+}
+
+export const runQA = (body: { top_k?: number; rewrite?: string; eval_set?: string; persist?: boolean }) =>
+  api.post<QARunDetail>("/v1/eval/qa", body, { timeout: 300_000 }).then((r) => r.data);
+
+export const listQARuns = (limit = 50) =>
+  api.get<QARunListResponse>("/v1/eval/qa-runs", { params: { limit } }).then((r) => r.data);
+
+export const getQARun = (id: number) =>
+  api.get<QARunDetail>(`/v1/eval/qa-runs/${id}`).then((r) => r.data);

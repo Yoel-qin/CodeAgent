@@ -209,3 +209,44 @@ async def test_run_qa_and_persist_failed(monkeypatch):
     run = await svc.run_qa_and_persist(None, persist=False)
     assert run.status == "FAILED"
     assert run.aggregate is None
+
+
+# ---- run_diag_and_persist（M40，kind="diagnosis"）----
+
+
+async def test_run_diag_and_persist_completed(monkeypatch):
+    from app.eval.diag_service import DiagReport
+    report = DiagReport(
+        config={"top_k": 8, "rewrite": "off"},
+        aggregate={"n": 2, "means": {"root_cause": 0.85, "code_ref": 0.7,
+                                     "config_advice": 0.6, "reasoning": 0.9},
+                   "overall": 0.78},
+        n_queries=2, n_evaluable=2,
+        per_query=[{"id": "d01", "judge_scores": {"root_cause": 0.85}, "weighted_score": 0.8}],
+    )
+
+    async def fake_run_diag(*a, **kw):
+        return report
+
+    monkeypatch.setattr(svc, "run_diag_eval", fake_run_diag)
+    monkeypatch.setattr(svc, "load_diag_queries", lambda p: ["q"])
+    run = await svc.run_diag_and_persist(None, top_k=8, persist=False)
+
+    assert run.status == "COMPLETED"
+    assert run.config["kind"] == "diagnosis"
+    assert run.aggregate["means"]["root_cause"] == 0.85
+    assert run.aggregate["overall"] == 0.78
+    assert run.per_query == report.per_query
+    assert run.rerank_on_count == 0
+
+
+async def test_run_diag_and_persist_failed(monkeypatch):
+    async def boom(*a, **kw):
+        raise ValueError("kaboom")
+
+    monkeypatch.setattr(svc, "run_diag_eval", boom)
+    monkeypatch.setattr(svc, "load_diag_queries", lambda p: ["q"])
+    run = await svc.run_diag_and_persist(None, persist=False)
+    assert run.status == "FAILED"
+    assert run.aggregate is None
+    assert "kaboom" in run.error_message

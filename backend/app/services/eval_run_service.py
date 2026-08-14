@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.models.eval import EvalRun
 from app.eval.ab_service import DEFAULT_PAIRS, ABPair, _make_recall_fn, filter_by_tag, run_ab
+from app.eval.diag_service import load_diag_queries, run_diag_eval
 from app.eval.eval_service import load_eval_queries, run_eval
 from app.eval.judge import QA_RUBRIC
 from app.eval.qa_service import load_qa_queries, run_qa_eval
@@ -33,6 +34,7 @@ from app.retrieval.ablation import AblationConfig
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EVAL_SET = _BACKEND_ROOT / "eval" / "eval_set.yaml"
 DEFAULT_QA_EVAL_SET = _BACKEND_ROOT / "eval" / "eval_set_qa.yaml"
+DEFAULT_DIAG_EVAL_SET = _BACKEND_ROOT / "eval" / "eval_set_diag.yaml"
 
 # pair 名称 → ABPair（镜像 scripts/ab_eval.py:45）；API/service 按 pair 名称解析
 _PAIR_BY_NAME: dict[str, ABPair] = {p.name: p for p in DEFAULT_PAIRS}
@@ -66,6 +68,18 @@ def _normalize_qa_agg(agg: dict | None) -> dict | None:
         "n": agg.get("n"),
         "means": {k: (round(float(v), 4) if v is not None else None) for k, v in means.items()},
         "weighted_quality": agg.get("weighted_quality"),
+    }
+
+
+def _normalize_diag_agg(agg: dict | None) -> dict | None:
+    """规整诊断 aggregate 为 JSONB 安全形状(数值转 float|None;无 K-map)。镜像 _normalize_qa_agg。"""
+    if not agg:
+        return None
+    means = agg.get("means") or {}
+    return {
+        "n": agg.get("n"),
+        "means": {k: (round(float(v), 4) if v is not None else None) for k, v in means.items()},
+        "overall": agg.get("overall"),
     }
 
 
@@ -302,6 +316,49 @@ async def run_qa_and_persist(
         run.rerank_on_count = 0  # QA 无检索 rerank_on 概念
         run.per_query = report.per_query
         run.unresolved = report.unresolved
+        run.config = {**(run.config or {}), **report.config}
+    except Exception as e:
+        run.status = "FAILED"
+        run.error_message = f"{type(e).__name__}: {e}"
+    finally:
+        run.completed_at = datetime.now(UTC)
+        run.duration_ms = int((run.completed_at - started).total_seconds() * 1000)
+        if persist:
+            await session.commit()
+    return run
+
+
+async def run_diag_and_persist(
+    session: AsyncSession, *,
+    top_k: int = 8, rewrite: str = "off", eval_set: str | None = None,
+    trigger: str = "api", persist: bool = True,
+) -> EvalRun:
+    """跑一轮诊断 eval 并(默认)持久化。镜像 run_qa_and_persist 时序,config.kind="diagnosis"。"""
+    path = eval_set or str(DEFAULT_DIAG_EVAL_SET)
+    queries = load_diag_queries(path)
+    started = datetime.now(UTC)
+
+    run = EvalRun(
+        status="PENDING", trigger=trigger, top_k=top_k, rewrite=rewrite,
+        embedding_strategy=settings.embedding_strategy, n_queries=len(queries),
+        started_at=started,
+        config={
+            "kind": "diagnosis", "top_k": top_k, "rewrite": rewrite, "eval_set": path,
+            "embedding_strategy": settings.embedding_strategy,
+        },
+    )
+    if persist:
+        session.add(run)
+        await session.flush()
+
+    try:
+        report = await run_diag_eval(session, queries, top_k=top_k, rewrite=rewrite)
+        run.status = "COMPLETED"
+        run.aggregate = _normalize_diag_agg(report.aggregate)
+        run.n_evaluable = report.n_evaluable
+        run.rerank_on_count = 0  # 诊断 eval 无 rerank_on 概念
+        run.per_query = report.per_query
+        run.unresolved = []
         run.config = {**(run.config or {}), **report.config}
     except Exception as e:
         run.status = "FAILED"

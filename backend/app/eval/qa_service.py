@@ -71,10 +71,10 @@ def load_qa_queries(path: str) -> list[QAQuery]:
     ]
 
 
-async def _default_generate(
+async def default_generate(
     session: AsyncSession, query: str, *, top_k: int, rewrite: str = "off"
 ):
-    """默认 legacy 生成：recall → build_context → llm.chat（rewrite=off 确定性）。"""
+    """默认 legacy 生成：recall → build_context → llm.chat（rewrite=off 确定性）。M40 diag_service 共享此默认生成。"""
     kw = (
         dict(semantic_query=query, terms=extract_query_terms(query), rewritten=False)
         if rewrite == "off"
@@ -134,7 +134,7 @@ async def run_qa_eval(
     judge=None,
 ) -> QAReport:
     """逐 query：生成 → enforce(unverified_rate) → judge(4 维) → per_query；宏平均聚合。"""
-    gen = generate_fn or _default_generate
+    gen = generate_fn or default_generate
     _judge = judge or LLMJudge()
     per_query: list[dict] = []
     unresolved: list[dict] = []

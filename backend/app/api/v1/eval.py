@@ -26,6 +26,10 @@ from app.schemas.eval import (
     EvalRunListResponse,
     EvalRunRequest,
     EvalRunSummary,
+    QARunDetail,
+    QARunListResponse,
+    QARunRequest,
+    QARunSummary,
 )
 from app.services import eval_run_service
 
@@ -38,7 +42,9 @@ def _kind(run: EvalRun) -> str:
 
 
 def _common(run: EvalRun) -> dict:
-    """Summary/Detail 共用的字段映射。aggregate 经 ``EvalAggregate`` 校验；unresolved_count 派生。"""
+    """Summary/Detail 共用的字段映射。aggregate 经 ``EvalAggregate`` 校验；unresolved_count 派生。
+    QA kind 的 aggregate 由 ``_qa_aggregate`` 覆盖，此处跳过 IR 校验。"""
+    is_qa = _kind(run) == "qa"
     return dict(
         run_id=run.run_id,
         status=run.status,
@@ -51,7 +57,7 @@ def _common(run: EvalRun) -> dict:
         rerank_on_count=run.rerank_on_count,
         duration_ms=run.duration_ms,
         unresolved_count=len(run.unresolved or []),
-        aggregate=EvalAggregate.model_validate(run.aggregate) if run.aggregate else None,
+        aggregate=None if is_qa else (EvalAggregate.model_validate(run.aggregate) if run.aggregate else None),
         started_at=run.started_at,
         completed_at=run.completed_at,
         created_at=run.created_at,
@@ -93,7 +99,7 @@ async def run(
 @router.get("/runs", response_model=EvalRunListResponse)
 async def list_runs(
     limit: int = Query(50, ge=1, le=200),
-    kind: str | None = Query(None, pattern="^(single|ab)$"),
+    kind: str | None = Query(None, pattern="^(single|ab|qa)$"),
     session: AsyncSession = Depends(get_db),
 ) -> EvalRunListResponse:
     """评测历史列表（最新在前；不含 per_query）。``kind`` 可过滤单次/A-B。"""
@@ -203,3 +209,69 @@ async def get_ab_run(
     if run is None or _kind(run) != "ab":
         raise HTTPException(status_code=404, detail="评测任务不存在")
     return _to_ab_detail(run)
+
+
+# ===== QA / 幻觉 eval（M39）=====
+
+
+def _qa_aggregate(run: EvalRun):
+    agg = run.aggregate
+    if not agg:
+        return None
+    from app.schemas.eval import QAAggregate
+
+    return QAAggregate.model_validate(agg)
+
+
+def _to_qa_summary(run: EvalRun) -> QARunSummary:
+    base = _common(run)
+    return QARunSummary(
+        **{k: base[k] for k in QARunSummary.model_fields if k in base and k != "aggregate"},
+        aggregate=_qa_aggregate(run),
+    )
+
+
+def _to_qa_detail(run: EvalRun) -> QARunDetail:
+    base = _common(run)
+    return QARunDetail(
+        **{k: base[k] for k in QARunDetail.model_fields if k in base and k != "aggregate"},
+        aggregate=_qa_aggregate(run),
+        per_query=run.per_query, config=run.config,
+    )
+
+
+@router.post("/qa", response_model=QARunDetail)
+async def run_qa_endpoint(
+    body: QARunRequest,
+    session: AsyncSession = Depends(get_db),
+) -> QARunDetail:
+    """触发一次 QA/幻觉 eval（默认持久化为 config.kind="qa" 行）。重型端点：~N query ×
+    (生成+judge) 两次 LLM 调用 ≈ 数十秒，前端单请求 300s 超时。"""
+    run = await eval_run_service.run_qa_and_persist(
+        session, top_k=body.top_k, rewrite=body.rewrite,
+        eval_set=body.eval_set, persist=body.persist,
+    )
+    return _to_qa_detail(run)
+
+
+@router.get("/qa-runs", response_model=QARunListResponse)
+async def list_qa_runs(
+    limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_db),
+) -> QARunListResponse:
+    """QA 历史列表（最新在前；轻量，无 per_query）。"""
+    runs = await eval_run_service.list_runs(session, limit=limit, kind="qa")
+    items = [_to_qa_summary(r) for r in runs]
+    return QARunListResponse(total=len(items), items=items)
+
+
+@router.get("/qa-runs/{run_id}", response_model=QARunDetail)
+async def get_qa_run(
+    run_id: int,
+    session: AsyncSession = Depends(get_db),
+) -> QARunDetail:
+    """单条 QA 详情（含 per_query）。非 qa kind → 404。"""
+    run = await eval_run_service.get_run(session, run_id)
+    if run is None or _kind(run) != "qa":
+        raise HTTPException(status_code=404, detail="评测任务不存在")
+    return _to_qa_detail(run)

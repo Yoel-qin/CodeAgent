@@ -232,3 +232,102 @@ async def test_eval_run_ablation(monkeypatch):
         assert r3.json()["items"][0]["ablation"] == {"rerank": False}
     finally:
         app.dependency_overrides.pop(get_db, None)
+
+
+# ===== QA / 幻觉 eval 端点（M39）=====
+
+
+def _qa_run(rid: int) -> EvalRun:
+    """canned QA EvalRun（config.kind="qa"，含 QA 形状 aggregate）。"""
+    return EvalRun(
+        run_id=rid, status="COMPLETED", trigger="api", top_k=8, rewrite="off",
+        embedding_strategy="unified", n_queries=10, n_evaluable=10,
+        rerank_on_count=10, duration_ms=5678,
+        aggregate={"n": 10, "means": {"faithfulness": 0.8, "unverified_rate": 0.2,
+                                      "relevance": 0.9, "completeness": 0.85,
+                                      "clarity": 0.88},
+                   "weighted_quality": 0.86},
+        config={"kind": "qa", "top_k": 8, "rewrite": "off"},
+        per_query=[{"id": "qa01", "text": "what is X", "answer": "X is ...",
+                     "citations_n": 3, "unverified_rate": 0.1,
+                     "judge_scores": {"faithfulness": 0.9, "relevance": 0.8},
+                     "rationale": "good", "weighted_score": 0.85, "error": None}],
+        unresolved=[], error_message=None,
+        started_at=datetime.now(UTC), completed_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+    )
+
+
+async def test_eval_qa_endpoints(monkeypatch):
+    """POST /qa + GET /qa-runs + /qa-runs/{id}；GET /runs kind 正则接受 qa。"""
+    from fastapi.testclient import TestClient
+
+    from app.api.deps import get_db
+    from app.main import app
+
+    async def fake_run_qa_and_persist(session, *, top_k=8, rewrite="off", eval_set=None,
+                                      persist=True, **_):
+        return _qa_run(1)
+
+    async def fake_list_runs(session, *, limit=50, kind=None):
+        if kind == "qa":
+            return [_qa_run(2), _qa_run(1)]
+        return []
+
+    async def fake_get_run(session, rid):
+        return _qa_run(rid) if rid == 1 else None
+
+    monkeypatch.setattr(svc, "run_qa_and_persist", fake_run_qa_and_persist)
+    monkeypatch.setattr(svc, "list_runs", fake_list_runs)
+    monkeypatch.setattr(svc, "get_run", fake_get_run)
+
+    async def _override():
+        return None
+
+    app.dependency_overrides[get_db] = _override
+    try:
+        client = TestClient(app)
+
+        # POST /v1/eval/qa → 200 + QARunDetail（kind="qa", QAAggregate shape）
+        r = client.post("/v1/eval/qa", json={"persist": False})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["kind"] == "qa"
+        assert body["aggregate"]["weighted_quality"] == 0.86
+        assert body["aggregate"]["means"]["faithfulness"] == 0.8
+        assert body["per_query"] and body["per_query"][0]["id"] == "qa01"
+        assert body["config"]["kind"] == "qa"
+
+        # GET /v1/eval/qa-runs → 列表，items 无 per_query、有 QA aggregate
+        r2 = client.get("/v1/eval/qa-runs", params={"limit": 50})
+        assert r2.status_code == 200
+        lst = r2.json()
+        assert lst["total"] == 2
+        item = lst["items"][0]
+        assert "per_query" not in item
+        assert item["aggregate"]["weighted_quality"] == 0.86
+        assert item["kind"] == "qa"
+
+        # GET /v1/eval/qa-runs/{id} → 详情含 per_query
+        r3 = client.get("/v1/eval/qa-runs/1")
+        assert r3.status_code == 200 and "per_query" in r3.json()
+
+        # 非 qa kind → 404（返回 single kind run 给 qa-runs/{id}）
+        async def fake_get_run_single(session, rid):
+            return _run(rid) if rid == 1 else None  # _run returns kind="single"
+
+        monkeypatch.setattr(svc, "get_run", fake_get_run_single)
+        r4 = client.get("/v1/eval/qa-runs/1")
+        assert r4.status_code == 404
+
+        # 未知 id → 404
+        monkeypatch.setattr(svc, "get_run", fake_get_run)
+        assert client.get("/v1/eval/qa-runs/999").status_code == 404
+
+        # GET /v1/eval/runs?kind=qa → kind 正则接受 qa
+        monkeypatch.setattr(svc, "get_run", fake_get_run)
+        r5 = client.get("/v1/eval/runs", params={"limit": 50, "kind": "qa"})
+        assert r5.status_code == 200
+        assert r5.json()["total"] == 2
+    finally:
+        app.dependency_overrides.pop(get_db, None)

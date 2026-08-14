@@ -25,11 +25,14 @@ from app.core.config import settings
 from app.db.models.eval import EvalRun
 from app.eval.ab_service import DEFAULT_PAIRS, ABPair, _make_recall_fn, filter_by_tag, run_ab
 from app.eval.eval_service import load_eval_queries, run_eval
+from app.eval.judge import QA_RUBRIC
+from app.eval.qa_service import load_qa_queries, run_qa_eval
 from app.retrieval.ablation import AblationConfig
 
 # app/services/eval_run_service.py → parents[2] = backend/；与 CLI 的 _BACKEND_ROOT 算法一致
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EVAL_SET = _BACKEND_ROOT / "eval" / "eval_set.yaml"
+DEFAULT_QA_EVAL_SET = _BACKEND_ROOT / "eval" / "eval_set_qa.yaml"
 
 # pair 名称 → ABPair（镜像 scripts/ab_eval.py:45）；API/service 按 pair 名称解析
 _PAIR_BY_NAME: dict[str, ABPair] = {p.name: p for p in DEFAULT_PAIRS}
@@ -51,6 +54,18 @@ def _normalize_agg(agg: dict | None) -> dict | None:
         "precision": {str(k): v for k, v in (agg.get("precision") or {}).items()},
         "mrr": agg.get("mrr"),
         "ndcg": {str(k): v for k, v in (agg.get("ndcg") or {}).items()},
+    }
+
+
+def _normalize_qa_agg(agg: dict | None) -> dict | None:
+    """规整 QA aggregate 为 JSONB 安全形状（数值转 float|None；QA 无 K-map）。"""
+    if not agg:
+        return None
+    means = agg.get("means") or {}
+    return {
+        "n": agg.get("n"),
+        "means": {k: (round(float(v), 4) if v is not None else None) for k, v in means.items()},
+        "weighted_quality": agg.get("weighted_quality"),
     }
 
 
@@ -245,6 +260,50 @@ async def run_ab_and_persist(
                 report_dict["graph_subset"] = _trim_ab_report(sub.to_dict(), diagnose=diagnose)
         run.config = {**(run.config or {}), "report": report_dict}
     except Exception as e:  # 整轮失败仍落 FAILED 行（含 error_message），对齐 run_and_persist
+        run.status = "FAILED"
+        run.error_message = f"{type(e).__name__}: {e}"
+    finally:
+        run.completed_at = datetime.now(UTC)
+        run.duration_ms = int((run.completed_at - started).total_seconds() * 1000)
+        if persist:
+            await session.commit()
+    return run
+
+
+async def run_qa_and_persist(
+    session: AsyncSession, *,
+    top_k: int = 8, rewrite: str = "off", eval_set: str | None = None,
+    trigger: str = "api", persist: bool = True,
+) -> EvalRun:
+    """跑一轮 QA/幻觉 eval 并（默认）持久化。镜像 run_ab_and_persist 时序，config.kind="qa"。"""
+    path = eval_set or str(DEFAULT_QA_EVAL_SET)
+    queries = load_qa_queries(path)
+    started = datetime.now(UTC)
+
+    run = EvalRun(
+        status="PENDING", trigger=trigger, top_k=top_k, rewrite=rewrite,
+        embedding_strategy=settings.embedding_strategy, n_queries=len(queries),
+        started_at=started,
+        config={
+            "kind": "qa", "top_k": top_k, "rewrite": rewrite, "eval_set": path,
+            "embedding_strategy": settings.embedding_strategy,
+            "rubric_weights": {k: cfg["weight"] for k, cfg in QA_RUBRIC.items()},
+        },
+    )
+    if persist:
+        session.add(run)
+        await session.flush()
+
+    try:
+        report = await run_qa_eval(session, queries, top_k=top_k, rewrite=rewrite)
+        run.status = "COMPLETED"
+        run.aggregate = _normalize_qa_agg(report.aggregate)
+        run.n_evaluable = report.n_evaluable
+        run.rerank_on_count = 0  # QA 无检索 rerank_on 概念
+        run.per_query = report.per_query
+        run.unresolved = report.unresolved
+        run.config = {**(run.config or {}), **report.config}
+    except Exception as e:
         run.status = "FAILED"
         run.error_message = f"{type(e).__name__}: {e}"
     finally:

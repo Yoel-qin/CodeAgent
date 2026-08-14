@@ -170,3 +170,42 @@ async def test_list_runs_and_get_run():
     assert [r.run_id for r in runs] == [2, 1]
     assert await svc.get_run(session, 1) is not None
     assert await svc.get_run(session, 999) is None
+
+
+# ---- run_qa_and_persist（M39，kind="qa"）----
+
+
+async def test_run_qa_and_persist_completed(monkeypatch):
+    from app.eval.qa_service import QAReport
+    report = QAReport(
+        config={"top_k": 8, "rewrite": "off"},
+        aggregate={"n": 1, "means": {"faithfulness": 0.9, "unverified_rate": 0.1},
+                   "weighted_quality": 0.85},
+        n_queries=2, n_evaluable=1,
+        per_query=[{"id": "q01", "judge_scores": {"faithfulness": 0.9}, "unverified_rate": 0.1}],
+        unresolved=[],
+    )
+
+    async def fake_run_qa(*a, **kw):
+        return report
+
+    monkeypatch.setattr(svc, "run_qa_eval", fake_run_qa)
+    monkeypatch.setattr(svc, "load_qa_queries", lambda p: ["q"])
+    run = await svc.run_qa_and_persist(None, top_k=8, persist=False)
+
+    assert run.status == "COMPLETED"
+    assert run.config["kind"] == "qa"
+    assert run.aggregate["means"]["faithfulness"] == 0.9
+    assert run.per_query == report.per_query
+    assert "rubric_weights" in run.config
+
+
+async def test_run_qa_and_persist_failed(monkeypatch):
+    async def boom(*a, **kw):
+        raise ValueError("kaboom")
+
+    monkeypatch.setattr(svc, "run_qa_eval", boom)
+    monkeypatch.setattr(svc, "load_qa_queries", lambda p: ["q"])
+    run = await svc.run_qa_and_persist(None, persist=False)
+    assert run.status == "FAILED"
+    assert run.aggregate is None

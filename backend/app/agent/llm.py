@@ -26,21 +26,32 @@ IntentLabel = Literal["code", "doc", "graph", "bug", "review", "test", "web",
 _IntentLabelBase = Literal["code", "doc", "graph", "bug", "review", "test", "web",
                             "mixed", "chitchat"]
 
-_CHAT_MODEL: ChatOpenAI | None = None
+_TIER_MODELS: dict[tuple[str, str], ChatOpenAI] = {}
 
 
-def get_chat_model() -> ChatOpenAI:
-    """惰性单例 ChatOpenAI（指向 DeepSeek，streaming 供 token 回调）。"""
-    global _CHAT_MODEL
-    if _CHAT_MODEL is None:
-        _CHAT_MODEL = ChatOpenAI(
-            model=settings.llm_model,
+def model_for(purpose: str = "reasoning") -> ChatOpenAI:
+    """M42 模型分级 seam：routing（意图分类）/ extraction（结构化提取）/ reasoning（推理生成）。
+
+    model 名取 ``settings.llm_model_{purpose}``，空串回落 ``settings.llm_model``
+    （默认三档同模型 = 零行为变更）。按 (purpose, model名) 缓存惰性单例。
+    M44 ModelRouter 落地时只需替换本函数内部实现，调用点零改。
+    """
+    name = (getattr(settings, f"llm_model_{purpose}", "") or "").strip() or settings.llm_model
+    key = (purpose, name)
+    if key not in _TIER_MODELS:
+        _TIER_MODELS[key] = ChatOpenAI(
+            model=name,
             api_key=settings.llm_api_key,
             base_url=settings.llm_base_url,
             streaming=True,
             temperature=0.3,
         )
-    return _CHAT_MODEL
+    return _TIER_MODELS[key]
+
+
+def get_chat_model() -> ChatOpenAI:
+    """惰性单例（兼容别名 = model_for("reasoning")，既有调用点零改）。"""
+    return model_for("reasoning")
 
 
 def configured() -> bool:
@@ -176,7 +187,7 @@ async def classify_intent_and_collab(query: str,
     try:
         sys_prompt = _INTENT_SYS_DOMAIN if pack_active else _INTENT_SYS
         schema = IntentSchema if pack_active else _IntentSchemaBase
-        structured = get_chat_model().with_structured_output(schema)
+        structured = model_for("routing").with_structured_output(schema)
         cfg: dict = {}
         if collector is not None:
             cfg["callbacks"] = [TraceCallbackHandler(collector)]
@@ -195,6 +206,28 @@ async def classify_intent(query: str) -> IntentLabel:
 
 
 # ---- token → SSE 回调：自动 Agent 作答轮逐 token 推 custom 事件 ----
+
+
+def _usage_from_response(response) -> dict | None:
+    """从 LLMResult 取 usage：llm_output.token_usage 优先 → chunk usage_metadata → None。
+
+    模块级供 TraceCallbackHandler（M41 llm span）与 CostCallbackHandler（M42 记量）共用。
+    """
+    try:
+        out = getattr(response, "llm_output", None) or {}
+        tu = out.get("token_usage")
+        if isinstance(tu, dict) and tu.get("prompt_tokens") is not None:
+            return tu
+        gens = getattr(response, "generations", None)
+        if gens and gens[0]:
+            msg = getattr(gens[0][0], "message", None)
+            um = getattr(msg, "usage_metadata", None) if msg else None
+            if isinstance(um, dict) and um.get("input_tokens") is not None:
+                return {"prompt_tokens": um["input_tokens"],
+                        "completion_tokens": um.get("output_tokens") or 0}
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 class TokenSSEHandler(BaseCallbackHandler):
@@ -262,23 +295,6 @@ class TraceCallbackHandler(TokenSSEHandler):
         except Exception:  # noqa: BLE001
             pass
 
-    def _usage_from(self, response) -> dict | None:
-        try:
-            out = getattr(response, "llm_output", None) or {}
-            tu = out.get("token_usage")
-            if isinstance(tu, dict) and tu.get("prompt_tokens") is not None:
-                return tu
-            gens = getattr(response, "generations", None)
-            if gens and gens[0]:
-                msg = getattr(gens[0][0], "message", None)
-                um = getattr(msg, "usage_metadata", None) if msg else None
-                if isinstance(um, dict) and um.get("input_tokens") is not None:
-                    return {"prompt_tokens": um["input_tokens"],
-                            "completion_tokens": um.get("output_tokens") or 0}
-        except Exception:  # noqa: BLE001
-            return None
-        return None
-
     def on_llm_end(self, response, *, run_id, **kwargs) -> None:  # noqa: ARG002
         if self.collector is None or run_id not in self._pending:
             return
@@ -286,7 +302,7 @@ class TraceCallbackHandler(TokenSSEHandler):
             import time
             info = self._pending.pop(run_id)
             dur = (time.perf_counter() - info["t0"]) * 1000
-            usage = self._usage_from(response)
+            usage = _usage_from_response(response)
             from app.agent.trace import tokens_from_usage
             self.collector.record(
                 "llm", info["name"], dur, parent_id=info["parent_id"],

@@ -46,8 +46,10 @@ def test_classify_no_pack_uses_base_sys(monkeypatch):
             return llm.IntentSchema(intent="code", needs_collab=False)
 
     monkeypatch.setattr(llm, "configured", lambda: True)
-    monkeypatch.setattr(llm, "get_chat_model", lambda: type("M", (), {
-        "with_structured_output": lambda self, schema: _FakeStructured(schema)})())
+    _fm = type("M", (), {
+        "with_structured_output": lambda self, schema: _FakeStructured(schema)})()
+    monkeypatch.setattr(llm, "get_chat_model", lambda: _fm)
+    monkeypatch.setattr(llm, "model_for", lambda purpose="reasoning": _fm)
     import asyncio
     asyncio.run(classify_intent_and_collab("any", pack=None))
     assert captured["sys"] == _INTENT_SYS
@@ -66,8 +68,10 @@ def test_classify_with_pack_uses_domain_sys(monkeypatch):
             return llm.IntentSchema(intent="trace", needs_collab=False)
 
     monkeypatch.setattr(llm, "configured", lambda: True)
-    monkeypatch.setattr(llm, "get_chat_model", lambda: type("M", (), {
-        "with_structured_output": lambda self, schema: _FakeStructured(schema)})())
+    _fm = type("M", (), {
+        "with_structured_output": lambda self, schema: _FakeStructured(schema)})()
+    monkeypatch.setattr(llm, "get_chat_model", lambda: _fm)
+    monkeypatch.setattr(llm, "model_for", lambda purpose="reasoning": _fm)
     import asyncio
     asyncio.run(classify_intent_and_collab("any", pack=_pack()))
     assert captured["sys"] == _INTENT_SYS_DOMAIN
@@ -90,7 +94,9 @@ def test_classify_no_pack_uses_base_schema(monkeypatch):
             return _FakeStructured(schema)
 
     monkeypatch.setattr(llm, "configured", lambda: True)
-    monkeypatch.setattr(llm, "get_chat_model", lambda: _FakeModel())
+    _fm = _FakeModel()
+    monkeypatch.setattr(llm, "get_chat_model", lambda: _fm)
+    monkeypatch.setattr(llm, "model_for", lambda purpose="reasoning": _fm)
     import asyncio
     asyncio.run(classify_intent_and_collab("any", pack=None))
     # 无包必须用 _IntentSchemaBase（9 标签），排除领域标签
@@ -113,7 +119,9 @@ def test_classify_with_pack_uses_full_schema(monkeypatch):
             return _FakeStructured(schema)
 
     monkeypatch.setattr(llm, "configured", lambda: True)
-    monkeypatch.setattr(llm, "get_chat_model", lambda: _FakeModel())
+    _fm = _FakeModel()
+    monkeypatch.setattr(llm, "get_chat_model", lambda: _fm)
+    monkeypatch.setattr(llm, "model_for", lambda purpose="reasoning": _fm)
     import asyncio
     asyncio.run(classify_intent_and_collab("any", pack=_pack()))
     # 有包必须用完整 IntentSchema（12 标签）

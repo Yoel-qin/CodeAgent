@@ -57,7 +57,8 @@ def patched(monkeypatch):
 
 async def test_stream_tokens_captures_usage(monkeypatch, patched):
     monkeypatch.setattr("app.clients.llm_client.settings", type("S", (), {
-        "llm_base_url": "http://x", "llm_api_key": "k", "llm_model": "m"}))
+        "llm_base_url": "http://x", "llm_api_key": "k", "llm_model": "m",
+        "llm_model_reasoning": ""}))
     client = LLMClient()
     patched(_sse([
         {"choices": [{"delta": {"content": "你好"}}]},
@@ -72,7 +73,8 @@ async def test_stream_tokens_captures_usage(monkeypatch, patched):
 
 async def test_stream_tokens_no_usage_leaves_out_empty(monkeypatch, patched):
     monkeypatch.setattr("app.clients.llm_client.settings", type("S", (), {
-        "llm_base_url": "http://x", "llm_api_key": "k", "llm_model": "m"}))
+        "llm_base_url": "http://x", "llm_api_key": "k", "llm_model": "m",
+        "llm_model_reasoning": ""}))
     client = LLMClient()
     patched(_sse([{"choices": [{"delta": {"content": "a"}}]}]))
     out: dict = {}
@@ -83,7 +85,8 @@ async def test_stream_tokens_no_usage_leaves_out_empty(monkeypatch, patched):
 
 async def test_chat_meta_returns_text_and_usage(monkeypatch, patched):
     monkeypatch.setattr("app.clients.llm_client.settings", type("S", (), {
-        "llm_base_url": "http://x", "llm_api_key": "k", "llm_model": "m"}))
+        "llm_base_url": "http://x", "llm_api_key": "k", "llm_model": "m",
+        "llm_model_reasoning": ""}))
     client = LLMClient()
     patched(_sse([
         {"choices": [{"delta": {"content": "A"}}]},
@@ -97,7 +100,8 @@ async def test_chat_meta_returns_text_and_usage(monkeypatch, patched):
 
 async def test_chat_meta_without_usage(monkeypatch, patched):
     monkeypatch.setattr("app.clients.llm_client.settings", type("S", (), {
-        "llm_base_url": "http://x", "llm_api_key": "k", "llm_model": "m"}))
+        "llm_base_url": "http://x", "llm_api_key": "k", "llm_model": "m",
+        "llm_model_reasoning": ""}))
     client = LLMClient()
     patched(_sse([{"choices": [{"delta": {"content": "X"}}]}]))
     text, usage = await client.chat_meta([{"role": "user", "content": "q"}])

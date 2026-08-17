@@ -18,7 +18,8 @@ class LLMClient:
                  model: str | None = None) -> None:
         self.base_url = (base_url or settings.llm_base_url).rstrip("/")
         self.api_key = api_key if api_key is not None else settings.llm_api_key
-        self.model = model or settings.llm_model
+        # M42：reasoning 档非空时作为默认生成模型（分级 seam 的 legacy 侧入口）
+        self.model = model or settings.llm_model_reasoning or settings.llm_model
 
     @property
     def configured(self) -> bool:

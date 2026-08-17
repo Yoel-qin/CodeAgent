@@ -17,7 +17,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.agents._base import _merge_callbacks
-from app.agent.llm import TraceCallbackHandler, configured, get_chat_model
+from app.agent.llm import TraceCallbackHandler, configured, get_chat_model, model_for
 from app.core.config import settings
 
 
@@ -141,7 +141,7 @@ async def _extract(schema, prompt: str, observations: str, *,
     M41：llm_config 由调用方构建（含 TraceCallbackHandler），传给 ainvoke 记 llm span。
     """
     try:
-        structured = get_chat_model().with_structured_output(schema)
+        structured = model_for("extraction").with_structured_output(schema)
         kw = {"config": llm_config} if llm_config is not None else {}
         return await structured.ainvoke([
             {"role": "system", "content": prompt},

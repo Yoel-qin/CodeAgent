@@ -41,6 +41,7 @@ def _bind_model(responses):
 def _patch_model(monkeypatch, responses):
     model, calls = _bind_model(responses)
     monkeypatch.setattr(cn, "get_chat_model", lambda: model)
+    monkeypatch.setattr(cn, "model_for", lambda purpose="reasoning": model)
     return calls
 
 
@@ -155,6 +156,7 @@ def _patch_struct(monkeypatch, returns):
             return _Struct(by_type.get(schema))
 
     monkeypatch.setattr(cn, "get_chat_model", lambda: _Model())
+    monkeypatch.setattr(cn, "model_for", lambda purpose="reasoning": _Model())
     monkeypatch.setattr(cn, "configured", lambda: True)
 
 
@@ -334,6 +336,7 @@ async def test_run_layer_records_llm_spans_via_trace_callback(monkeypatch):
             return _S()
 
     monkeypatch.setattr(cn, "get_chat_model", lambda: _ModelWithStruct())
+    monkeypatch.setattr(cn, "model_for", lambda purpose="reasoning": _ModelWithStruct())
     monkeypatch.setattr(cn, "configured", lambda: True)
 
     out = await cn.diagnose(
@@ -426,6 +429,7 @@ async def test_run_layer_trace_no_token_leak(monkeypatch):
             return _S()
 
     monkeypatch.setattr(cn, "get_chat_model", lambda: _ModelWithStruct())
+    monkeypatch.setattr(cn, "model_for", lambda purpose="reasoning": _ModelWithStruct())
     monkeypatch.setattr(cn, "configured", lambda: True)
 
     out = await cn.diagnose(

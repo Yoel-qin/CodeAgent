@@ -252,9 +252,9 @@ class TraceCallbackHandler(TokenSSEHandler):
             run_id = kwargs.get("run_id")
             if run_id in self._pending:
                 self._pending[run_id]["chars"] += len(token or "")
+            super().on_llm_new_token(token, **kwargs)  # 原 token→SSE 职责保留
         except Exception:  # noqa: BLE001
             pass
-        super().on_llm_new_token(token, **kwargs)  # 原 token→SSE 职责保留
 
     def _usage_from(self, response) -> dict | None:
         try:
@@ -297,6 +297,8 @@ class TraceCallbackHandler(TokenSSEHandler):
             info = self._pending.pop(run_id)
             s = self.collector.start("llm", info["name"],
                                      parent_id=info["parent_id"])
+            # 用 t0 回填 start_ms 使 end() 算出的 duration 反映真实 LLM 调用时长
+            s.start_ms = round((info["t0"] - self.collector._t0) * 1000, 2)
             self.collector.end(s, error=f"{type(error).__name__}: {error}")
         except Exception:  # noqa: BLE001
             pass

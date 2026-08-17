@@ -120,7 +120,7 @@ def _handler_spans(collector, *, usage=None):
     h = TraceCallbackHandler(collector)
     rid = uuid4()
     h.on_llm_start(serialized={}, prompts=[], run_id=rid)
-    h.on_llm_new_token("abc")
+    h.on_llm_new_token("abc", run_id=rid)
     resp = type("R", (), {"llm_output": {"token_usage": usage}} if usage else {"llm_output": None})()
     h.on_llm_end(resp, run_id=rid)
     return collector.to_payload()["spans"]
@@ -140,13 +140,16 @@ def test_trace_callback_handler_estimate_and_error():
     spans = _handler_spans(c)  # 无 usage → 估算（prompt 记 0，completion 按 token chars）
     assert spans[-1]["tokens"]["estimated"] is True
     assert spans[-1]["tokens"]["completion"] == 0  # "abc" 3 chars // 4 == 0
-    # error 路径
+    # error 路径：验证 duration 反映真实耗时且 status=error
+    import time
     h = TraceCallbackHandler(c)
     rid = uuid4()
     h.on_llm_start(serialized={}, prompts=[], run_id=rid)
+    time.sleep(0.05)
     h.on_llm_error(Exception("net"), run_id=rid)
     s = c.to_payload()["spans"][-1]
     assert s["status"] == "error"
+    assert s["duration_ms"] >= 40  # 至少 ~50ms 的 sleep
 
 
 def test_trace_callback_handler_never_raises():

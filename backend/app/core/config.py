@@ -120,6 +120,19 @@ class Settings(BaseSettings):
     collab_max_tool_calls: int = 12      # 单次协作总工具调用上限
     collab_max_rounds_per_layer: int = 3 # 每层 tool-cycling 轮数硬界
 
+    # M42 CostController（预算双闸 + 模型分级 seam，opt-in；默认 off = 零行为变更）
+    cost_control_enabled: bool = False
+    cost_max_tokens_per_request: int = 80000   # 单请求 prompt+completion 合计上限（真值优先，估算兜底）
+    cost_max_llm_calls: int = 12               # 单请求 LLM 调用次数上限
+    llm_model_routing: str = ""        # 意图分类档；空 = 回落 llm_model（M44 ModelRouter 的接缝）
+    llm_model_extraction: str = ""     # 结构化提取档（collab _extract）；空 = 回落 llm_model
+    llm_model_reasoning: str = ""      # 推理生成档（Agent/生成）；空 = 回落 llm_model
+
+    # M42 高频 QA / 查询 embedding 缓存（Redis，opt-in；默认 off）
+    qa_cache_enabled: bool = False
+    qa_cache_ttl_seconds: int = 3600
+    embed_cache_ttl_seconds: int = 86400
+
     # ---- 联网 MCP 工具（让场景 Agent 调用远程/在线 MCP server）----
     # 仅 rag_engine=langgraph 生效（新增 WEB_SEARCH 场景 Agent）。mcp_servers 为 JSON 数组字符串：
     # [{"name":"...","url":"http://host:port/sse","transport":"sse|streamable_http"}]。

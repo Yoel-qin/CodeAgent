@@ -155,12 +155,13 @@ class _LLMSpanCtx:
 
 @asynccontextmanager
 async def llm_span(collector: SpanCollector | None, name: str,
-                   prompt_text: str = ""):
-    """包一次流式 LLM 调用：进入开 llm span（parent=栈顶）；退出按
+                   prompt_text: str = "", *, parent_id: int | None = None):
+    """包一次流式 LLM 调用：进入开 llm span（parent=栈顶或显式 parent_id）；退出按
     usage_out 真值 / chars 估算结算 tokens。collector=None → 零开销直通。
     异常处理：调用方 mark_error() → error 记入 span；未捕获异常 → except 记 error 后重抛。"""
     ctx = _LLMSpanCtx()
-    s = collector.start("llm", name, parent_id=collector.stack_top) \
+    s = collector.start("llm", name,
+                        parent_id=parent_id if parent_id is not None else collector.stack_top) \
         if collector is not None else None
     try:
         yield ctx

@@ -184,9 +184,12 @@ async def add_user_message(
 
 async def persist_retrieval_log(
     session: AsyncSession, query: str, meta: dict, citations: list[dict],
-    agent_steps: list[dict] | None = None,
+    agent_steps: list[dict] | dict | None = None,
 ) -> RetrievalLog:
-    """写检索日志（漏斗 meta + 精排候选 + Agent 工具轨迹），flush 后返回（供 assistant 消息外键）。"""
+    """写检索日志（漏斗 meta + 精排候选 + Agent 工具轨迹），flush 后返回（供 assistant 消息外键）。
+
+    M41 起新写入为 dict v2 trace 形状（旧调用方仍传扁平 list）。
+    """
     rlog = RetrievalLog(
         query_text=query,
         recall_results=meta,
@@ -296,7 +299,8 @@ async def stream_chat(
             limit=settings.conversation_history_turns,
         )
         messages = build_messages(query, context, agent_type, history)
-        async with llm_span(collector, llm.model, prompt_text=context) as ls:
+        async with llm_span(collector, llm.model, prompt_text=context,
+                             parent_id=rq.span_id) as ls:
             try:
                 async for tok in llm.stream_tokens(messages, usage_out=ls.usage_out):
                     ls.add_token(tok)

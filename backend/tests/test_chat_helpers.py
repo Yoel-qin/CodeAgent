@@ -37,6 +37,7 @@ class _AddRecorder:
     """假 AsyncSession：记录 add(...) 调用，flush 为 no-op（无需真实 DB）。"""
 
     last_rlog_agent_steps: dict | list | None = None  # M41：flush 时捕获最新 agent_steps
+    flush_history: list[dict | list | None] = []  # M41：每次 flush 的 agent_steps 快照
 
     def __init__(self) -> None:
         self.added: list = []
@@ -49,6 +50,7 @@ class _AddRecorder:
         for obj in reversed(self.added):
             if hasattr(obj, "agent_steps"):
                 _AddRecorder.last_rlog_agent_steps = obj.agent_steps
+                _AddRecorder.flush_history.append(obj.agent_steps)
                 break
         return None
 
@@ -96,7 +98,12 @@ def test_build_agent_trace_type_fallback():
 
 
 async def test_stream_chat_persists_trace_dict(monkeypatch):
-    """M41 legacy 路径：agent_steps 落 version:2 dict，含 request/retrieval/llm span。"""
+    """M41 legacy 路径：agent_steps 落 version:2 dict，含 request/retrieval/llm span。
+
+    验证：(1) persist 时落部分 payload（仅 request+retrieval）；
+    (2) 生成后同事务补写完整 payload（含 llm）；
+    (3) llm span 正确挂在 request span 下（parent_id）。
+    """
     import app.services.chat_service as cs
 
     async def fake_recall(session, query, top_k=8, **kw):
@@ -117,13 +124,55 @@ async def test_stream_chat_persists_trace_dict(monkeypatch):
     monkeypatch.setattr(cs.llm, "stream_tokens", fake_stream_tokens)
     monkeypatch.setattr(cs.settings, "conversation_history_turns", 0)
 
+    _AddRecorder.flush_history = []  # 重置历史
     events: list[tuple[str, dict]] = []
     async for ev in cs.stream_chat(_AddRecorder(), "q"):
         events.append(ev)
-    # persist 被调两次：先 dict(partial) 后补全——断言最终 flush 的 dict 完整
+
+    # ---- 不变量 1：persist 时落部分 payload（仅 request+retrieval，无 llm）----
+    partial = _AddRecorder.flush_history[0]
+    assert partial["version"] == 2
+    partial_kinds = [s["kind"] for s in partial["spans"]]
+    assert partial_kinds == ["request", "retrieval"]
+
+    # ---- 不变量 2：最终 payload 含全部三种 kind ----
     payload = _AddRecorder.last_rlog_agent_steps
     assert payload is not None
     assert payload["version"] == 2
     kinds = [s["kind"] for s in payload["spans"]]
     assert kinds == ["request", "retrieval", "llm"]
     assert payload["summary"]["tokens"]["n_llm_calls"] == 1
+
+    # ---- 不变量 3：llm span 的 parent_id == request span 的 span_id ----
+    spans_by_kind = {s["kind"]: s for s in payload["spans"]}
+    assert spans_by_kind["llm"]["parent_id"] == spans_by_kind["request"]["span_id"]
+
+
+async def test_stream_chat_trace_no_llm_key(monkeypatch):
+    """M41 no-LLM-key 变体：最终 payload 只含 request+retrieval（无 llm span）。"""
+    import app.services.chat_service as cs
+
+    async def fake_recall(session, query, top_k=8, **kw):
+        return [], {"mode": "default", "merged": 0, "recall_ms": 5, "rerank_ms": 2,
+                    "terms": ["q"]}
+
+    monkeypatch.setattr(cs.pipeline, "recall", fake_recall)
+    async def _fake_enrich(_s, _r):
+        return None
+    monkeypatch.setattr(cs, "_enrich_content_types", _fake_enrich)
+    import app.clients.llm_client as _llm_mod
+    monkeypatch.setattr(_llm_mod.LLMClient, "configured",
+                         property(lambda self: False))
+    monkeypatch.setattr(cs.settings, "conversation_history_turns", 0)
+
+    _AddRecorder.flush_history = []
+    events: list[tuple[str, dict]] = []
+    async for ev in cs.stream_chat(_AddRecorder(), "q"):
+        events.append(ev)
+
+    payload = _AddRecorder.last_rlog_agent_steps
+    assert payload is not None
+    assert payload["version"] == 2
+    kinds = [s["kind"] for s in payload["spans"]]
+    assert kinds == ["request", "retrieval"]
+    assert payload["summary"]["tokens"]["n_llm_calls"] == 0

@@ -41,7 +41,7 @@ def test_classify_no_pack_uses_base_sys(monkeypatch):
         def __init__(self, schema):
             self.schema = schema
 
-        async def ainvoke(self, messages):
+        async def ainvoke(self, messages, **kwargs):
             captured["sys"] = messages[0]["content"]
             return llm.IntentSchema(intent="code", needs_collab=False)
 
@@ -61,7 +61,7 @@ def test_classify_with_pack_uses_domain_sys(monkeypatch):
         def __init__(self, schema):
             self.schema = schema
 
-        async def ainvoke(self, messages):
+        async def ainvoke(self, messages, **kwargs):
             captured["sys"] = messages[0]["content"]
             return llm.IntentSchema(intent="trace", needs_collab=False)
 

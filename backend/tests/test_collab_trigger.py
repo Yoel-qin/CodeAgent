@@ -65,7 +65,7 @@ async def test_query_analysis_needs_collab_off_when_disabled(monkeypatch):
     monkeypatch.setattr("app.agent.nodes.query_analysis.rewrite_query", fake_rw)
     monkeypatch.setattr("app.agent.nodes.query_analysis.classify_intent_and_collab", fake_classify)
     # 默认 multi_agent_collab_enabled=False → needs_collab 被 AND 为 False
-    out = await query_analysis({"query": "堆积排查"})
+    out = await query_analysis({"query": "堆积排查"}, {"configurable": {}})
     assert out["intent"] == "bug"
     assert out["needs_collab"] is False
 
@@ -81,7 +81,7 @@ async def test_query_analysis_needs_collab_on_when_enabled(monkeypatch):
     monkeypatch.setattr("app.agent.nodes.query_analysis.classify_intent_and_collab", fake_classify)
     monkeypatch.setattr("app.agent.nodes.query_analysis.settings",
                         type("S", (), {"multi_agent_collab_enabled": True})())
-    out = await query_analysis({"query": "堆积排查"})
+    out = await query_analysis({"query": "堆积排查"}, {"configurable": {}})
     assert out["needs_collab"] is True
 
 

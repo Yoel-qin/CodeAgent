@@ -168,7 +168,7 @@ async def test_query_analysis_sets_intent(monkeypatch):
     monkeypatch.setattr("app.agent.nodes.query_analysis.rewrite_query", fake_rw)
     monkeypatch.setattr("app.agent.nodes.query_analysis.classify_intent_and_collab", fake_classify)
 
-    out = await query_analysis({"query": "A.m1 做了什么"})
+    out = await query_analysis({"query": "A.m1 做了什么"}, {"configurable": {}})
     assert out["intent"] == "code"
     assert out["semantic_query"] == "A.m1 做了什么"
     assert "Foo" in out["keywords"]

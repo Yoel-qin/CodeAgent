@@ -38,7 +38,7 @@ async def test_query_analysis(monkeypatch):
 
     monkeypatch.setattr("app.agent.nodes.query_analysis.rewrite_query", fake_rw)
 
-    out = await query_analysis({"query": "A.m1 做了什么"})
+    out = await query_analysis({"query": "A.m1 做了什么"}, {"configurable": {}})
     assert out["semantic_query"] == "A.m1 做了什么 重写"
     assert "Foo" in out["keywords"]
     assert out["rewritten"] is True
@@ -94,7 +94,7 @@ async def test_generate_streams_tokens(monkeypatch):
                         lambda: lambda d: pushed.append(d))
     monkeypatch.setattr(llm_mod.LLMClient, "configured", property(lambda self: True))
 
-    async def fake_stream(messages):
+    async def fake_stream(messages, *, usage_out=None):
         for t in ("Hel", "lo"):
             yield t
 

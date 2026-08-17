@@ -140,7 +140,7 @@ async def test_generate_passes_history_to_build_messages(monkeypatch):
 
     seen: list[list[dict]] = []
 
-    async def fake_stream(messages):
+    async def fake_stream(messages, *, usage_out=None):
         seen.append(messages)
         yield "ok"
 

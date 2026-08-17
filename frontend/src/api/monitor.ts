@@ -121,3 +121,60 @@ export const getIndexStats = () =>
 
 export const getResources = () =>
   api.get<Resources>("/v1/monitor/resources").then((r) => r.data);
+
+// ---- GET /monitor/traces（M41 全链路追溯）----
+
+export interface TraceTokens {
+  prompt: number;
+  completion: number;
+  n_llm_calls: number;
+  estimated: boolean;
+}
+
+export interface TraceListItem {
+  log_id: number;
+  query: string;
+  mode: string | null;
+  agent: string | null;
+  total_ms: number | null;
+  tokens: TraceTokens | null;
+  has_trace: boolean;
+  created_at: string | null;
+}
+
+export interface TraceList {
+  window: string;
+  total: number;
+  items: TraceListItem[];
+}
+
+export interface TraceSpan {
+  span_id: number;
+  parent_id: number | null;
+  kind: string;
+  name: string;
+  start_ms: number;
+  duration_ms: number | null;
+  status: string;
+  error: string | null;
+  tokens: { prompt: number; completion: number; estimated: boolean } | null;
+  attrs: Record<string, unknown>;
+}
+
+export interface TraceDetail {
+  log_id: number;
+  query: string;
+  mode: string | null;
+  legacy: boolean;
+  spans: TraceSpan[];
+  summary: { total_ms: number; tokens?: TraceTokens; n_spans: number } | null;
+  created_at: string | null;
+}
+
+export const listTraces = (win: MonitorWindow = "today", limit = 50) =>
+  api
+    .get<TraceList>("/v1/monitor/traces", { params: { window: win, limit } })
+    .then((r) => r.data);
+
+export const getTrace = (logId: number) =>
+  api.get<TraceDetail>(`/v1/monitor/traces/${logId}`).then((r) => r.data);

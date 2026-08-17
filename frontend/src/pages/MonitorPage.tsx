@@ -26,6 +26,8 @@ import {
   getIndexStats,
   getResources,
   getRetrievalPerf,
+  getTrace,
+  listTraces,
   type ApiUsage,
   type ComponentInfo,
   type IndexStats,
@@ -33,7 +35,10 @@ import {
   type MonitorWindow,
   type Resources,
   type RetrievalPerf,
+  type TraceDetail,
+  type TraceListItem,
 } from "../api/monitor";
+import TraceView from "../components/monitor/TraceView";
 
 const { Text } = Typography;
 
@@ -99,22 +104,26 @@ export default function MonitorPage() {
   const [usage, setUsage] = useState<ApiUsage | null>(null);
   const [indexStats, setIndexStats] = useState<IndexStats | null>(null);
   const [resources, setResources] = useState<Resources | null>(null);
+  const [traces, setTraces] = useState<TraceListItem[] | null>(null);
+  const [traceDetail, setTraceDetail] = useState<TraceDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [timeWindow, setTimeWindow] = useState<MonitorWindow>("today");
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [p, u, idx, res] = await Promise.all([
+      const [p, u, idx, res, tr] = await Promise.all([
         getRetrievalPerf(timeWindow),
         getApiUsage(timeWindow),
         getIndexStats(),
         getResources(),
+        listTraces(timeWindow),
       ]);
       setPerf(p);
       setUsage(u);
       setIndexStats(idx);
       setResources(res);
+      setTraces(tr.items);
     } catch (e) {
       message.error((e as Error).message || "加载监控数据失败");
     } finally {
@@ -127,6 +136,8 @@ export default function MonitorPage() {
     const t = setInterval(refresh, 20_000);
     return () => clearInterval(t);
   }, [refresh]);
+
+  const openTrace = async (logId: number) => setTraceDetail(await getTrace(logId));
 
   const healthy = resources?.status === "healthy";
 
@@ -318,6 +329,37 @@ export default function MonitorPage() {
             },
           ]}
         />
+      </Card>
+
+      <Card size="small" title="全链路追溯（M41）" styles={{ body: { padding: 16 } }}>
+        <div style={{ display: "flex", gap: 16 }}>
+          <Table
+            size="small"
+            rowKey="log_id"
+            dataSource={traces ?? []}
+            onRow={(r) => ({ onClick: () => void openTrace(r.log_id), style: { cursor: "pointer" } })}
+            pagination={{ pageSize: 8 }}
+            columns={[
+              { title: "log_id", dataIndex: "log_id", width: 80 },
+              { title: "查询", dataIndex: "query", ellipsis: true },
+              { title: "模式", dataIndex: "mode", width: 90,
+                render: (v: string | null, r: TraceListItem) => v ?? "—"
+              },
+              { title: "耗时", dataIndex: "total_ms", width: 90, render: (v) => ms(v) },
+              { title: "token", width: 110,
+                render: (_: unknown, r: TraceListItem) =>
+                  r.tokens ? `${r.tokens.prompt}+${r.tokens.completion}${r.tokens.estimated ? "*" : ""}` : "—"
+              },
+              { title: "trace", dataIndex: "has_trace", width: 70,
+                render: (v: boolean) => (v ? <Tag color="green">v2</Tag> : <Tag>旧</Tag>)
+              },
+            ]}
+            style={{ width: "55%" }}
+          />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <TraceView detail={traceDetail} />
+          </div>
+        </div>
       </Card>
     </div>
   );

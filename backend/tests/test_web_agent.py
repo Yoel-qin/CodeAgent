@@ -124,3 +124,65 @@ def test_get_web_agent_none_when_no_tools(monkeypatch):
     monkeypatch.setattr(web_mod, "_agent", None)
     monkeypatch.setattr(web_mod, "get_web_tools", lambda: [])
     assert web_mod.get_web_agent() is None
+
+
+# ---- M41 tool span：_wrap_for_step 经 config 注入 collector.record ----
+
+
+async def test_wrap_for_step_records_tool_span(monkeypatch):
+    """collector 经 config 注入 → 成功路径记 tool span（args/n/duration）。"""
+    from app.agent.trace import SpanCollector
+
+    captured: list[dict] = []
+
+    def fake_get_writer():
+        def _w(evt: dict) -> None:
+            captured.append(evt)
+        return _w
+
+    monkeypatch.setattr(wt, "get_stream_writer", fake_get_writer)
+
+    c = SpanCollector()
+    cfg = {"configurable": {"trace": c}}
+    wrapped = wt._wrap_for_step(_make_remote_tool())
+    out = await wrapped.ainvoke({"query": "hello"}, config=cfg)
+    assert out == "result:hello"
+
+    s = [x for x in c.to_payload()["spans"] if x["kind"] == "tool"][0]
+    assert s["name"] == "remote_search"
+    assert s["attrs"]["args"] == {"query": "hello"} and s["attrs"]["n"] == 1
+    assert s["duration_ms"] >= 0
+    # duration_ms 也出现在 agent_step SSE 事件中
+    step = next(e["data"] for e in captured if e["event"] == "agent_step")
+    assert "duration_ms" in step and step["duration_ms"] >= 0
+
+
+async def test_wrap_for_step_failure_records_tool_span_with_error(monkeypatch):
+    """失败路径：collector 记 tool span，attrs 含 error 文本。"""
+    from app.agent.trace import SpanCollector
+
+    captured: list[dict] = []
+    monkeypatch.setattr(wt, "get_stream_writer", lambda: (lambda e: captured.append(e)))
+
+    def _make_bad():
+        from langchain_core.tools import tool
+
+        @tool
+        async def bad(query: str) -> str:
+            """bad"""
+            raise RuntimeError("boom")
+
+        return bad
+
+    c = SpanCollector()
+    cfg = {"configurable": {"trace": c}}
+    wrapped = wt._wrap_for_step(_make_bad())
+    out = await wrapped.ainvoke({"query": "x"}, config=cfg)
+    assert "调用失败" in out
+
+    s = [x for x in c.to_payload()["spans"] if x["kind"] == "tool"][0]
+    assert s["name"] == "bad"
+    assert s["attrs"]["n"] == 0
+    assert "error" in s["attrs"]
+    assert "RuntimeError" in s["attrs"]["error"]
+    assert s["duration_ms"] >= 0

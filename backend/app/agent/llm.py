@@ -222,10 +222,14 @@ class TraceCallbackHandler(TokenSSEHandler):
     - ``on_llm_end`` 结算：usage 优先 ``llm_output.token_usage`` → chunk
       ``usage_metadata`` → 估算（prompt 记 0，completion 按已见 token chars/4）；
     - 任何回调异常静默（旁观者契约，绝不抛）。
+
+    ``emit_tokens`` 默认 False：propose/collab 等原本无 token 回调的注入点不得泄漏
+    内容 token（M15「中断前不漏半句」）。仅 _base.run_scenario_agent 传 True。
     """
 
-    def __init__(self, collector) -> None:
+    def __init__(self, collector, *, emit_tokens: bool = False) -> None:
         self.collector = collector
+        self.emit_tokens = emit_tokens
         self._pending: dict = {}  # run_id -> {"t0", "parent_id", "chars", "name"}
 
     @staticmethod
@@ -252,7 +256,9 @@ class TraceCallbackHandler(TokenSSEHandler):
             run_id = kwargs.get("run_id")
             if run_id in self._pending:
                 self._pending[run_id]["chars"] += len(token or "")
-            super().on_llm_new_token(token, **kwargs)  # 原 token→SSE 职责保留
+            # 仅 emit_tokens=True 时推送 token→SSE（默认 False，避免 propose/collab 泄漏内容）
+            if self.emit_tokens:
+                super().on_llm_new_token(token, **kwargs)
         except Exception:  # noqa: BLE001
             pass
 

@@ -43,13 +43,12 @@ async def query_analysis(state: AgentState, config: RunnableConfig) -> dict:
         return rw
 
     if collector is not None:
-        isp = collector.start("intent", "query_analysis")
-        rw, analyzed = await asyncio.gather(
-            _rewrite(),
-            classify_intent_and_collab(query, pack=pack, collector=collector))
-        needs_collab = bool(analyzed.needs_collab and settings.multi_agent_collab_enabled)
-        isp.attrs.update({"intent": analyzed.intent, "needs_collab": needs_collab})
-        collector.end(isp)
+        with collector.span("intent", "query_analysis") as isp:
+            rw, analyzed = await asyncio.gather(
+                _rewrite(),
+                classify_intent_and_collab(query, pack=pack, collector=collector))
+            needs_collab = bool(analyzed.needs_collab and settings.multi_agent_collab_enabled)
+            isp.attrs.update({"intent": analyzed.intent, "needs_collab": needs_collab})
     else:
         rw, analyzed = await asyncio.gather(
             rewrite_query(query), classify_intent_and_collab(query, pack=pack))

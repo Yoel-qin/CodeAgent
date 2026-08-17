@@ -360,3 +360,82 @@ async def test_run_layer_records_llm_spans_via_trace_callback(monkeypatch):
     assert extract_cb and isinstance(extract_cb[0], TraceCallbackHandler), \
         f"_extract ainvoke 未收到 TraceCallbackHandler，实际 callbacks: {extract_cb}"
     assert extract_cb[0].collector is collector, "TraceCallbackHandler.collector 不是预期实例"
+
+
+async def test_run_layer_trace_no_token_leak(monkeypatch):
+    """M41 终审修复：_run_layer 注入 TraceCallbackHandler(emit_tokens=False)，
+    即使假 LLM 回调触发 on_llm_new_token 也不得泄漏 token→SSE。"""
+    from app.agent.trace import SpanCollector
+
+    collector = SpanCollector()
+    sse_events: list = []
+
+    def fake_get_writer():
+        return lambda d: sse_events.append(d)
+
+    monkeypatch.setattr("langgraph.config.get_stream_writer", fake_get_writer)
+
+    seq = list([
+        ([{"name": "search_code", "args": {"query": "q"}, "id": "1"}], ""),
+        ([], "done"),
+    ])
+    calls = {"n": 0}
+
+    class _Resp:
+        def __init__(self, tool_calls, content=""):
+            self.tool_calls = tool_calls
+            self.content = content
+        llm_output = None
+        generations = []
+
+    def _fire_callbacks(callbacks, resp):
+        if not callbacks:
+            return
+        handlers = callbacks if isinstance(callbacks, list) else list(getattr(callbacks, "handlers", []) or [])
+        for h in handlers:
+            if not hasattr(h, "on_llm_start"):
+                continue
+            import uuid
+            run_id = uuid.uuid4().hex
+            h.on_llm_start({}, [], run_id=run_id, parent_run_id=None)
+            # 模拟 LangChain 在 ainvoke 期间触发 on_llm_new_token
+            if hasattr(h, "on_llm_new_token"):
+                h.on_llm_new_token("泄漏测试文本", run_id=run_id)
+            h.on_llm_end(resp, run_id=run_id)
+
+    class _Bound:
+        async def ainvoke(self, msgs, config=None, **kw):
+            i = min(calls["n"], len(seq) - 1)
+            calls["n"] += 1
+            resp = _Resp(*seq[i])
+            cbs = (config or {}).get("callbacks") if isinstance(config, dict) else None
+            _fire_callbacks(cbs, resp)
+            return resp
+
+    class _ModelWithStruct:
+        def bind_tools(self, tools):
+            return _Bound()
+
+        def with_structured_output(self, schema):
+            class _S:
+                async def ainvoke(self, msgs, config=None, **kw):
+                    resp = memory.HypothesisList(hypotheses=[memory.HypothesisItem(hypothesis="H1")])
+                    cbs = (config or {}).get("callbacks") if isinstance(config, dict) else None
+                    _fire_callbacks(cbs, resp)
+                    return resp
+            return _S()
+
+    monkeypatch.setattr(cn, "get_chat_model", lambda: _ModelWithStruct())
+    monkeypatch.setattr(cn, "configured", lambda: True)
+
+    out = await cn.diagnose(
+        {"query": "消费者堆积", "history": [],
+         "collab_llm_calls": 0, "collab_tool_calls": 0},
+        {"configurable": {"session": None, "top_k": 8, "trace": collector}},
+    )
+    assert out["collab_hypotheses"][0]["hypothesis"] == "H1"
+    # llm spans 仍被记录
+    assert len([s for s in collector.to_payload()["spans"] if s["kind"] == "llm"]) >= 2
+    # 但无 token SSE 事件泄漏
+    token_evts = [e for e in sse_events if e.get("event") == "token"]
+    assert not token_evts, f"collab TraceCallbackHandler emit_tokens=False 不应泄漏 token，实际: {token_evts}"

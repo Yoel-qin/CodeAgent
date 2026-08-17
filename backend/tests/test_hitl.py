@@ -306,6 +306,36 @@ async def test_propose_react_records_agent_span(monkeypatch):
     assert payload["summary"]["kind_counts"].get("agent", 0) >= 1
 
 
+async def test_propose_react_no_token_leak_with_collector(monkeypatch):
+    """M41 终审修复：propose 注入 TraceCallbackHandler(emit_tokens=False) 不得泄漏 token 事件。
+    即使 FakeReactAgent 产出了 token 事件（模拟内部 create_react_agent 的 token→SSE），
+    TraceCallbackHandler 默认不推送 → SSE 流不应含 token（M15「中断前不漏半句」）。"""
+    from app.agent.trace import SpanCollector
+
+    collector = SpanCollector()
+    chunks = [
+        {"event": "agent_step", "data": {"tool": "detect_stale_docs", "args": {}, "n": 0}},
+        {"event": "_proposal_captured",
+         "data": {"summary": "建议标记过时", "anchors": [{"relation_id": 5, "anchor_key": "X"}],
+                  "reason": "代码改了"}},
+    ]
+    monkeypatch.setattr(type(dm.llm), "configured", property(lambda self: True))
+    monkeypatch.setattr(dm, "get_doc_maintain_agent", lambda: _FakeReactAgent(chunks))
+    events: list = []
+    monkeypatch.setattr(dm, "get_stream_writer", _writer_recorder(events))
+
+    out = await propose(
+        {"query": "Foo 文档过时了吗", "history": []},
+        {"configurable": {"session": object(), "top_k": 8, "trace": collector}},
+    )
+    assert out["proposal"] == "建议标记过时"
+    # agent_step 桥接到 SSE（抽屉可见），但 token 不应出现
+    ev_types = [e["event"] for e in events]
+    assert "agent_step" in ev_types, "agent_step 应桥接到 SSE"
+    assert "token" not in ev_types, \
+        f"TraceCallbackHandler emit_tokens=False 不应泄漏 token，实际事件: {ev_types}"
+
+
 async def test_apply_stale_loops_multi_anchor(monkeypatch):
     mark_calls: list = []
     gen_calls: list = []

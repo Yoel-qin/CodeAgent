@@ -367,3 +367,119 @@ async def test_generate_node_llm_span_error_on_exception(monkeypatch):
     s = [x for x in c.to_payload()["spans"] if x["kind"] == "llm"][0]
     assert s["status"] == "error"
     assert "ConnectionError" in s["error"]
+
+
+# ---- M41 终审修复追加 ----
+
+
+def test_trace_callback_emit_tokens_false_no_sse(monkeypatch):
+    """emit_tokens=False（默认）：TraceCallbackHandler 不推送 token→SSE。
+    模拟 propose/collab 注入点——有 collector 但无 token 泄漏。"""
+    events: list = []
+
+    def fake_get_writer():
+        return lambda d: events.append(d)
+
+    monkeypatch.setattr("langgraph.config.get_stream_writer", fake_get_writer)
+    c = SpanCollector()
+    h = TraceCallbackHandler(c, emit_tokens=False)  # 默认值，显式传
+    rid = uuid4()
+    h.on_llm_start(serialized={}, prompts=[], run_id=rid)
+    h.on_llm_new_token("泄露测试", run_id=rid)
+    resp = type("R", (), {"llm_output": {"token_usage": {"prompt_tokens": 5, "completion_tokens": 2}}})()
+    h.on_llm_end(resp, run_id=rid)
+    # llm span 仍被记录
+    spans = c.to_payload()["spans"]
+    assert len(spans) == 1 and spans[0]["kind"] == "llm"
+    # 但无 token SSE 事件
+    assert not events, f"emit_tokens=False 不应有 SSE 事件，实际: {events}"
+
+
+def test_trace_callback_emit_tokens_true_does_sse(monkeypatch):
+    """emit_tokens=True：TraceCallbackHandler 推送 token→SSE（_base 路径）。"""
+    events: list = []
+
+    def fake_get_writer():
+        return lambda d: events.append(d)
+
+    monkeypatch.setattr("langgraph.config.get_stream_writer", fake_get_writer)
+    c = SpanCollector()
+    h = TraceCallbackHandler(c, emit_tokens=True)
+    rid = uuid4()
+    h.on_llm_start(serialized={}, prompts=[], run_id=rid)
+    h.on_llm_new_token("你好", run_id=rid)
+    resp = type("R", (), {"llm_output": {"token_usage": {"prompt_tokens": 3, "completion_tokens": 1}}})()
+    h.on_llm_end(resp, run_id=rid)
+    token_events = [e for e in events if e.get("event") == "token"]
+    assert len(token_events) == 1 and token_events[0]["data"]["content"] == "你好"
+
+
+async def test_query_analysis_intent_span_parent_is_request(monkeypatch):
+    """Fix 2：intent span 的 parent_id == request span 的 span_id；
+    llm span 的 parent_id == intent span 的 span_id。"""
+    import app.agent.nodes.query_analysis as qa
+
+    async def fake_rewrite(query, *, usage_out=None):
+        return {"semantic_query": query, "extra_keywords": []}
+
+    async def fake_classify(query, pack=None, *, collector=None):
+        from app.agent.llm import IntentSchema
+        return IntentSchema(intent="code", needs_collab=False)
+
+    monkeypatch.setattr(qa, "rewrite_query", fake_rewrite)
+    monkeypatch.setattr(qa, "classify_intent_and_collab", fake_classify)
+
+    c = SpanCollector()
+    with c.span("request", "chat") as req_span:
+        await query_analysis({"query": "Broker 启动流程"}, _cfg(trace=c))
+
+    spans = c.to_payload()["spans"]
+    # request is root (parent_id=None)
+    req = [s for s in spans if s["kind"] == "request"][0]
+    assert req["parent_id"] is None
+    assert req["span_id"] == req_span.span_id
+    # intent's parent is request
+    intent = [s for s in spans if s["kind"] == "intent"][0]
+    assert intent["parent_id"] == req["span_id"], \
+        f"intent parent_id 应为 request span_id ({req['span_id']})，实际: {intent['parent_id']}"
+    # llm spans' parent is intent (rewrite/classify happen inside intent span via gather)
+    llm_spans = [s for s in spans if s["kind"] == "llm"]
+    for ls in llm_spans:
+        assert ls["parent_id"] == intent["span_id"], \
+            f"llm span '{ls.get('name')}' parent_id 应为 intent span_id ({intent['span_id']})，实际: {ls['parent_id']}"
+
+
+async def test_run_scenario_agent_emit_tokens_true_streams(monkeypatch):
+    """Fix 1 regression：_base.run_scenario_agent 用 emit_tokens=True 时
+    场景 Agent 作答轮确实推送 token SSE 事件。"""
+    import app.clients.llm_client as llm_mod
+    from app.agent.agents._base import run_scenario_agent
+
+    token_events: list = []
+
+    class _FakeWriterAgent:
+        """模拟 create_react_agent：内部通过 get_stream_writer 推 token。"""
+
+        async def astream(self, messages, config=None, stream_mode=None):
+            # 内部 TokenSSEHandler (emit_tokens=True) 会推 token 事件
+            from langgraph.config import get_stream_writer
+            writer = get_stream_writer()
+            writer({"event": "token", "data": {"content": "场景答案"}})
+            yield {"event": "agent_step", "data": {"tool": "search_code", "args": {}, "n": 1}}
+
+    monkeypatch.setattr("app.agent.agents._base.configured", lambda: True)
+    monkeypatch.setattr("app.agent.agents._base._safe_writer",
+                        lambda: (lambda chunk: token_events.append(chunk)))
+    monkeypatch.setattr(llm_mod.LLMClient, "configured", property(lambda self: True))
+
+    c = SpanCollector()
+    await run_scenario_agent(
+        {"query": "q", "history": []}, _cfg(trace=c),
+        agent_name="code_understand", tools=[],
+        build_agent=lambda: _FakeWriterAgent(), degrade_label="代码理解",
+    )
+    # agent span 记录了
+    assert any(s["kind"] == "agent" for s in c.to_payload()["spans"])
+    # token 事件通过 parent_writer 桥接（_base 内 parent_writer 转发）
+    assert any(e["event"] == "token" for e in token_events), \
+        f"_base emit_tokens=True 应产生 token 事件，实际: {token_events}"

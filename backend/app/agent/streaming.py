@@ -102,7 +102,6 @@ async def stream_graph(
     }}
     retrieval_meta: dict = {}
     citations: list[dict] = []
-    agent_steps: list[dict] = []  # Agent 工具调用轨迹（SSE 事件累积，仅供 SSE 流出；持久化改用 collector）
     answer_parts: list[str] = []
 
     graph_app = get_graph()
@@ -115,8 +114,6 @@ async def stream_graph(
                 retrieval_meta = data
             elif event == "citation":
                 citations.append(data)
-            elif event == "agent_step":
-                agent_steps.append(data)
             elif event == "token":
                 answer_parts.append(data.get("content", ""))
 

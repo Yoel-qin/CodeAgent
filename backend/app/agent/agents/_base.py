@@ -143,7 +143,7 @@ async def run_scenario_agent(
     cfg = dict(config)
     cfg["callbacks"] = _merge_callbacks(
         config.get("callbacks"),
-        TraceCallbackHandler(collector) if collector is not None else TokenSSEHandler())
+        TraceCallbackHandler(collector, emit_tokens=True) if collector is not None else TokenSSEHandler())
     # Agent 每轮 = agent + tools 两步；recursion_limit 兜住超限（触发 GraphRecursionError → 兜底）
     cfg["recursion_limit"] = settings.agent_max_iterations * 2 + 3
     parent_writer = _safe_writer()  # 主图 custom 流；Agent 是手动嵌套调用，需把其 custom 事件桥接上来

@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from langchain_core.runnables import RunnableConfig
@@ -61,11 +62,15 @@ def _safe_writer():
         return None
 
 
-def _emit_step(name: str, args: dict, n: int) -> None:
+def _emit_step(name: str, args: dict, n: int, duration_ms: float | None = None) -> None:
+    # M41：duration_ms 不为 None 时加入 data（旧前端缺省不受影响）
     if (w := _safe_writer()) is None:
         return
     try:
-        w({"event": "agent_step", "data": {"tool": name, "args": args, "n": n}})
+        data: dict = {"tool": name, "args": args, "n": n}
+        if duration_ms is not None:
+            data["duration_ms"] = round(duration_ms, 2)
+        w({"event": "agent_step", "data": data})
     except Exception:  # noqa: BLE001
         pass
 
@@ -167,9 +172,16 @@ async def search_docs(query: str, config: RunnableConfig) -> str:
 
     session: AsyncSession = config["configurable"]["session"]
     top_k = config["configurable"].get("top_k", 8)
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     res = await _search_docs(query, session, top_k=top_k)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "search_docs", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"query": query}, "n": len(res.chunks)})
     _emit_citations(res.chunks)
-    _emit_step("search_docs", {"query": query}, len(res.chunks))
+    _emit_step("search_docs", {"query": query}, len(res.chunks), duration_ms=_dur)
     return res.text
 
 
@@ -179,49 +191,77 @@ async def read_doc(chunk_id: str, config: RunnableConfig) -> str:
     search_docs 的返回。用于精读某段文档的完整说明。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     res = await _read_doc(chunk_id, session)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "read_doc", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"chunk_id": chunk_id}, "n": len(res.chunks)})
     _emit_citations(res.chunks)
-    _emit_step("read_doc", {"chunk_id": chunk_id}, len(res.chunks))
+    _emit_step("read_doc", {"chunk_id": chunk_id}, len(res.chunks), duration_ms=_dur)
     return res.text
 
 
 @tool
 async def get_related_code(center: str, config: RunnableConfig) -> str:
     """查找与某个文档段落关联的代码实现（作佐证）。center 是文档段的 chunk_id（doc_ 前缀）。
-    用于回答“文档描述的配置/逻辑在代码里是怎么实现的”，增强可信度。"""
+    用于回答"文档描述的配置/逻辑在代码里是怎么实现的"，增强可信度。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     res = await _get_related_code(center, session)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "get_related_code", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"center": center}, "n": len(res.chunks)})
     _emit_citations(res.chunks)
-    _emit_step("get_related_code", {"center": center}, len(res.chunks))
+    _emit_step("get_related_code", {"center": center}, len(res.chunks), duration_ms=_dur)
     return res.text
 
 
 @tool
 async def image_search(query: str, config: RunnableConfig) -> str:
-    """在文档库中按描述检索图片文档段（架构图/流程图/示意图/截图等）。当用户问“某张图/示意图/
-    流程图”或想看可视化说明时用本工具（普通文字检索用 search_docs）。返回图片文档段列表
+    """在文档库中按描述检索图片文档段（架构图/流程图/示意图/截图等）。当用户问"某张图/示意图/
+    流程图"或想看可视化说明时用本工具（普通文字检索用 search_docs）。返回图片文档段列表
     （含 chunk_id 与图片描述）。"""
 
     session: AsyncSession = config["configurable"]["session"]
     top_k = config["configurable"].get("top_k", 8)
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     res = await _search_media(query, session, media_type="image", top_k=top_k)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "image_search", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"query": query}, "n": len(res.chunks)})
     _emit_citations(res.chunks)
-    _emit_step("image_search", {"query": query}, len(res.chunks))
+    _emit_step("image_search", {"query": query}, len(res.chunks), duration_ms=_dur)
     return res.text
 
 
 @tool
 async def table_search(query: str, config: RunnableConfig) -> str:
-    """在文档库中按描述检索表格文档段（配置表/参数表/映射表/对照表等）。当用户问“某张表/
-    参数表/对照表”或想要结构化数据时用本工具（普通文字检索用 search_docs）。返回表格文档段
+    """在文档库中按描述检索表格文档段（配置表/参数表/映射表/对照表等）。当用户问"某张表/
+    参数表/对照表"或想要结构化数据时用本工具（普通文字检索用 search_docs）。返回表格文档段
     列表（含 chunk_id 与表格描述）。"""
 
     session: AsyncSession = config["configurable"]["session"]
     top_k = config["configurable"].get("top_k", 8)
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     res = await _search_media(query, session, media_type="table", top_k=top_k)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "table_search", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"query": query}, "n": len(res.chunks)})
     _emit_citations(res.chunks)
-    _emit_step("table_search", {"query": query}, len(res.chunks))
+    _emit_step("table_search", {"query": query}, len(res.chunks), duration_ms=_dur)
     return res.text
 
 

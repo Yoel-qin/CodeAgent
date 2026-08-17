@@ -588,3 +588,54 @@ async def test_rerank_tool_step_only(monkeypatch):
     step = pushed[0]["data"]
     assert step["tool"] == "rerank" and step["args"]["n"] == 1
     assert isinstance(out, str) and "重排" in out and "已按相关性重排" in out
+
+
+# ---- M41 tool span：@tool wrapper 计时 + collector.record + agent_step duration_ms ----
+
+
+async def test_search_code_records_tool_span(monkeypatch):
+    """@tool wrapper：collector 存在 → 记 tool span（args/n/duration）。"""
+    from app.agent.trace import SpanCollector
+
+    pushed: list[dict] = []
+    monkeypatch.setattr(ct, "get_stream_writer", lambda: lambda d: pushed.append(d))
+    monkeypatch.setattr(ct, "_citation", lambda c: {"type": c.get("kind"), "chunk_id": c["chunk_id"]})
+
+    async def fake_recall(session, query, **kw):
+        return ([{"chunk_id": "c1", "kind": "code", "content": "s", "score": 0.9}],
+                {"recall": {}, "fine": 1})
+
+    monkeypatch.setattr("app.retrieval.pipeline.pipeline.recall", fake_recall)
+
+    c = SpanCollector()
+    cfg = {"configurable": {"session": None, "top_k": 8, "trace": c}}
+    out = await ct.search_code.ainvoke({"query": "q"}, cfg)
+    assert "c1" in out
+
+    s = [x for x in c.to_payload()["spans"] if x["kind"] == "tool"][0]
+    assert s["name"] == "search_code"
+    assert s["attrs"]["args"] == {"query": "q"} and s["attrs"]["n"] == 1
+    assert s["duration_ms"] >= 0
+
+
+async def test_emit_step_with_duration_ms(monkeypatch):
+    """_emit_step duration_ms 不为 None → data 含 duration_ms；None → 不含（前端向后兼容）。"""
+    pushed: list[dict] = []
+    monkeypatch.setattr(ct, "get_stream_writer", lambda: lambda d: pushed.append(d))
+    monkeypatch.setattr(ct, "_citation", lambda c: {"type": c.get("kind"), "chunk_id": c["chunk_id"]})
+
+    async def fake_recall(session, query, **kw):
+        return ([], {"recall": {}, "fine": 0})
+
+    monkeypatch.setattr("app.retrieval.pipeline.pipeline.recall", fake_recall)
+
+    # collector=None → _emit_step 仍被调（duration_ms 传入）
+    cfg = {"configurable": {"session": None, "top_k": 8, "trace": None}}
+    await ct.search_code.ainvoke({"query": "q"}, cfg)
+    step = pushed[0]["data"]
+    assert "duration_ms" in step and step["duration_ms"] >= 0  # 始终传入 duration_ms
+
+    # 验证旧 _emit_step(None) 路径不含 duration_ms（通过直接调 _emit_step）
+    pushed.clear()
+    ct._emit_step("test_tool", {"x": 1}, 0, duration_ms=None)
+    assert "duration_ms" not in pushed[0]["data"]  # None → 不含（旧前端兼容）

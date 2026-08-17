@@ -17,6 +17,8 @@
 """
 from __future__ import annotations
 
+import time
+
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.config import get_stream_writer
@@ -55,11 +57,15 @@ def _safe_writer():
         return None
 
 
-def _emit_step(name: str, args: dict, n: int) -> None:
+def _emit_step(name: str, args: dict, n: int, duration_ms: float | None = None) -> None:
+    # M41：duration_ms 不为 None 时加入 data（旧前端缺省不受影响）
     if (w := _safe_writer()) is None:
         return
     try:
-        w({"event": "agent_step", "data": {"tool": name, "args": args, "n": n}})
+        data: dict = {"tool": name, "args": args, "n": n}
+        if duration_ms is not None:
+            data["duration_ms"] = round(duration_ms, 2)
+        w({"event": "agent_step", "data": data})
     except Exception:  # noqa: BLE001
         pass
 
@@ -219,9 +225,16 @@ async def detect_stale_docs(center: str, config: RunnableConfig) -> str:
     search_code/read_code）。返回锚点列表，**每条含 relation_id（提交提案时必须用这个 id）**。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     rows, chunks = await _detect_stale(center, session)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "detect_stale_docs", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"center": center}, "n": len(rows)})
     _emit_citations(chunks)
-    _emit_step("detect_stale_docs", {"center": center}, len(rows))
+    _emit_step("detect_stale_docs", {"center": center}, len(rows), duration_ms=_dur)
     return fmt.format_stale_candidates(rows, center)
 
 
@@ -237,12 +250,23 @@ async def submit_proposal(summary: str, relation_ids: list[int], reason: str,
     """
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     anchors = await _validate_anchors(relation_ids, session)
+    _dur = (time.perf_counter() - _t0) * 1000
     if not anchors:
-        _emit_step("submit_proposal", {"n": 0}, 0)
+        if collector is not None:
+            collector.record("tool", "submit_proposal", _dur,
+                             parent_id=collector.stack_top,
+                             attrs={"args": {"n": 0}, "n": 0})
+        _emit_step("submit_proposal", {"n": 0}, 0, duration_ms=_dur)
         return ("（提交的 relation_id 无效：不存在/已标记过时/非文档-代码关系。"
                 "请用 detect_stale_docs 重新获取有效的 relation_id 后再提交。）")
-    _emit_step("submit_proposal", {"n": len(anchors)}, len(anchors))
+    if collector is not None:
+        collector.record("tool", "submit_proposal", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"n": len(anchors)}, "n": len(anchors)})
+    _emit_step("submit_proposal", {"n": len(anchors)}, len(anchors), duration_ms=_dur)
     if (w := _safe_writer()) is not None:
         try:
             w({"event": _PROPOSAL_EVENT,

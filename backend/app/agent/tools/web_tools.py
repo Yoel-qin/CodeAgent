@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+import time
+
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.config import get_stream_writer
 from loguru import logger
@@ -34,11 +36,15 @@ def _safe_writer():
         return None
 
 
-def _emit_step(name: str, args: dict, n: int) -> None:
+def _emit_step(name: str, args: dict, n: int, duration_ms: float | None = None) -> None:
+    # M41：duration_ms 不为 None 时加入 data（旧前端缺省不受影响）
     if (w := _safe_writer()) is None:
         return
     try:
-        w({"event": "agent_step", "data": {"tool": name, "args": args, "n": n}})
+        data: dict = {"tool": name, "args": args, "n": n}
+        if duration_ms is not None:
+            data["duration_ms"] = round(duration_ms, 2)
+        w({"event": "agent_step", "data": data})
     except Exception:  # noqa: BLE001
         pass
 
@@ -51,16 +57,20 @@ def _wrap_for_step(tool: BaseTool) -> BaseTool:
 
     schema（name/description/args_schema）透传自远程工具，LLM 看到的接口与原工具一致；仅 ``_arun``
     拦截一层。同步 ``_run`` 不可用——联网工具仅异步调用（create_react_agent 走 ainvoke）。
+    M41：计时 + duration_ms（collector 暂不接入——_arun 闭包无 RunnableConfig 访问）。
     """
     name = tool.name
 
     async def _arun(**kwargs):  # noqa: ANN202
+        _t0 = time.perf_counter()
         try:
             result = await tool.ainvoke(kwargs)
+            _dur = (time.perf_counter() - _t0) * 1000
         except Exception as e:  # noqa: BLE001
-            _emit_step(name, kwargs, 0)
+            _dur = (time.perf_counter() - _t0) * 1000
+            _emit_step(name, kwargs, 0, duration_ms=_dur)
             return f"[联网工具 {name} 调用失败：{type(e).__name__}: {e}]"
-        _emit_step(name, kwargs, 1)
+        _emit_step(name, kwargs, 1, duration_ms=_dur)
         return result
 
     def _sync_unavailable(*args, **kwargs):  # noqa: ANN001, ANN002, ANN202

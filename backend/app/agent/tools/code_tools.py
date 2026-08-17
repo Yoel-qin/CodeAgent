@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from langchain_core.runnables import RunnableConfig
@@ -61,11 +62,15 @@ def _safe_writer():
         return None
 
 
-def _emit_step(name: str, args: dict, n: int) -> None:
+def _emit_step(name: str, args: dict, n: int, duration_ms: float | None = None) -> None:
+    # M41：duration_ms 不为 None 时加入 data（旧前端缺省不受影响）
     if (w := _safe_writer()) is None:
         return
     try:
-        w({"event": "agent_step", "data": {"tool": name, "args": args, "n": n}})
+        data: dict = {"tool": name, "args": args, "n": n}
+        if duration_ms is not None:
+            data["duration_ms"] = round(duration_ms, 2)
+        w({"event": "agent_step", "data": data})
     except Exception:  # noqa: BLE001
         pass
 
@@ -326,9 +331,16 @@ async def search_code(query: str, config: RunnableConfig) -> str:
 
     session: AsyncSession = config["configurable"]["session"]
     top_k = config["configurable"].get("top_k", 8)
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     res = await _search_code(query, session, top_k=top_k)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "search_code", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"query": query}, "n": len(res.chunks)})
     _emit_citations(res.chunks)
-    _emit_step("search_code", {"query": query}, len(res.chunks))
+    _emit_step("search_code", {"query": query}, len(res.chunks), duration_ms=_dur)
     return res.text
 
 
@@ -338,9 +350,16 @@ async def search_symbol(q: str, config: RunnableConfig) -> str:
     当用户只给了一个名字、还不确定具体 chunk 时，先用本工具解析。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     res = await _search_symbol(q, session)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "search_symbol", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"q": q}, "n": len(res.chunks)})
     _emit_citations(res.chunks)
-    _emit_step("search_symbol", {"q": q}, len(res.chunks))
+    _emit_step("search_symbol", {"q": q}, len(res.chunks), duration_ms=_dur)
     return res.text
 
 
@@ -349,13 +368,21 @@ async def get_call_chain(center: str, config: RunnableConfig, direction: str = "
                          depth: int = 2) -> str:
     """从某个方法/类出发展开调用链。center 是 chunk_id 或 class:类名；
     direction=CALLERS(谁调用它)/CALLEES(它调用谁)/BOTH(双向)；depth 为展开层数。
-    用于回答“被谁调用 / 调用了什么 / 影响范围”。"""
+    用于回答"被谁调用 / 调用了什么 / 影响范围"。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     res = await _get_call_chain(center, direction, session, depth=depth)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "get_call_chain", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"center": center, "direction": direction, "depth": depth},
+                                "n": len(res.chunks)})
     _emit_citations(res.chunks)
     _emit_step("get_call_chain", {"center": center, "direction": direction, "depth": depth},
-               len(res.chunks))
+               len(res.chunks), duration_ms=_dur)
     return res.text
 
 
@@ -366,21 +393,35 @@ async def get_callers(center: str, config: RunnableConfig, depth: int = 3) -> st
     返回按层归类的受影响调用方。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     res = await _get_callers(center, session, depth=depth)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "get_callers", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"center": center, "depth": depth}, "n": len(res.chunks)})
     _emit_citations(res.chunks)
-    _emit_step("get_callers", {"center": center, "depth": depth}, len(res.chunks))
+    _emit_step("get_callers", {"center": center, "depth": depth}, len(res.chunks), duration_ms=_dur)
     return res.text
 
 
 @tool
 async def get_related_docs(center: str, config: RunnableConfig) -> str:
     """查找与某个代码块关联的文档章节（设计/用法说明）。center 是 chunk_id 或 class:类名。
-    用于回答“为什么这么设计 / 文档怎么描述这段代码”。"""
+    用于回答"为什么这么设计 / 文档怎么描述这段代码"。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     res = await _get_related_docs(center, session)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "get_related_docs", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"center": center}, "n": len(res.chunks)})
     _emit_citations(res.chunks)
-    _emit_step("get_related_docs", {"center": center}, len(res.chunks))
+    _emit_step("get_related_docs", {"center": center}, len(res.chunks), duration_ms=_dur)
     return res.text
 
 
@@ -390,9 +431,16 @@ async def read_code(chunk_id: str, config: RunnableConfig) -> str:
     search_symbol/get_call_chain 的返回。用于精读某个方法的实现细节。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     res = await _read_code(chunk_id, session)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "read_code", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"chunk_id": chunk_id}, "n": len(res.chunks)})
     _emit_citations(res.chunks)
-    _emit_step("read_code", {"chunk_id": chunk_id}, len(res.chunks))
+    _emit_step("read_code", {"chunk_id": chunk_id}, len(res.chunks), duration_ms=_dur)
     return res.text
 
 
@@ -403,8 +451,15 @@ async def get_recent_changes(chunk_id: str, config: RunnableConfig) -> str:
     判断该代码是否近期被改动、可能引入 bug。注意：只有经过增量同步的代码才有变更历史。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     rows = await _get_recent_changes(chunk_id, session)
-    _emit_step("get_recent_changes", {"chunk_id": chunk_id}, len(rows))
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "get_recent_changes", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"chunk_id": chunk_id}, "n": len(rows)})
+    _emit_step("get_recent_changes", {"chunk_id": chunk_id}, len(rows), duration_ms=_dur)
     return fmt.format_change_history(rows, chunk_id)
 
 
@@ -415,8 +470,16 @@ async def get_code_metrics(chunk_id: str, config: RunnableConfig) -> str:
     chunk_id 来自 search_code/search_symbol/get_call_chain。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     metrics = await _get_metrics(chunk_id, session)
-    _emit_step("get_code_metrics", {"chunk_id": chunk_id}, 1 if metrics.get("found") else 0)
+    _dur = (time.perf_counter() - _t0) * 1000
+    _n = 1 if metrics.get("found") else 0
+    if collector is not None:
+        collector.record("tool", "get_code_metrics", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"chunk_id": chunk_id}, "n": _n})
+    _emit_step("get_code_metrics", {"chunk_id": chunk_id}, _n, duration_ms=_dur)
     return fmt.format_code_metrics(metrics)
 
 
@@ -427,13 +490,20 @@ async def get_existing_tests(center: str, config: RunnableConfig) -> str:
     （含 chunk_id，可引用）；未命中说明库中无该类的测试，将按 JUnit 5 + Mockito 通用约定生成。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     rows, cls = await _get_existing_tests(center, session)
+    _dur = (time.perf_counter() - _t0) * 1000
     chunks = [_norm({
         "chunk_id": r["chunk_id"], "kind": "code", "content": r.get("content"),
         "class_name": r.get("class_name"), "method_name": r.get("method_name"),
     }, score=0.6) for r in rows]
+    if collector is not None:
+        collector.record("tool", "get_existing_tests", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"center": center}, "n": len(rows)})
     _emit_citations(chunks)
-    _emit_step("get_existing_tests", {"center": center}, len(rows))
+    _emit_step("get_existing_tests", {"center": center}, len(rows), duration_ms=_dur)
     return fmt.format_existing_tests(rows, cls)
 
 
@@ -444,9 +514,17 @@ async def get_downstream_callers(center: str, config: RunnableConfig, depth: int
     本工具=它调用谁（它的依赖/实现细节）。返回按层归类的下游被调用方。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     res = await _get_downstream_callers(center, session, depth=depth)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "get_downstream_callers", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"center": center, "depth": depth}, "n": len(res.chunks)})
     _emit_citations(res.chunks)
-    _emit_step("get_downstream_callers", {"center": center, "depth": depth}, len(res.chunks))
+    _emit_step("get_downstream_callers", {"center": center, "depth": depth}, len(res.chunks),
+               duration_ms=_dur)
     return res.text
 
 
@@ -457,9 +535,16 @@ async def get_affected_docs(center: str, config: RunnableConfig) -> str:
     会影响哪些文档（附代码最近变更作腐化信号）。返回文档段落列表（含 chunk_id，可引用）。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     res = await _get_affected_docs(center, session)
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "get_affected_docs", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"center": center}, "n": len(res.chunks)})
     _emit_citations(res.chunks)
-    _emit_step("get_affected_docs", {"center": center}, len(res.chunks))
+    _emit_step("get_affected_docs", {"center": center}, len(res.chunks), duration_ms=_dur)
     return res.text
 
 
@@ -470,8 +555,15 @@ async def rerank(query: str, chunk_ids: list[str], config: RunnableConfig) -> st
     的若干条。注意：需配置精排模型；未启用或失败时保持原序（不报错）。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    collector = config["configurable"].get("trace")  # M41
+    _t0 = time.perf_counter()
     ranked, reranked = await _rerank(query, chunk_ids, session)
-    _emit_step("rerank", {"query": query, "n": len(chunk_ids)}, len(ranked))
+    _dur = (time.perf_counter() - _t0) * 1000
+    if collector is not None:
+        collector.record("tool", "rerank", _dur,
+                         parent_id=collector.stack_top,
+                         attrs={"args": {"query": query, "n": len(chunk_ids)}, "n": len(ranked)})
+    _emit_step("rerank", {"query": query, "n": len(chunk_ids)}, len(ranked), duration_ms=_dur)
     if not ranked:
         return "（无候选可重排）"
     note = "（已按相关性重排）" if reranked else "（精排未启用或失败，保持原序）"

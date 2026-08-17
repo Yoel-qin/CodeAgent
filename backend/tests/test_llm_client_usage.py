@@ -41,6 +41,7 @@ class _FakeAsyncClient:
         return False
 
     def stream(self, method, url, **kw):
+        assert method == "POST"
         payload = kw["json"]
         assert payload["stream_options"] == {"include_usage": True}
         return _FakeStream(type(self).lines)
@@ -55,7 +56,7 @@ def patched(monkeypatch):
 
 
 async def test_stream_tokens_captures_usage(monkeypatch, patched):
-    monkeypatch.setattr("app.core.config.settings", type("S", (), {
+    monkeypatch.setattr("app.clients.llm_client.settings", type("S", (), {
         "llm_base_url": "http://x", "llm_api_key": "k", "llm_model": "m"}))
     client = LLMClient()
     patched(_sse([
@@ -70,7 +71,7 @@ async def test_stream_tokens_captures_usage(monkeypatch, patched):
 
 
 async def test_stream_tokens_no_usage_leaves_out_empty(monkeypatch, patched):
-    monkeypatch.setattr("app.core.config.settings", type("S", (), {
+    monkeypatch.setattr("app.clients.llm_client.settings", type("S", (), {
         "llm_base_url": "http://x", "llm_api_key": "k", "llm_model": "m"}))
     client = LLMClient()
     patched(_sse([{"choices": [{"delta": {"content": "a"}}]}]))
@@ -81,7 +82,7 @@ async def test_stream_tokens_no_usage_leaves_out_empty(monkeypatch, patched):
 
 
 async def test_chat_meta_returns_text_and_usage(monkeypatch, patched):
-    monkeypatch.setattr("app.core.config.settings", type("S", (), {
+    monkeypatch.setattr("app.clients.llm_client.settings", type("S", (), {
         "llm_base_url": "http://x", "llm_api_key": "k", "llm_model": "m"}))
     client = LLMClient()
     patched(_sse([
@@ -95,7 +96,7 @@ async def test_chat_meta_returns_text_and_usage(monkeypatch, patched):
 
 
 async def test_chat_meta_without_usage(monkeypatch, patched):
-    monkeypatch.setattr("app.core.config.settings", type("S", (), {
+    monkeypatch.setattr("app.clients.llm_client.settings", type("S", (), {
         "llm_base_url": "http://x", "llm_api_key": "k", "llm_model": "m"}))
     client = LLMClient()
     patched(_sse([{"choices": [{"delta": {"content": "X"}}]}]))

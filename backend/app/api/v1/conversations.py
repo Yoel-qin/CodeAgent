@@ -30,15 +30,26 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 def _build_agent_trace(
-    *, agent_steps: list | None, agent_type: str | None,
+    *, agent_steps: list | dict | None, agent_type: str | None,
 ) -> AgentTraceResponse | None:
     """有 Agent 工具调用轨迹才返回 agent 段。
 
-    判定用 ``agent_steps`` 非空（而非 meta.mode）：``_degrade`` 会用真实漏斗覆盖
-    ``retrieval_meta`` 丢 ``"agent"`` 键，但若 Agent 降级前已跑几步，``agent_steps``
-    已累积，此时仍应展示「它试过这些工具」更合理。``type`` 取 ``msg.agent_type``
-    （降级覆盖 meta 后仍可靠）。
+    M41 三形状：``null``/旧 list ``[{tool,args,n}]`` → 原语义；新 dict
+    ``{"version":2,"spans":[...]}`` → 抽 ``kind=="tool"`` 的 span 映射回
+    ``{tool, args, n}``（RetrievalDrawer 零改）；无 tool span → None（纯 retrieve
+    路径，与旧行 agent_steps=NULL 一致）。
     """
+    if agent_steps is None:
+        return None
+    if isinstance(agent_steps, dict):
+        steps = [
+            {"tool": s.get("name"), "args": (s.get("attrs") or {}).get("args", {}),
+             "n": (s.get("attrs") or {}).get("n")}
+            for s in agent_steps.get("spans") or [] if s.get("kind") == "tool"
+        ]
+        if not steps:
+            return None
+        return AgentTraceResponse(type=agent_type or "AGENT", steps=steps)
     if not agent_steps:
         return None
     return AgentTraceResponse(type=agent_type or "AGENT", steps=agent_steps)

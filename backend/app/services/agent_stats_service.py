@@ -5,10 +5,11 @@
 
 - ``recall_results->>'mode'='agent'``：Agent 成功跑完的可靠信号（仅 ``_base._emit_retrieval_meta``
   写入；``_degrade`` 会用 ``pipeline.recall`` 的 meta 覆盖、丢 ``mode``/``agent`` 键）。
-- ``agent_steps``（独立 JSONB 列，``[{tool,args,n},...]``）：工具轨迹；空表持久化为 NULL。
+- ``agent_steps``（独立 JSONB 列）：工具轨迹。M41 三形状——旧 list ``[{tool,args,n},...]``、
+  新 dict ``{"version":2,"spans":[{kind,...}]}``、``NULL``。空表持久化为 NULL。
 - ``user_feedback``（``HELPFUL``/``NOT_HELPFUL``）：满意度。
-- 降级（部分失败）= ``agent_steps IS NOT NULL AND mode IS NULL``；分母「Agent 曾介入」
-  = ``mode='agent' OR agent_steps IS NOT NULL``。
+- 降级（部分失败）= ``_HAS_TOOLS AND mode IS NULL``；分母「Agent 曾介入」
+  = ``mode='agent' OR _HAS_TOOLS``（_HAS_TOOLS 三形状：旧非空 list / 新 dict 含 tool span）。
 
 降级 run 丢 ``recall_results->>'agent'`` 标签 → ``LEFT JOIN chat_messages``（同词表
 ``CODE_UNDERSTAND``/``DOC_ANSWER``/``CHANGE_IMPACT``/``BUG_DIAGNOSIS``），以
@@ -20,7 +21,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, case, func, or_, select, true
+from sqlalchemy import and_, case, func, literal, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ChatMessage, RetrievalLog
@@ -42,17 +43,27 @@ _ASSIST = and_(
 # 标签：成功 run 用 meta.agent；降级 run（meta 丢 agent）回退 chat_messages.agent_type
 _LABEL = func.coalesce(_AGENT, ChatMessage.agent_type).label("agent")
 
-# 「Agent 曾介入」：成功 run 或 发过若干步后兜底的 run（降级率分母）
-_ENGAGED = or_(_MODE == "agent", RetrievalLog.agent_steps.isnot(None))
-# 「部分失败降级」：发过若干步（agent_steps 非空）但 mode 被 _degrade 覆盖丢失
-_DEGRADED = and_(RetrievalLog.agent_steps.isnot(None), _MODE.is_(None))
-# agent_steps 的安全数组长度：仅当是 JSON 数组时取长度，标量/对象/NULL → NULL
-# （个别遗留行 agent_steps 非 array，jsonb_array_length 会抛 "cannot get array length of a scalar"）
-_STEP_LEN = case(
-    (func.jsonb_typeof(RetrievalLog.agent_steps) == "array",
-     func.jsonb_array_length(RetrievalLog.agent_steps)),
+# M41 三形状：「有工具步」谓词——旧 list 非空 / 新 dict 含 kind=="tool" 的 span
+_STEPS = RetrievalLog.agent_steps
+_STYPE = func.jsonb_typeof(_STEPS)
+_HAS_TOOLS = or_(
+    and_(_STYPE == "array", func.jsonb_array_length(_STEPS) > 0),
+    and_(_STYPE == "object",
+         func.jsonb_array_length(func.jsonb_path_query_array(
+             _STEPS, literal('$.spans[*] ? (@.kind == "tool")'))) > 0),
+)
+# 工具步数（步数均值用）：array → 长度；object → tool span 数；其余 NULL
+_STEPS_LEN = case(
+    (_STYPE == "array", func.jsonb_array_length(_STEPS)),
+    (_STYPE == "object", func.jsonb_array_length(func.jsonb_path_query_array(
+        _STEPS, literal('$.spans[*] ? (@.kind == "tool")')))),
     else_=None,
 )
+
+# 「Agent 曾介入」：成功 run 或 发过若干步后兜底的 run（降级率分母）
+_ENGAGED = or_(_MODE == "agent", _HAS_TOOLS)
+# 「部分失败降级」：发过若干步后兜底但 mode 被 _degrade 覆盖丢失
+_DEGRADED = and_(_HAS_TOOLS, _MODE.is_(None))
 
 
 # ============================================================================
@@ -101,7 +112,7 @@ async def get_agent_stats(session: AsyncSession, window: str = "today") -> Agent
             func.sum(case((RetrievalLog.user_feedback == "HELPFUL", 1), else_=0)),  # helpful
             func.count(RetrievalLog.user_feedback),  # feedback（非空计数）
             # avg 仅对 mode='agent' 行取 jsonb_array_length；NULL 自动被 avg 忽略
-            func.avg(case((_MODE == "agent", _STEP_LEN), else_=None)),
+            func.avg(case((_MODE == "agent", _STEPS_LEN), else_=None)),
         ).where(tf)
     )).one()
     total_calls = int(kpi[0] or 0)
@@ -116,7 +127,7 @@ async def get_agent_stats(session: AsyncSession, window: str = "today") -> Agent
         select(
             _LABEL,
             func.count(),  # calls
-            func.avg(case((_MODE == "agent", _STEP_LEN), else_=None)),  # avg_steps
+            func.avg(case((_MODE == "agent", _STEPS_LEN), else_=None)),  # avg_steps
             func.avg(case((RetrievalLog.fine_rank_count > 0, 1), else_=0)),  # hit_rate
             func.sum(case((RetrievalLog.user_feedback == "HELPFUL", 1), else_=0)),  # helpful
             func.count(RetrievalLog.user_feedback),  # feedback
@@ -161,7 +172,7 @@ async def get_agent_runs(session: AsyncSession, pg: dict) -> AgentRunsResponse:
             RetrievalLog.created_at,
             _LABEL,
             RetrievalLog.query_text,
-            func.coalesce(_STEP_LEN, 0),  # steps（NULL→0）
+            func.coalesce(_STEPS_LEN, 0),  # steps（NULL→0）
             func.coalesce(RetrievalLog.fine_rank_count, 0),  # citations
             _DEGRADED,  # bool
             RetrievalLog.user_feedback,

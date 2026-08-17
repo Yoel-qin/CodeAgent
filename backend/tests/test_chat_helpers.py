@@ -148,6 +148,62 @@ async def test_stream_chat_persists_trace_dict(monkeypatch):
     assert spans_by_kind["llm"]["parent_id"] == spans_by_kind["request"]["span_id"]
 
 
+# ---- M41 三形状兼容：_build_agent_trace dict 分支 ----
+
+
+def test_build_agent_trace_dict_with_tool_spans():
+    payload = {"version": 2, "spans": [
+        {"span_id": 1, "parent_id": None, "kind": "request", "name": "chat"},
+        {"span_id": 2, "parent_id": 1, "kind": "agent", "name": "code_understand"},
+        {"span_id": 3, "parent_id": 2, "kind": "tool", "name": "search_code",
+         "attrs": {"args": {"query": "q"}, "n": 5}},
+    ], "summary": {}}
+    trace = _build_agent_trace(agent_steps=payload, agent_type="CODE_UNDERSTAND")
+    assert trace is not None
+    assert trace.steps == [{"tool": "search_code", "args": {"query": "q"}, "n": 5}]
+
+
+def test_build_agent_trace_dict_without_tool_spans_returns_none():
+    payload = {"version": 2, "spans": [
+        {"kind": "request", "name": "chat"},
+        {"kind": "retrieval", "name": "recall"},
+    ], "summary": {}}
+    assert _build_agent_trace(agent_steps=payload, agent_type=None) is None
+
+
+def test_build_agent_trace_dict_with_multiple_tool_spans():
+    payload = {"version": 2, "spans": [
+        {"kind": "tool", "name": "search_code", "attrs": {"args": {"q": "Foo"}, "n": 3}},
+        {"kind": "tool", "name": "read_code", "attrs": {"args": {"chunk_id": "c1"}, "n": 1}},
+    ], "summary": {}}
+    trace = _build_agent_trace(agent_steps=payload, agent_type="CODE_UNDERSTAND")
+    assert trace is not None
+    assert len(trace.steps) == 2
+    assert trace.steps[0] == {"tool": "search_code", "args": {"q": "Foo"}, "n": 3}
+    assert trace.steps[1] == {"tool": "read_code", "args": {"chunk_id": "c1"}, "n": 1}
+
+
+def test_build_agent_trace_dict_tool_span_missing_attrs():
+    """span with kind=='tool' but no attrs key → args={}, n=None."""
+    payload = {"version": 2, "spans": [
+        {"kind": "tool", "name": "get_callers", "attrs": None},
+    ], "summary": {}}
+    trace = _build_agent_trace(agent_steps=payload, agent_type="CHANGE_IMPACT")
+    assert trace is not None
+    assert trace.steps == [{"tool": "get_callers", "args": {}, "n": None}]
+
+
+def test_build_agent_trace_dict_empty_spans_returns_none():
+    payload = {"version": 2, "spans": [], "summary": {}}
+    assert _build_agent_trace(agent_steps=payload, agent_type="AGENT") is None
+
+
+def test_build_agent_trace_old_list_and_null_unchanged():
+    assert _build_agent_trace(agent_steps=[{"tool": "t", "args": {}, "n": 1}],
+                              agent_type=None).steps == [{"tool": "t", "args": {}, "n": 1}]
+    assert _build_agent_trace(agent_steps=None, agent_type=None) is None
+
+
 async def test_stream_chat_trace_no_llm_key(monkeypatch):
     """M41 no-LLM-key 变体：最终 payload 只含 request+retrieval（无 llm span）。"""
     import app.services.chat_service as cs

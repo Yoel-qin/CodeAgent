@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import uuid4
 
 import pytest
 
+from app.agent.llm import TraceCallbackHandler
 from app.agent.trace import SpanCollector, llm_span, tokens_from_usage
+from app.retrieval.query_understanding import rewrite_query
 
 
 def test_nested_parents_and_duration():
@@ -108,3 +111,77 @@ def test_gather_parallel_spans_independent():
     asyncio.run(main())
     spans = {s["name"]: s for s in c.to_payload()["spans"]}
     assert spans["slow"]["duration_ms"] > spans["fast"]["duration_ms"]
+
+
+# ---- Task 3 追加 ----
+
+
+def _handler_spans(collector, *, usage=None):
+    h = TraceCallbackHandler(collector)
+    rid = uuid4()
+    h.on_llm_start(serialized={}, prompts=[], run_id=rid)
+    h.on_llm_new_token("abc")
+    resp = type("R", (), {"llm_output": {"token_usage": usage}} if usage else {"llm_output": None})()
+    h.on_llm_end(resp, run_id=rid)
+    return collector.to_payload()["spans"]
+
+
+def test_trace_callback_handler_real_usage():
+    c = SpanCollector()
+    with c.span("agent", "code_understand"):
+        spans = _handler_spans(c, usage={"prompt_tokens": 20, "completion_tokens": 7})
+    s = spans[-1]
+    assert s["kind"] == "llm" and s["parent_id"] is not None
+    assert s["tokens"] == {"prompt": 20, "completion": 7, "estimated": False}
+
+
+def test_trace_callback_handler_estimate_and_error():
+    c = SpanCollector()
+    spans = _handler_spans(c)  # 无 usage → 估算（prompt 记 0，completion 按 token chars）
+    assert spans[-1]["tokens"]["estimated"] is True
+    assert spans[-1]["tokens"]["completion"] == 0  # "abc" 3 chars // 4 == 0
+    # error 路径
+    h = TraceCallbackHandler(c)
+    rid = uuid4()
+    h.on_llm_start(serialized={}, prompts=[], run_id=rid)
+    h.on_llm_error(Exception("net"), run_id=rid)
+    s = c.to_payload()["spans"][-1]
+    assert s["status"] == "error"
+
+
+def test_trace_callback_handler_never_raises():
+    c = SpanCollector()
+    TraceCallbackHandler(c).on_llm_end("garbage", run_id=uuid4())  # 非 LLMResult → 静默
+    TraceCallbackHandler(None)  # collector=None → 可构造且回调全跳过
+
+
+async def test_rewrite_query_usage_out_passthrough(monkeypatch):
+    seen: dict = {}
+
+    async def fake_chat_meta(messages, **kw):
+        seen.update(kw)
+        usage_out = kw.get("usage_out")
+        if usage_out is not None:
+            usage_out.update({"prompt_tokens": 5, "completion_tokens": 2})
+        return "QUERY: consumer 拉取消息\nKEYWORDS: offset", {"prompt_tokens": 5,
+                                                              "completion_tokens": 2}
+
+    import app.retrieval.query_understanding as qu
+    monkeypatch.setattr(qu.llm, "api_key", "fake-key")
+    monkeypatch.setattr(qu.llm, "chat_meta", fake_chat_meta)
+    out: dict = {}
+    rw = await rewrite_query("consumer 怎么拉消息", usage_out=out)
+    assert rw["semantic_query"] == "consumer 拉取消息"
+    assert "usage_out" in seen and seen["usage_out"] is out
+    assert out == {"prompt_tokens": 5, "completion_tokens": 2}
+
+
+async def test_rewrite_query_without_usage_out_unchanged(monkeypatch):
+    async def fake_chat(messages, **kw):
+        return "QUERY: q2\nKEYWORDS:"
+
+    import app.retrieval.query_understanding as qu
+    monkeypatch.setattr(qu.llm, "api_key", "fake-key")
+    monkeypatch.setattr(qu.llm, "chat", fake_chat)
+    rw = await rewrite_query("q")
+    assert rw == {"semantic_query": "q2", "extra_keywords": []}

@@ -160,12 +160,14 @@ def _rule_needs_collab(query: str, intent: IntentLabel) -> bool:
 
 
 async def classify_intent_and_collab(query: str,
-                                     pack: DomainPack | None = None) -> IntentSchema:
+                                     pack: DomainPack | None = None,
+                                     *, collector=None) -> IntentSchema:
     """意图分类 + 协作判定：一次结构化 LLM 调用产 IntentSchema（intent + needs_collab）；
     失败/未配置 → 规则兜底。
 
     pack 非空（激活领域包）→ 用领域版 system prompt（含 trace/diagnose/tune 判定）+ 规则兜底带 pack_active；
     pack=None → 现状（9 标签，不产领域 intent，逐字同 M36）。
+    M41：传 collector 时经 TraceCallbackHandler 记 llm span（usage 真值优先）。
     """
     pack_active = pack is not None
     if not configured():
@@ -175,10 +177,13 @@ async def classify_intent_and_collab(query: str,
         sys_prompt = _INTENT_SYS_DOMAIN if pack_active else _INTENT_SYS
         schema = IntentSchema if pack_active else _IntentSchemaBase
         structured = get_chat_model().with_structured_output(schema)
+        cfg: dict = {}
+        if collector is not None:
+            cfg["callbacks"] = [TraceCallbackHandler(collector)]
         return await structured.ainvoke([
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": query},
-        ])
+        ], config=cfg or None)
     except Exception:  # noqa: BLE001
         intent = _rule_intent(query, pack_active=pack_active)
         return IntentSchema(intent=intent, needs_collab=_rule_needs_collab(query, intent))
@@ -207,3 +212,91 @@ class TokenSSEHandler(BaseCallbackHandler):
             get_stream_writer()({"event": "token", "data": {"content": token}})
         except Exception:  # noqa: BLE001
             pass  # 非图上下文 / 无 writer → 跳过
+
+
+class TraceCallbackHandler(TokenSSEHandler):
+    """M41：TokenSSEHandler 的 Trace 扩展——同一 handler 兼得 token→SSE 与 llm span 记账。
+
+    - ``on_llm_start`` 按 run_id 记 t0/parent（parent=collector 当前栈顶：ReAct
+      ``astream`` 在 agent span 的 with 块内被 await，回调内联执行 → 栈顶正确）；
+    - ``on_llm_end`` 结算：usage 优先 ``llm_output.token_usage`` → chunk
+      ``usage_metadata`` → 估算（prompt 记 0，completion 按已见 token chars/4）；
+    - 任何回调异常静默（旁观者契约，绝不抛）。
+    """
+
+    def __init__(self, collector) -> None:
+        self.collector = collector
+        self._pending: dict = {}  # run_id -> {"t0", "parent_id", "chars", "name"}
+
+    @staticmethod
+    def _name(serialized: dict) -> str:
+        try:
+            return serialized.get("name") or settings.llm_model
+        except Exception:  # noqa: BLE001
+            return settings.llm_model
+
+    def on_llm_start(self, serialized, prompts, *, run_id, **kwargs) -> None:  # noqa: ARG002
+        if self.collector is None:
+            return
+        try:
+            import time
+            self._pending[run_id] = {
+                "t0": time.perf_counter(), "parent_id": self.collector.stack_top,
+                "chars": 0, "name": self._name(serialized or {}),
+            }
+        except Exception:  # noqa: BLE001
+            pass
+
+    def on_llm_new_token(self, token, **kwargs) -> None:
+        try:
+            run_id = kwargs.get("run_id")
+            if run_id in self._pending:
+                self._pending[run_id]["chars"] += len(token or "")
+        except Exception:  # noqa: BLE001
+            pass
+        super().on_llm_new_token(token, **kwargs)  # 原 token→SSE 职责保留
+
+    def _usage_from(self, response) -> dict | None:
+        try:
+            out = getattr(response, "llm_output", None) or {}
+            tu = out.get("token_usage")
+            if isinstance(tu, dict) and tu.get("prompt_tokens") is not None:
+                return tu
+            gens = getattr(response, "generations", None)
+            if gens and gens[0]:
+                msg = getattr(gens[0][0], "message", None)
+                um = getattr(msg, "usage_metadata", None) if msg else None
+                if isinstance(um, dict) and um.get("input_tokens") is not None:
+                    return {"prompt_tokens": um["input_tokens"],
+                            "completion_tokens": um.get("output_tokens") or 0}
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+
+    def on_llm_end(self, response, *, run_id, **kwargs) -> None:  # noqa: ARG002
+        if self.collector is None or run_id not in self._pending:
+            return
+        try:
+            import time
+            info = self._pending.pop(run_id)
+            dur = (time.perf_counter() - info["t0"]) * 1000
+            usage = self._usage_from(response)
+            from app.agent.trace import tokens_from_usage
+            self.collector.record(
+                "llm", info["name"], dur, parent_id=info["parent_id"],
+                tokens=tokens_from_usage(usage, prompt_chars=0,
+                                         completion_chars=info["chars"]),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def on_llm_error(self, error, *, run_id, **kwargs) -> None:  # noqa: ARG002
+        if self.collector is None or run_id not in self._pending:
+            return
+        try:
+            info = self._pending.pop(run_id)
+            s = self.collector.start("llm", info["name"],
+                                     parent_id=info["parent_id"])
+            self.collector.end(s, error=f"{type(error).__name__}: {error}")
+        except Exception:  # noqa: BLE001
+            pass

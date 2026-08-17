@@ -38,22 +38,34 @@ _REWRITE_USER = (
 )
 
 
-async def rewrite_query(query: str) -> dict:
+async def rewrite_query(query: str, *, usage_out: dict | None = None) -> dict:
     """Stage0 LLM 查询改写：返回 {"semantic_query", "extra_keywords"}。
     未配置 LLM / 调用失败 / 解析失败 → 退化为原 query + 空 keywords（主链路不中断）。
+    M41：传 usage_out 时捕获 token 真值（供 llm span）。
     """
     fallback = {"semantic_query": query, "extra_keywords": []}
     if not llm.configured:
         return fallback
     try:
-        text = await llm.chat(
-            [
-                {"role": "system", "content": _REWRITE_SYS},
-                {"role": "user", "content": _REWRITE_USER.format(q=query)},
-            ],
-            temperature=0.2,
-            max_tokens=256,
-        )
+        if usage_out is None:
+            text = await llm.chat(
+                [
+                    {"role": "system", "content": _REWRITE_SYS},
+                    {"role": "user", "content": _REWRITE_USER.format(q=query)},
+                ],
+                temperature=0.2,
+                max_tokens=256,
+            )
+        else:
+            text, _u = await llm.chat_meta(
+                [
+                    {"role": "system", "content": _REWRITE_SYS},
+                    {"role": "user", "content": _REWRITE_USER.format(q=query)},
+                ],
+                usage_out=usage_out,
+                temperature=0.2,
+                max_tokens=256,
+            )
     except Exception:
         return fallback
 

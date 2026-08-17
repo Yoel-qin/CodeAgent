@@ -11,11 +11,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
-from app.agent.llm import configured, get_chat_model
+from app.agent.llm import TraceCallbackHandler, configured, get_chat_model
 from app.core.config import settings
 
 
@@ -45,7 +46,9 @@ async def _bounded_tool_loop(*, system_prompt: str, user_prompt: str, tools: lis
 
     返回 ``{tool_steps, observations, collab_llm_calls, collab_tool_calls}``（state delta 片段）。
     工具经 ``@tool`` 对象 ``.ainvoke(args, config)`` —— 复用其发 citation 的逻辑。
+    M41：collector 存在时，model.ainvoke 传 TraceCallbackHandler 记 llm span。
     """
+    collector = (config or {}).get("configurable", {}).get("trace") if isinstance(config, dict) else None
     model = get_chat_model().bind_tools(tools)
     tool_by_name = {t.name: t for t in tools}
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
@@ -53,10 +56,22 @@ async def _bounded_tool_loop(*, system_prompt: str, user_prompt: str, tools: lis
     observations: list[str] = []
     llm_used = 0
     tool_used = 0
+    # M41：构造带 TraceCallbackHandler 的 invoke config（collector=None → 零开销直通）
+    llm_config = config if isinstance(config, dict) else {}
+    if collector is not None:
+        llm_config = dict(llm_config)
+        cb = TraceCallbackHandler(collector)
+        existing = llm_config.get("callbacks")
+        if existing is None:
+            llm_config["callbacks"] = [cb]
+        elif isinstance(existing, list):
+            llm_config["callbacks"] = [*existing, cb]
+        else:
+            llm_config["callbacks"] = [*(getattr(existing, "handlers", []) or []), cb]
     for _ in range(max_rounds):
         if llm_budget_left - llm_used <= 0:
             break
-        resp = await model.ainvoke(messages)
+        resp = await model.ainvoke(messages, config=llm_config)
         llm_used += 1
         messages.append(resp)
         calls = list(getattr(resp, "tool_calls", None) or [])
@@ -149,53 +164,56 @@ async def _run_layer(state, config, *, layer: str, prompt: str, tools: list, sch
     用已有 WorkingMemory 继续下层（不炸整个子图）。
     I-2（refine 优雅收尾）：refine 层末尾无论 extract 成功与否都 emit 报告 token（防空响应）。
     I-4（retrieval meta）：refine 层末尾 emit 一条 mode="collab" retrieval 指标事件。
+    M41：collector 存在时包 agent span（kind="agent"，name=层名）；collector=None → nullcontext 零开销。
     """
-    if not configured():
-        # 无 LLM key：refine 层仍兜底汇总（用已累积 WM），避免空响应
+    collector = config["configurable"].get("trace") if isinstance(config, dict) else None
+    with (collector.span("agent", layer) if collector is not None else nullcontext()):
+        if not configured():
+            # 无 LLM key：refine 层仍兜底汇总（用已累积 WM），避免空响应
+            if schema is memory.SuggestionList:
+                _emit_report_token(state, None)
+                _emit_collab_retrieval_meta(state, 0, 0, 0)
+            return {}
+        used_l = int(state.get("collab_llm_calls", 0))
+        used_t = int(state.get("collab_tool_calls", 0))
+        try:
+            loop_res = await _bounded_tool_loop(
+                system_prompt=prompt, user_prompt=_layer_input(state, layer), tools=tools,
+                max_rounds=settings.collab_max_rounds_per_layer,
+                llm_budget_left=budget.remaining(used_l, settings.collab_max_llm_calls),
+                tool_budget_left=budget.remaining(used_t, settings.collab_max_tool_calls),
+                layer_name=f"collab.{layer}", config=config)
+        except Exception as e:  # noqa: BLE001  I-1: 单层异常 → 跳过、用已有 WM 继续
+            _emit_agent_step(f"collab.{layer}", "(layer_error)",
+                             {"error": type(e).__name__, "msg": str(e)})
+            if schema is memory.SuggestionList:
+                _emit_report_token(state, None)
+                _emit_collab_retrieval_meta(state, used_l, used_t, 0)
+            return {}
+        out: dict = {
+            "tool_steps": loop_res["tool_steps"],
+            "collab_llm_calls": loop_res["collab_llm_calls"],
+            "collab_tool_calls": loop_res["collab_tool_calls"],
+        }
+        extracted = None
+        if budget.remaining(used_l + loop_res["collab_llm_calls"], settings.collab_max_llm_calls) > 0:
+            extracted = await _extract(schema, prompt, loop_res["observations"])
+            if extracted is not None:
+                out["collab_llm_calls"] = loop_res["collab_llm_calls"] + 1
+                if schema is memory.HypothesisList:
+                    out["collab_hypotheses"] = [h.model_dump() for h in extracted.hypotheses]
+                elif schema is memory.FindingList:
+                    out["collab_findings"] = [f.model_dump() for f in extracted.findings]
+                elif schema is memory.SuggestionList:
+                    out["collab_suggestions"] = [s.model_dump() for s in extracted.suggestions]
+        # I-2/I-4: refine 层优雅收尾——无论 extract 是否成功，都 emit 报告 token + retrieval meta
         if schema is memory.SuggestionList:
-            _emit_report_token(state, None)
-            _emit_collab_retrieval_meta(state, 0, 0, 0)
-        return {}
-    used_l = int(state.get("collab_llm_calls", 0))
-    used_t = int(state.get("collab_tool_calls", 0))
-    try:
-        loop_res = await _bounded_tool_loop(
-            system_prompt=prompt, user_prompt=_layer_input(state, layer), tools=tools,
-            max_rounds=settings.collab_max_rounds_per_layer,
-            llm_budget_left=budget.remaining(used_l, settings.collab_max_llm_calls),
-            tool_budget_left=budget.remaining(used_t, settings.collab_max_tool_calls),
-            layer_name=f"collab.{layer}", config=config)
-    except Exception as e:  # noqa: BLE001  I-1: 单层异常 → 跳过、用已有 WM 继续
-        _emit_agent_step(f"collab.{layer}", "(layer_error)",
-                         {"error": type(e).__name__, "msg": str(e)})
-        if schema is memory.SuggestionList:
-            _emit_report_token(state, None)
-            _emit_collab_retrieval_meta(state, used_l, used_t, 0)
-        return {}
-    out: dict = {
-        "tool_steps": loop_res["tool_steps"],
-        "collab_llm_calls": loop_res["collab_llm_calls"],
-        "collab_tool_calls": loop_res["collab_tool_calls"],
-    }
-    extracted = None
-    if budget.remaining(used_l + loop_res["collab_llm_calls"], settings.collab_max_llm_calls) > 0:
-        extracted = await _extract(schema, prompt, loop_res["observations"])
-        if extracted is not None:
-            out["collab_llm_calls"] = loop_res["collab_llm_calls"] + 1
-            if schema is memory.HypothesisList:
-                out["collab_hypotheses"] = [h.model_dump() for h in extracted.hypotheses]
-            elif schema is memory.FindingList:
-                out["collab_findings"] = [f.model_dump() for f in extracted.findings]
-            elif schema is memory.SuggestionList:
-                out["collab_suggestions"] = [s.model_dump() for s in extracted.suggestions]
-    # I-2/I-4: refine 层优雅收尾——无论 extract 是否成功，都 emit 报告 token + retrieval meta
-    if schema is memory.SuggestionList:
-        _emit_report_token(state, extracted)
-        total_l = used_l + int(out.get("collab_llm_calls", 0))
-        total_t = used_t + int(out.get("collab_tool_calls", 0))
-        _emit_collab_retrieval_meta(state, total_l, total_t,
-                                    len(out.get("collab_suggestions", [])))
-    return out
+            _emit_report_token(state, extracted)
+            total_l = used_l + int(out.get("collab_llm_calls", 0))
+            total_t = used_t + int(out.get("collab_tool_calls", 0))
+            _emit_collab_retrieval_meta(state, total_l, total_t,
+                                        len(out.get("collab_suggestions", [])))
+        return out
 
 
 def _emit_report_token(state: dict, suggestions) -> None:

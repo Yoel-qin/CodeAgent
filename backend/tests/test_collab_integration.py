@@ -156,7 +156,7 @@ async def test_bounded_tool_loop_handles_unknown_tool_name(monkeypatch):
             self._seq = list(seq)
             self._n = 0
 
-        async def ainvoke(self, msgs):
+        async def ainvoke(self, msgs, **kw):
             i = min(self._n, len(self._seq) - 1)
             self._n += 1
             return _Resp(self._seq[i])
@@ -197,7 +197,7 @@ async def test_bounded_tool_loop_isolates_single_tool_exception(monkeypatch):
             self._seq = list(seq)
             self._n = 0
 
-        async def ainvoke(self, msgs):
+        async def ainvoke(self, msgs, **kw):
             i = min(self._n, len(self._seq) - 1)
             self._n += 1
             return _Resp(self._seq[i])

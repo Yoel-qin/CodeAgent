@@ -30,6 +30,7 @@ resume 才可靠（详见 milestone 设计：子图内 interrupt 的 resume 会�
 from __future__ import annotations
 
 import warnings
+from contextlib import nullcontext
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
@@ -38,7 +39,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.agents._base import _emit_retrieval_meta
-from app.agent.llm import configured, get_chat_model
+from app.agent.llm import TraceCallbackHandler, configured, get_chat_model
 from app.agent.state import AgentState
 from app.agent.tools.code_tools import get_recent_changes, read_code, search_code, search_symbol
 from app.agent.tools.doc_tools import read_doc
@@ -242,14 +243,25 @@ async def propose(state: AgentState, config: RunnableConfig) -> dict:
       捕获 ``submit_proposal`` 推的 ``_PROPOSAL_EVENT``（不桥接），落 ``proposal``/``stale_anchors``；
     - ReAct 异常 → 降级 token + 空 anchors → post_process；
     - Agent 结论无过时 → 说明 token + 空 anchors → post_process。
+    M41：collector 存在时注入 TraceCallbackHandler + 包 agent span；无 collector → 零开销。
     """
     if not configured():
         return await _propose_fallback(state, config)
 
+    collector = config["configurable"].get("trace")
     _emit_retrieval_meta(state, agent_name="DOC_MAINTAIN", tools=MAINTAIN_TOOLS)
     cfg = dict(config)
     cfg["configurable"] = dict(config.get("configurable") or {})
-    # 不注入 TokenSSEHandler——propose 不流 token（中断前不漏半句）
+    # M41：collector 存在时注入 TraceCallbackHandler（记 llm span）；无 collector → 不注入（零开销）
+    if collector is not None:
+        existing = cfg.get("callbacks")
+        cb = TraceCallbackHandler(collector)
+        if existing is None:
+            cfg["callbacks"] = [cb]
+        elif isinstance(existing, list):
+            cfg["callbacks"] = [*existing, cb]
+        else:
+            cfg["callbacks"] = [*(getattr(existing, "handlers", []) or []), cb]
     cfg["recursion_limit"] = settings.agent_max_iterations * 2 + 3
     parent_writer = _safe_writer()  # 主图 custom 流；Agent 嵌套 custom 事件需手动桥接上来
     holder: dict = {}
@@ -257,14 +269,17 @@ async def propose(state: AgentState, config: RunnableConfig) -> dict:
     try:
         agent = get_doc_maintain_agent()
         seed = [*state.get("history", []), {"role": "user", "content": state["query"]}]
-        async for chunk in agent.astream({"messages": seed}, config=cfg, stream_mode="custom"):
-            if not isinstance(chunk, dict):
-                continue
-            if chunk.get("event") == _PROPOSAL_EVENT:
-                holder.update(chunk.get("data") or {})  # 捕获结构化提案
-                continue  # 内部协议事件，不桥接到主图 SSE
-            if parent_writer:
-                parent_writer(chunk)  # agent_step / citation 桥接到主图
+        cm = (collector.span("agent", "doc_maintain")
+              if collector is not None else nullcontext())
+        with cm:
+            async for chunk in agent.astream({"messages": seed}, config=cfg, stream_mode="custom"):
+                if not isinstance(chunk, dict):
+                    continue
+                if chunk.get("event") == _PROPOSAL_EVENT:
+                    holder.update(chunk.get("data") or {})  # 捕获结构化提案
+                    continue  # 内部协议事件，不桥接到主图 SSE
+                if parent_writer:
+                    parent_writer(chunk)  # agent_step / citation 桥接到主图
     except Exception:  # noqa: BLE001
         _emit_token("（文档维护 Agent 异常，未能完成排查。）")
         return {"proposal": None, "stale_anchors": []}

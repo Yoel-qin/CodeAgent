@@ -267,13 +267,18 @@ async def test_run_layer_no_trace_key_no_error(monkeypatch):
 
 
 async def test_run_layer_records_llm_spans_via_trace_callback(monkeypatch):
-    """_bounded_tool_loop 内 model.ainvoke 传 TraceCallbackHandler → collector 内出现 llm span。
+    """_bounded_tool_loop + _extract 的 ainvoke 均收到含 TraceCallbackHandler 的 config。
 
-    fake ainvoke 手动触发 callbacks.on_llm_start/end 模拟 LangChain 回调链。
+    fake ainvoke 手动触发 callbacks.on_llm_start/end 模拟 LangChain 回调链；
+    span 数据由手动回调触发，接线正确性由 captured_config 断言保证。
     """
+    from app.agent.llm import TraceCallbackHandler
     from app.agent.trace import SpanCollector
 
     collector = SpanCollector()
+    # 闭包捕获：记录 _bounded_tool_loop 和 _extract 的 ainvoke 收到的 config
+    loop_configs: list[dict] = []
+    extract_configs: list[dict] = []
 
     seq = list([
         ([{"name": "search_code", "args": {"query": "q"}, "id": "1"}], ""),
@@ -307,6 +312,7 @@ async def test_run_layer_records_llm_spans_via_trace_callback(monkeypatch):
             i = min(calls["n"], len(seq) - 1)
             calls["n"] += 1
             resp = _Resp(*seq[i])
+            loop_configs.append(config)  # 捕获 _bounded_tool_loop 传给 ainvoke 的 config
             # 手动触发回调（假 Runnable 不走 LangChain 调度）
             cbs = (config or {}).get("callbacks") if isinstance(config, dict) else None
             _fire_callbacks(cbs, resp)
@@ -321,6 +327,7 @@ async def test_run_layer_records_llm_spans_via_trace_callback(monkeypatch):
             class _S:
                 async def ainvoke(self, msgs, config=None, **kw):
                     resp = memory.HypothesisList(hypotheses=[memory.HypothesisItem(hypothesis="H1")])
+                    extract_configs.append(config)  # 捕获 _extract 传给 ainvoke 的 config
                     cbs = (config or {}).get("callbacks") if isinstance(config, dict) else None
                     _fire_callbacks(cbs, resp)
                     return resp
@@ -339,3 +346,17 @@ async def test_run_layer_records_llm_spans_via_trace_callback(monkeypatch):
     llm_spans = [s for s in payload["spans"] if s["kind"] == "llm"]
     # _bounded_tool_loop ainvoke 两次 + _extract 一次 = 至少 2 个 llm span
     assert len(llm_spans) >= 2, f"应记录 >=2 个 llm span，实际: {len(llm_spans)}"
+
+    # 接线断言：_bounded_tool_loop 的 ainvoke 收到的 config 含 TraceCallbackHandler
+    assert len(loop_configs) >= 1, "_bounded_tool_loop ainvoke 未被调用"
+    loop_cb = loop_configs[0].get("callbacks") if isinstance(loop_configs[0], dict) else None
+    assert loop_cb and isinstance(loop_cb[0], TraceCallbackHandler), \
+        f"_bounded_tool_loop ainvoke 未收到 TraceCallbackHandler，实际 callbacks: {loop_cb}"
+    assert loop_cb[0].collector is collector, "TraceCallbackHandler.collector 不是预期实例"
+
+    # 接线断言：_extract 的 ainvoke 收到的 config 含 TraceCallbackHandler
+    assert len(extract_configs) >= 1, "_extract ainvoke 未被调用"
+    extract_cb = extract_configs[0].get("callbacks") if isinstance(extract_configs[0], dict) else None
+    assert extract_cb and isinstance(extract_cb[0], TraceCallbackHandler), \
+        f"_extract ainvoke 未收到 TraceCallbackHandler，实际 callbacks: {extract_cb}"
+    assert extract_cb[0].collector is collector, "TraceCallbackHandler.collector 不是预期实例"

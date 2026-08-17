@@ -7,8 +7,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy.dialects import postgresql
+
 from app.api.v1.agents import router as agents_router
 from app.services.agent_stats_service import (
+    _DEGRADED,
+    _ENGAGED,
+    _HAS_TOOLS,
+    _STEPS_LEN,
     _ratio,
     _since,
     get_agent_runs,
@@ -158,3 +164,28 @@ def test_agents_router_endpoints_registered():
     paths = {r.path for r in agents_router.routes}
     assert "/agents/stats" in paths
     assert "/agents/runs" in paths
+
+
+# ---- M41 三形状谓词编译级接线测试（无需 PG，断言 SQL 片段存在即可）----
+# 语义由静态 jsonpath 字面量保证；真实 DB 行为由集成测试覆盖。
+
+
+def test_has_tools_predicate_covers_three_shapes():
+    sql = str(_HAS_TOOLS.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    assert "jsonb_typeof" in sql
+    assert "jsonb_array_length" in sql
+    assert '$.spans[*] ? (@.kind == "tool")' in sql  # dict 形状分支存在
+
+
+def test_engaged_degraded_use_has_tools_not_isnot():
+    eng = str(_ENGAGED.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    deg = str(_DEGRADED.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    assert "agent_steps IS NOT NULL" not in eng  # 旧 `isnot(None)` 已换掉
+    assert eng.count("jsonb_typeof") >= 1
+    assert deg.count("jsonb_typeof") >= 1
+
+
+def test_steps_len_compiles_three_shapes():
+    sql = str(_STEPS_LEN.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    assert "WHEN" in sql
+    assert '$.spans[*] ? (@.kind == "tool")' in sql

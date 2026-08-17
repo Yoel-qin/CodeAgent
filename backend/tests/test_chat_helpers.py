@@ -204,6 +204,14 @@ def test_build_agent_trace_old_list_and_null_unchanged():
     assert _build_agent_trace(agent_steps=None, agent_type=None) is None
 
 
+def test_build_agent_trace_empty_list_returns_none():
+    assert _build_agent_trace(agent_steps=[], agent_type=None) is None
+
+
+def test_build_agent_trace_dict_missing_spans_key_returns_none():
+    assert _build_agent_trace(agent_steps={"version": 2}, agent_type=None) is None
+
+
 async def test_stream_chat_trace_no_llm_key(monkeypatch):
     """M41 no-LLM-key 变体：最终 payload 只含 request+retrieval（无 llm span）。"""
     import app.services.chat_service as cs

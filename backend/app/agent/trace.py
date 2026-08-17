@@ -143,24 +143,34 @@ class _LLMSpanCtx:
     def __init__(self) -> None:
         self.usage_out: dict = {}
         self.completion_chars = 0
+        self._error: str | None = None
 
     def add_token(self, tok: str) -> None:
         self.completion_chars += len(tok or "")
+
+    def mark_error(self, exc: BaseException) -> None:
+        """调用方在 with 块内捕获异常后调用，标记此 span 为 error（旁观者契约：不抛）。"""
+        self._error = f"{type(exc).__name__}: {exc}"[:200]
 
 
 @asynccontextmanager
 async def llm_span(collector: SpanCollector | None, name: str,
                    prompt_text: str = ""):
     """包一次流式 LLM 调用：进入开 llm span（parent=栈顶）；退出按
-    usage_out 真值 / chars 估算结算 tokens。collector=None → 零开销直通。"""
+    usage_out 真值 / chars 估算结算 tokens。collector=None → 零开销直通。
+    异常处理：调用方 mark_error() → error 记入 span；未捕获异常 → except 记 error 后重抛。"""
     ctx = _LLMSpanCtx()
     s = collector.start("llm", name, parent_id=collector.stack_top) \
         if collector is not None else None
     try:
         yield ctx
+    except Exception as e:  # noqa: BLE001
+        if s is not None:
+            ctx.mark_error(e)
+        raise
     finally:
         if s is not None:
-            collector.end(s, tokens=tokens_from_usage(
+            collector.end(s, error=ctx._error, tokens=tokens_from_usage(
                 ctx.usage_out or None,
                 prompt_chars=len(prompt_text),
                 completion_chars=ctx.completion_chars))

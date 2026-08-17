@@ -32,6 +32,7 @@ async def generate(state: AgentState, config: RunnableConfig) -> dict:
                     parts.append(tok)
                     writer({"event": "token", "data": {"content": tok}})
             except Exception as e:  # noqa: BLE001
+                ls.mark_error(e)
                 msg = f"\n[LLM 调用失败：{type(e).__name__}: {e}]"
                 parts.append(msg)
                 writer({"event": "token", "data": {"content": msg}})

@@ -297,9 +297,6 @@ async def test_run_scenario_agent_records_agent_span_and_degrade(monkeypatch):
 
     monkeypatch.setattr(
         "app.agent.agents._base.configured", lambda: True)
-    monkeypatch.setattr(
-        "app.agent.agents._base.TokenSSEHandler",
-        lambda *a, **kw: None)  # 防真实回调
     import app.agent.agents._base as base
 
     async def fake_recall(session, query, top_k=8, **kw):
@@ -326,3 +323,47 @@ async def test_run_scenario_agent_records_agent_span_and_degrade(monkeypatch):
     assert "agent" in kinds and "degrade" in kinds
     agent_span = [s for s in c.to_payload()["spans"] if s["kind"] == "agent"][0]
     assert agent_span["status"] == "error"
+
+
+# ---- Round 1 fix: llm_span error recording ----
+
+
+async def test_llm_span_uncaught_exception_records_error():
+    """未捕获异常：except 分支记 error 后重抛。"""
+    c = SpanCollector()
+    with pytest.raises(RuntimeError):
+        async with llm_span(c, "m"):
+            raise RuntimeError("x")
+    s = c.to_payload()["spans"][0]
+    assert s["status"] == "error"
+    assert "RuntimeError" in s["error"]
+
+
+async def test_llm_span_mark_error_path():
+    """调用方 mark_error → span 记 error（不抛）。"""
+    c = SpanCollector()
+    async with llm_span(c, "m") as ls:
+        ls.mark_error(ValueError("y"))
+    s = c.to_payload()["spans"][0]
+    assert s["status"] == "error"
+    assert "ValueError" in s["error"]
+
+
+async def test_generate_node_llm_span_error_on_exception(monkeypatch):
+    """generate：stream_tokens 抛异常 → fallback 文本不变 + llm span status=error。"""
+    import app.agent.nodes.generate as gn
+    import app.clients.llm_client as llm_mod
+
+    async def fake_stream_fail(messages, *, usage_out=None, **kw):
+        raise ConnectionError("net boom")
+        yield  # pragma: no cover — make it an async generator; raise before first yield
+
+    monkeypatch.setattr(llm_mod.LLMClient, "configured", property(lambda self: True))
+    monkeypatch.setattr(llm_mod.llm, "stream_tokens", fake_stream_fail)
+    monkeypatch.setattr(gn, "get_stream_writer", lambda: (lambda chunk: None))
+    c = SpanCollector()
+    out = await generate_node({"query": "q", "ranked": [], "retrieval_meta": {}}, _cfg(trace=c))
+    assert "LLM 调用失败" in out["answer"]
+    s = [x for x in c.to_payload()["spans"] if x["kind"] == "llm"][0]
+    assert s["status"] == "error"
+    assert "ConnectionError" in s["error"]

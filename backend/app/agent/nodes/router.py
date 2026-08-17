@@ -14,6 +14,8 @@ langgraph 条件边对双参 path 函数不传 config 的版本 → config=None 
 """
 from __future__ import annotations
 
+from langchain_core.runnables import RunnableConfig
+
 from app.agent.llm import configured
 from app.agent.registry import get_registry
 from app.agent.state import AgentState
@@ -47,7 +49,7 @@ def _route(state: AgentState) -> str:
     )
 
 
-def route(state: AgentState, config=None) -> str:
+def route(state: AgentState, config: RunnableConfig | None = None) -> str:
     """返回下一节点名：collab | 场景 Agent | retrieve。
 
     M41：config 带 trace 时记 route span（attrs.target）。

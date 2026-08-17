@@ -36,6 +36,8 @@ def test_derive_title_collapses_newlines():
 class _AddRecorder:
     """假 AsyncSession：记录 add(...) 调用，flush 为 no-op（无需真实 DB）。"""
 
+    last_rlog_agent_steps: dict | list | None = None  # M41：flush 时捕获最新 agent_steps
+
     def __init__(self) -> None:
         self.added: list = []
 
@@ -43,6 +45,14 @@ class _AddRecorder:
         self.added.append(obj)
 
     async def flush(self) -> None:
+        # M41：记录最后一条带 agent_steps 属性的对象（RetrievalLog）
+        for obj in reversed(self.added):
+            if hasattr(obj, "agent_steps"):
+                _AddRecorder.last_rlog_agent_steps = obj.agent_steps
+                break
+        return None
+
+    async def commit(self) -> None:
         return None
 
 
@@ -80,3 +90,40 @@ def test_build_agent_trace_type_fallback():
     resp = _build_agent_trace(agent_steps=[{"tool": "t", "args": {}, "n": 0}], agent_type=None)
     assert resp is not None
     assert resp.type == "AGENT"
+
+
+# ---- M41 legacy trace 追加 ----
+
+
+async def test_stream_chat_persists_trace_dict(monkeypatch):
+    """M41 legacy 路径：agent_steps 落 version:2 dict，含 request/retrieval/llm span。"""
+    import app.services.chat_service as cs
+
+    async def fake_recall(session, query, top_k=8, **kw):
+        return [], {"mode": "default", "merged": 0, "recall_ms": 5, "rerank_ms": 2}
+
+    async def fake_stream_tokens(messages, *, usage_out=None, **kw):
+        if usage_out is not None:
+            usage_out.update({"prompt_tokens": 4, "completion_tokens": 2})
+        yield "答"
+
+    monkeypatch.setattr(cs.pipeline, "recall", fake_recall)
+    async def _fake_enrich(_s, _r):
+        return None
+    monkeypatch.setattr(cs, "_enrich_content_types", _fake_enrich)
+    import app.clients.llm_client as _llm_mod
+    monkeypatch.setattr(_llm_mod.LLMClient, "configured",
+                         property(lambda self: True))
+    monkeypatch.setattr(cs.llm, "stream_tokens", fake_stream_tokens)
+    monkeypatch.setattr(cs.settings, "conversation_history_turns", 0)
+
+    events: list[tuple[str, dict]] = []
+    async for ev in cs.stream_chat(_AddRecorder(), "q"):
+        events.append(ev)
+    # persist 被调两次：先 dict(partial) 后补全——断言最终 flush 的 dict 完整
+    payload = _AddRecorder.last_rlog_agent_steps
+    assert payload is not None
+    assert payload["version"] == 2
+    kinds = [s["kind"] for s in payload["spans"]]
+    assert kinds == ["request", "retrieval", "llm"]
+    assert payload["summary"]["tokens"]["n_llm_calls"] == 1

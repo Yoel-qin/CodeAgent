@@ -7,11 +7,13 @@
 """
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.trace import SpanCollector, llm_span
 from app.clients.llm_client import llm
 from app.core.config import settings
 from app.core.ids import prefixed_id
@@ -266,15 +268,24 @@ async def stream_chat(
     current_msg_id = await add_user_message(session, conv, query, agent_type)
 
     # ---- 3. 检索（召回 → RRF → 精排）----
+    collector = SpanCollector()  # M41 结构化 trace
+    rq = collector.start("request", "chat")  # 外层 span，手动管理（不入栈）
+    t0 = time.perf_counter()
     ranked, meta = await pipeline.recall(session, query, top_k=top_k)
     await _enrich_content_types(session, ranked)
+    collector.record("retrieval", "recall", (time.perf_counter() - t0) * 1000,
+                     parent_id=rq.span_id,
+                     attrs={"recall": meta.get("recall"), "merged": meta.get("merged"),
+                            "rerank_on": meta.get("rerank_on"),
+                            "rewritten": meta.get("rewritten", False)})
     yield ("retrieval", meta)
     citations = [_citation(r) for r in ranked]
     for cit in citations:
         yield ("citation", cit)
 
-    # ---- 4. 检索日志（漏斗 meta + 精排候选，供检索详情/反馈/LTR）----
-    rlog = await persist_retrieval_log(session, query, meta, citations)
+    # ---- 4. 检索日志（漏斗 meta + 精排候选 + 部分 trace）----
+    rlog = await persist_retrieval_log(session, query, meta, citations,
+                                       agent_steps=collector.to_payload())
 
     # ---- 5. LLM 流式生成（累积落库）----
     context = build_context(ranked)
@@ -285,14 +296,17 @@ async def stream_chat(
             limit=settings.conversation_history_turns,
         )
         messages = build_messages(query, context, agent_type, history)
-        try:
-            async for tok in llm.stream_tokens(messages):
-                parts.append(tok)
-                yield ("token", {"content": tok})
-        except Exception as e:  # noqa: BLE001
-            msg = f"\n[LLM 调用失败：{type(e).__name__}: {e}]"
-            parts.append(msg)
-            yield ("token", {"content": msg})
+        async with llm_span(collector, llm.model, prompt_text=context) as ls:
+            try:
+                async for tok in llm.stream_tokens(messages, usage_out=ls.usage_out):
+                    ls.add_token(tok)
+                    parts.append(tok)
+                    yield ("token", {"content": tok})
+            except Exception as e:  # noqa: BLE001
+                ls.mark_error(e)
+                msg = f"\n[LLM 调用失败：{type(e).__name__}: {e}]"
+                parts.append(msg)
+                yield ("token", {"content": msg})
         if not parts:
             fallback = "（模型未返回内容）"
             parts.append(fallback)
@@ -301,6 +315,14 @@ async def stream_chat(
         notice = _no_key_notice(meta)
         parts.append(notice)
         yield ("token", {"content": notice})
+
+    # ---- 生成结束：同一事务补写完整 trace（request span 收口）----
+    collector.end(rq)
+    try:
+        rlog.agent_steps = collector.to_payload()
+        await session.flush()
+    except Exception:  # noqa: BLE001  trace 旁观者：补写失败不影响主流程
+        pass
 
     # ---- 6. assistant 消息 ----
     assistant_id = await add_assistant_message(

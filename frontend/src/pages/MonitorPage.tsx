@@ -112,18 +112,20 @@ export default function MonitorPage() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [p, u, idx, res, tr] = await Promise.all([
+      const [p, u, idx, res] = await Promise.all([
         getRetrievalPerf(timeWindow),
         getApiUsage(timeWindow),
         getIndexStats(),
         getResources(),
-        listTraces(timeWindow),
       ]);
       setPerf(p);
       setUsage(u);
       setIndexStats(idx);
       setResources(res);
-      setTraces(tr.items);
+      // M41: traces 独立容错，失败不阻塞既有四卡
+      try {
+        setTraces((await listTraces(timeWindow)).items);
+      } catch { /* traces 降级，静默 */ }
     } catch (e) {
       message.error((e as Error).message || "加载监控数据失败");
     } finally {
@@ -137,7 +139,14 @@ export default function MonitorPage() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  const openTrace = async (logId: number) => setTraceDetail(await getTrace(logId));
+  const openTrace = async (logId: number) => {
+    setTraceDetail(null); // 防旧详情闪烁
+    try {
+      setTraceDetail(await getTrace(logId));
+    } catch {
+      message.error("加载链路详情失败");
+    }
+  };
 
   const healthy = resources?.status === "healthy";
 

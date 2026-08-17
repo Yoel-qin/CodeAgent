@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
@@ -15,6 +15,8 @@ from app.schemas.monitor import (
     IndexStatsResponse,
     ResourcesResponse,
     RetrievalPerfResponse,
+    TraceDetail,
+    TraceListResponse,
 )
 from app.services import monitor_service
 
@@ -53,3 +55,28 @@ async def resources(
 ) -> ResourcesResponse:
     """基础设施连通与占用（PG/Redis/Milvus/ES/MinIO）。"""
     return await monitor_service.get_resources(session)
+
+
+# ---- GET /monitor/traces（M41 全链路追溯）----
+
+
+@router.get("/traces", response_model=TraceListResponse)
+async def traces(
+    window: str = Query("today", pattern="today|7d|all"),
+    limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_db),
+) -> TraceListResponse:
+    """M41 全链路追溯：请求列表（span 汇总，最新在前）。"""
+    return await monitor_service.get_traces(session, window, limit)
+
+
+@router.get("/traces/{log_id}", response_model=TraceDetail)
+async def trace_detail(
+    log_id: int,
+    session: AsyncSession = Depends(get_db),
+) -> TraceDetail:
+    """单请求 span 树（新 dict 原样 / 旧行伪 span 合成）。缺失 404。"""
+    d = await monitor_service.get_trace(session, log_id)
+    if d is None:
+        raise HTTPException(status_code=404, detail="检索日志不存在")
+    return d

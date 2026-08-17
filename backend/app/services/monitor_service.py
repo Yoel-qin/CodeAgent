@@ -26,11 +26,12 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients import es_client, milvus_client, minio_client
 from app.core.config import settings
+from app.db.models.system import RetrievalLog
 from app.schemas.monitor import (
     ApiUsageResponse,
     ComponentInfo,
@@ -44,6 +45,9 @@ from app.schemas.monitor import (
     ResourcesResponse,
     RetrievalFunnel,
     RetrievalPerfResponse,
+    TraceDetail,
+    TraceListItem,
+    TraceListResponse,
 )
 
 _USAGE_NOTE = (
@@ -373,3 +377,91 @@ async def get_resources(session: AsyncSession) -> ResourcesResponse:
     }
     status = "healthy" if all(c.up for c in components.values()) else "degraded"
     return ResourcesResponse(status=status, components=components)
+
+
+# ============================================================================
+# GET /monitor/traces（M41 全链路追溯）
+# ============================================================================
+
+
+def _select_logs(session, since):
+    """查询检索日志（最新在前）；模块级函数，测试可 monkeypatch。"""
+    q = select(RetrievalLog)
+    if since is not None:
+        q = q.where(RetrievalLog.created_at >= since)
+    return q.order_by(RetrievalLog.log_id.desc())
+
+
+def _is_dict_trace(payload) -> bool:
+    return isinstance(payload, dict) and payload.get("version") == 2
+
+
+def _agent_name(payload) -> str | None:
+    """从 dict 格式 agent_steps 的 spans 中提取首个 agent/collab span name。"""
+    for s in (payload.get("spans") or []) if _is_dict_trace(payload) else []:
+        if s.get("kind") in ("agent", "collab"):
+            return s.get("name")
+    return None
+
+
+async def get_traces(session: AsyncSession, window: str = "today",
+                     limit: int = 50) -> TraceListResponse:
+    """全链路追溯列表（最新在前）。新 dict 行读 summary；旧行回退 total_latency_ms 列。"""
+    try:
+        rows = (await session.execute(
+            _select_logs(session, _since(window)).limit(limit))).scalars().all()
+        items = []
+        for r in rows:
+            payload = r.agent_steps
+            dicty = _is_dict_trace(payload)
+            summary = (payload or {}).get("summary") if dicty else {}
+            items.append(TraceListItem(
+                log_id=r.log_id,
+                query=(r.query_text or "")[:60],
+                mode=(r.recall_results or {}).get("mode") if isinstance(r.recall_results, dict) else None,
+                agent=_agent_name(payload),
+                total_ms=(summary or {}).get("total_ms") if dicty else r.total_latency_ms,
+                tokens=summary.get("tokens") if dicty and summary.get("tokens") else None,
+                has_trace=dicty,
+                created_at=r.created_at.isoformat() if r.created_at else None,
+            ))
+        return TraceListResponse(window=window, total=len(items), items=items)
+    except Exception:  # noqa: BLE001  组件独立降级，不 500
+        return TraceListResponse(window=window, total=0, items=[])
+
+
+async def _get_log(session: AsyncSession, log_id: int):
+    """按主键获取检索日志；模块级函数，测试可 monkeypatch。"""
+    return await session.get(RetrievalLog, log_id)
+
+
+async def get_trace(session: AsyncSession, log_id: int) -> TraceDetail | None:
+    """单请求 span 树。新 dict 行原样；旧 list/null 行合成伪 span（retrieval/rerank）。"""
+    try:
+        r = await _get_log(session, log_id)
+        if r is None:
+            return None
+        meta = r.recall_results if isinstance(r.recall_results, dict) else {}
+        if _is_dict_trace(r.agent_steps):
+            return TraceDetail(log_id=r.log_id, query=r.query_text,
+                               mode=meta.get("mode"), legacy=False,
+                               spans=r.agent_steps.get("spans") or [],
+                               summary=r.agent_steps.get("summary"),
+                               created_at=r.created_at.isoformat() if r.created_at else None)
+        spans = []
+        if meta.get("recall_ms") is not None:
+            spans.append({"span_id": 1, "parent_id": None, "kind": "retrieval",
+                          "name": "recall", "start_ms": 0.0,
+                          "duration_ms": meta["recall_ms"], "status": "ok",
+                          "error": None, "tokens": None, "attrs": {}})
+        if meta.get("rerank_ms") is not None:
+            spans.append({"span_id": 2, "parent_id": 1, "kind": "retrieval",
+                          "name": "rerank",
+                          "start_ms": meta.get("recall_ms") or 0.0,
+                          "duration_ms": meta["rerank_ms"], "status": "ok",
+                          "error": None, "tokens": None, "attrs": {}})
+        return TraceDetail(log_id=r.log_id, query=r.query_text, mode=meta.get("mode"),
+                           legacy=True, spans=spans, summary=None,
+                           created_at=r.created_at.isoformat() if r.created_at else None)
+    except Exception:  # noqa: BLE001
+        return None

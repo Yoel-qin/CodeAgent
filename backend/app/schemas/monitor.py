@@ -129,3 +129,40 @@ class IndexStatsResponse(BaseModel):
     postgres: PostgresIndexStats
     milvus: MilvusIndexStats
     elasticsearch: EsIndexStats
+
+
+# ---- GET /monitor/traces（M41 全链路追溯）----
+
+
+class TraceTokens(BaseModel):
+    prompt: int
+    completion: int
+    n_llm_calls: int
+    estimated: bool
+
+
+class TraceListItem(BaseModel):
+    log_id: int
+    query: str  # 截断摘要
+    mode: str | None = None
+    agent: str | None = None  # agent span name（dict 行）/ None
+    total_ms: float | None = None
+    tokens: TraceTokens | None = None
+    has_trace: bool
+    created_at: str | None = None
+
+
+class TraceListResponse(BaseModel):
+    window: str
+    total: int
+    items: list[TraceListItem]
+
+
+class TraceDetail(BaseModel):
+    log_id: int
+    query: str
+    mode: str | None = None
+    legacy: bool  # True = 旧格式（伪 span，部分链路）
+    spans: list[dict]
+    summary: dict | None = None
+    created_at: str | None = None

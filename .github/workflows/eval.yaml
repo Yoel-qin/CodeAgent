@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - name: Install deps
-        run: uv sync
+        run: uv sync --extra dev  # pytest/ruff 在 [project.optional-dependencies].dev，默认 uv sync 不装（首跑踩坑：Failed to spawn pytest）
       - name: Pytest (deterministic)
         run: uv run pytest -q
       - name: Ruff

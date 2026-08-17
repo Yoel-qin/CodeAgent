@@ -38,7 +38,7 @@ from langgraph.types import interrupt
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.agents._base import _emit_retrieval_meta
+from app.agent.agents._base import _emit_retrieval_meta, _merge_callbacks
 from app.agent.llm import TraceCallbackHandler, configured, get_chat_model
 from app.agent.state import AgentState
 from app.agent.tools.code_tools import get_recent_changes, read_code, search_code, search_symbol
@@ -254,14 +254,7 @@ async def propose(state: AgentState, config: RunnableConfig) -> dict:
     cfg["configurable"] = dict(config.get("configurable") or {})
     # M41：collector 存在时注入 TraceCallbackHandler（记 llm span）；无 collector → 不注入（零开销）
     if collector is not None:
-        existing = cfg.get("callbacks")
-        cb = TraceCallbackHandler(collector)
-        if existing is None:
-            cfg["callbacks"] = [cb]
-        elif isinstance(existing, list):
-            cfg["callbacks"] = [*existing, cb]
-        else:
-            cfg["callbacks"] = [*(getattr(existing, "handlers", []) or []), cb]
+        cfg["callbacks"] = _merge_callbacks(cfg.get("callbacks"), TraceCallbackHandler(collector))
     cfg["recursion_limit"] = settings.agent_max_iterations * 2 + 3
     parent_writer = _safe_writer()  # 主图 custom 流；Agent 嵌套 custom 事件需手动桥接上来
     holder: dict = {}

@@ -138,7 +138,7 @@ def _patch_struct(monkeypatch, returns):
         def __init__(self, ret):
             self._ret = ret
 
-        async def ainvoke(self, msgs):
+        async def ainvoke(self, msgs, **kw):
             return self._ret
 
     class _Model:

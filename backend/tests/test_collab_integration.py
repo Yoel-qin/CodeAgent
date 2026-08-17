@@ -16,14 +16,14 @@ async def test_collab_wrapper_bridges_custom_events(monkeypatch):
     # mock 三层 LLM 调用：_bounded_tool_loop emit 一条 agent_step + 返回最小 delta；
     # _extract 各 schema 返回单条产出，确保 refine 走成功路径 + 兜底 emit retrieval meta。
     async def fake_loop(*, system_prompt, user_prompt, tools, max_rounds, llm_budget_left,
-                        tool_budget_left, layer_name, config):
+                        tool_budget_left, layer_name, config, llm_config=None):
         cn._emit_agent_step(layer_name, "search_code", {"query": "q"})
         return {"tool_steps": [{"agent": layer_name, "tool": "search_code", "args": {"query": "q"}}],
                 "observations": "obs", "collab_llm_calls": 1, "collab_tool_calls": 1}
     monkeypatch.setattr(cn, "_bounded_tool_loop", fake_loop)
     monkeypatch.setattr(cn, "configured", lambda: True)
 
-    async def fake_extract(schema, prompt, observations):
+    async def fake_extract(schema, prompt, observations, **kw):
         if schema is memory.HypothesisList:
             return memory.HypothesisList(hypotheses=[memory.HypothesisItem(hypothesis="H1")])
         if schema is memory.FindingList:
@@ -104,7 +104,7 @@ async def test_collab_refine_emits_report_token_on_extract_failure(monkeypatch):
     from app.agent.collab.budget import build_collab_report
 
     async def fake_loop(*, system_prompt, user_prompt, tools, max_rounds, llm_budget_left,
-                        tool_budget_left, layer_name, config):
+                        tool_budget_left, layer_name, config, llm_config=None):
         return {"tool_steps": [], "observations": "", "collab_llm_calls": 0, "collab_tool_calls": 0}
     monkeypatch.setattr(cn, "_bounded_tool_loop", fake_loop)
     monkeypatch.setattr(cn, "configured", lambda: True)

@@ -276,6 +276,36 @@ async def test_propose_react_exception_degrades(monkeypatch):
     assert any(e["event"] == "token" for e in events)  # 异常降级 token，不中断请求
 
 
+# ---- M41 propose trace 追加 ----
+
+
+async def test_propose_react_records_agent_span(monkeypatch):
+    """M41：collector 存在时 propose 的 ReAct 路径记录 agent span（kind=agent, name=doc_maintain）。"""
+    from app.agent.trace import SpanCollector
+
+    collector = SpanCollector()
+    chunks = [
+        {"event": "agent_step", "data": {"tool": "detect_stale_docs", "args": {}, "n": 0}},
+        {"event": "_proposal_captured",
+         "data": {"summary": "建议标记过时", "anchors": [{"relation_id": 5, "anchor_key": "X"}],
+                  "reason": "代码改了"}},
+    ]
+    monkeypatch.setattr(type(dm.llm), "configured", property(lambda self: True))
+    monkeypatch.setattr(dm, "get_doc_maintain_agent", lambda: _FakeReactAgent(chunks))
+    events: list = []
+    monkeypatch.setattr(dm, "get_stream_writer", _writer_recorder(events))
+
+    out = await propose(
+        {"query": "Foo 文档过时了吗", "history": []},
+        {"configurable": {"session": object(), "top_k": 8, "trace": collector}},
+    )
+    assert out["proposal"] == "建议标记过时"
+    payload = collector.to_payload()
+    agent_spans = [s for s in payload["spans"] if s["kind"] == "agent" and s["name"] == "doc_maintain"]
+    assert len(agent_spans) >= 1, f"应记录 doc_maintain agent span，实际 spans: {payload['spans']}"
+    assert payload["summary"]["kind_counts"].get("agent", 0) >= 1
+
+
 async def test_apply_stale_loops_multi_anchor(monkeypatch):
     mark_calls: list = []
     gen_calls: list = []

@@ -16,6 +16,7 @@ from contextlib import nullcontext
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
+from app.agent.agents._base import _merge_callbacks
 from app.agent.llm import TraceCallbackHandler, configured, get_chat_model
 from app.core.config import settings
 
@@ -40,15 +41,15 @@ def _emit_agent_step(layer_name: str, tool: str, args: dict) -> None:
 
 async def _bounded_tool_loop(*, system_prompt: str, user_prompt: str, tools: list,
                              max_rounds: int, llm_budget_left: int, tool_budget_left: int,
-                             layer_name: str, config: RunnableConfig) -> dict:
+                             layer_name: str, config: RunnableConfig,
+                             llm_config: dict | None = None) -> dict:
     """手动有界 tool-calling：每轮 LLM.ainvoke(bind_tools)；无 tool_calls 即止；
     达 max_rounds / 预算耗尽即止。一轮多个 tool_calls → asyncio.gather 并行（=「同层并行」）。
 
     返回 ``{tool_steps, observations, collab_llm_calls, collab_tool_calls}``（state delta 片段）。
     工具经 ``@tool`` 对象 ``.ainvoke(args, config)`` —— 复用其发 citation 的逻辑。
-    M41：collector 存在时，model.ainvoke 传 TraceCallbackHandler 记 llm span。
+    M41：llm_config 由调用方构建（含 TraceCallbackHandler），传给 model.ainvoke 记 llm span。
     """
-    collector = (config or {}).get("configurable", {}).get("trace") if isinstance(config, dict) else None
     model = get_chat_model().bind_tools(tools)
     tool_by_name = {t.name: t for t in tools}
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
@@ -56,22 +57,12 @@ async def _bounded_tool_loop(*, system_prompt: str, user_prompt: str, tools: lis
     observations: list[str] = []
     llm_used = 0
     tool_used = 0
-    # M41：构造带 TraceCallbackHandler 的 invoke config（collector=None → 零开销直通）
-    llm_config = config if isinstance(config, dict) else {}
-    if collector is not None:
-        llm_config = dict(llm_config)
-        cb = TraceCallbackHandler(collector)
-        existing = llm_config.get("callbacks")
-        if existing is None:
-            llm_config["callbacks"] = [cb]
-        elif isinstance(existing, list):
-            llm_config["callbacks"] = [*existing, cb]
-        else:
-            llm_config["callbacks"] = [*(getattr(existing, "handlers", []) or []), cb]
+    # M41：llm_config 由调用方注入（含 TraceCallbackHandler）；未提供则用原始 config
+    invoke_config = llm_config if llm_config is not None else (config if isinstance(config, dict) else {})
     for _ in range(max_rounds):
         if llm_budget_left - llm_used <= 0:
             break
-        resp = await model.ainvoke(messages, config=llm_config)
+        resp = await model.ainvoke(messages, config=invoke_config)
         llm_used += 1
         messages.append(resp)
         calls = list(getattr(resp, "tool_calls", None) or [])
@@ -143,14 +134,19 @@ def _layer_input(state: dict, layer: str) -> str:
     return f"原始问题：{q}\n假设：\n{htxt}\n验证结论：\n{ftxt}"
 
 
-async def _extract(schema, prompt: str, observations: str):
-    """一次 with_structured_output 提取（预算允许时）；失败→None。"""
+async def _extract(schema, prompt: str, observations: str, *,
+                   llm_config: dict | None = None):
+    """一次 with_structured_output 提取（预算允许时）；失败→None。
+
+    M41：llm_config 由调用方构建（含 TraceCallbackHandler），传给 ainvoke 记 llm span。
+    """
     try:
         structured = get_chat_model().with_structured_output(schema)
+        kw = {"config": llm_config} if llm_config is not None else {}
         return await structured.ainvoke([
             {"role": "system", "content": prompt},
             {"role": "user", "content": observations or "（无检索观察）"},
-        ])
+        ], **kw)
     except Exception:  # noqa: BLE001
         return None
 
@@ -166,7 +162,14 @@ async def _run_layer(state, config, *, layer: str, prompt: str, tools: list, sch
     I-4（retrieval meta）：refine 层末尾 emit 一条 mode="collab" retrieval 指标事件。
     M41：collector 存在时包 agent span（kind="agent"，name=层名）；collector=None → nullcontext 零开销。
     """
-    collector = config["configurable"].get("trace") if isinstance(config, dict) else None
+    collector = (config or {}).get("configurable", {}).get("trace") if isinstance(config, dict) else None
+    # M41：构造带 TraceCallbackHandler 的 llm_config（collector=None → None，下层用原始 config）
+    llm_config = None
+    if collector is not None:
+        cb = TraceCallbackHandler(collector)
+        base = config if isinstance(config, dict) else {}
+        llm_config = dict(base)
+        llm_config["callbacks"] = _merge_callbacks(llm_config.get("callbacks"), cb)
     with (collector.span("agent", layer) if collector is not None else nullcontext()):
         if not configured():
             # 无 LLM key：refine 层仍兜底汇总（用已累积 WM），避免空响应
@@ -182,7 +185,7 @@ async def _run_layer(state, config, *, layer: str, prompt: str, tools: list, sch
                 max_rounds=settings.collab_max_rounds_per_layer,
                 llm_budget_left=budget.remaining(used_l, settings.collab_max_llm_calls),
                 tool_budget_left=budget.remaining(used_t, settings.collab_max_tool_calls),
-                layer_name=f"collab.{layer}", config=config)
+                layer_name=f"collab.{layer}", config=config, llm_config=llm_config)
         except Exception as e:  # noqa: BLE001  I-1: 单层异常 → 跳过、用已有 WM 继续
             _emit_agent_step(f"collab.{layer}", "(layer_error)",
                              {"error": type(e).__name__, "msg": str(e)})
@@ -197,7 +200,8 @@ async def _run_layer(state, config, *, layer: str, prompt: str, tools: list, sch
         }
         extracted = None
         if budget.remaining(used_l + loop_res["collab_llm_calls"], settings.collab_max_llm_calls) > 0:
-            extracted = await _extract(schema, prompt, loop_res["observations"])
+            extracted = await _extract(schema, prompt, loop_res["observations"],
+                                       llm_config=llm_config)
             if extracted is not None:
                 out["collab_llm_calls"] = loop_res["collab_llm_calls"] + 1
                 if schema is memory.HypothesisList:

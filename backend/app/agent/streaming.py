@@ -16,6 +16,7 @@ from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.citation_enforcer import enforce
+from app.agent.cost import make_cost_controller
 from app.agent.graph import get_graph
 from app.agent.trace import SpanCollector
 from app.core.config import settings
@@ -93,12 +94,15 @@ async def stream_graph(
              "active_pack_name": active_pack.manifest.name if active_pack else None}
     # M41：请求级 SpanCollector + request span
     collector = SpanCollector()
+    # M42：请求级预算控制器（开关 off → None，零开销）
+    cost = make_cost_controller()
     config = {"configurable": {
         "thread_id": conversation_id,
         "session": session,
         "top_k": top_k,
         "agent_type": agent_type,
         "trace": collector,
+        "cost": cost,
     }}
     retrieval_meta: dict = {}
     citations: list[dict] = []
@@ -123,6 +127,8 @@ async def stream_graph(
     if interrupts:
         # 落「中断」assistant 消息（retrieval_logs 已含 propose 的漏斗，抽屉可见）；发 interrupt 事件，不发 done
         proposal = interrupts[0].value
+        if cost is not None:
+            retrieval_meta["cost"] = cost.to_meta()   # M42：预算账本随 meta 落 JSONB
         rlog = await persist_retrieval_log(
             session, query, retrieval_meta, citations,
             agent_steps=collector.to_payload(),   # M41：dict 新形状
@@ -143,6 +149,8 @@ async def stream_graph(
                                                    whitelist=collab_whitelist)
     for _td in _enforce_tokens:
         yield ("token", _td)
+    if cost is not None:
+        retrieval_meta["cost"] = cost.to_meta()   # M42：预算账本随 meta 落 JSONB
     rlog = await persist_retrieval_log(
         session, query, retrieval_meta, citations,
         agent_steps=collector.to_payload(),   # M41：dict 新形状

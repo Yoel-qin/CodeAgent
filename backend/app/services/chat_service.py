@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.cost import BudgetExceeded, make_cost_controller
 from app.agent.trace import SpanCollector, llm_span
 from app.clients.llm_client import llm
 from app.core.config import settings
@@ -272,6 +273,7 @@ async def stream_chat(
 
     # ---- 3. 检索（召回 → RRF → 精排）----
     collector = SpanCollector()  # M41 结构化 trace
+    cost = make_cost_controller()  # M42：请求级预算控制器（开关 off → None，零开销）
     rq = collector.start("request", "chat")  # 外层 span，手动管理（不入栈）
     t0 = time.perf_counter()
     ranked, meta = await pipeline.recall(session, query, top_k=top_k)
@@ -293,28 +295,47 @@ async def stream_chat(
     # ---- 5. LLM 流式生成（累积落库）----
     context = build_context(ranked)
     parts: list[str] = []
+    gen_aborted = False
     if llm.configured:
-        history = await load_conversation_history(
-            session, conversation_id, exclude_message_id=current_msg_id,
-            limit=settings.conversation_history_turns,
-        )
-        messages = build_messages(query, context, agent_type, history)
-        async with llm_span(collector, llm.model, prompt_text=context,
-                             parent_id=rq.span_id) as ls:
+        if cost is not None:
             try:
-                async for tok in llm.stream_tokens(messages, usage_out=ls.usage_out):
-                    ls.add_token(tok)
-                    parts.append(tok)
-                    yield ("token", {"content": tok})
-            except Exception as e:  # noqa: BLE001
-                ls.mark_error(e)
-                msg = f"\n[LLM 调用失败：{type(e).__name__}: {e}]"
-                parts.append(msg)
-                yield ("token", {"content": msg})
-        if not parts:
-            fallback = "（模型未返回内容）"
-            parts.append(fallback)
-            yield ("token", {"content": fallback})
+                cost.check()   # M42：生成前预算闸（legacy 单请求 ≤2 调用，防御性）
+            except BudgetExceeded as e:
+                parts.append(e.notice())
+                yield ("token", {"content": e.notice()})
+                gen_aborted = True
+        if not gen_aborted:
+            history = await load_conversation_history(
+                session, conversation_id, exclude_message_id=current_msg_id,
+                limit=settings.conversation_history_turns,
+            )
+            messages = build_messages(query, context, agent_type, history)
+            async with llm_span(collector, llm.model, prompt_text=context,
+                                 parent_id=rq.span_id) as ls:
+                try:
+                    async for tok in llm.stream_tokens(messages, usage_out=ls.usage_out):
+                        ls.add_token(tok)
+                        parts.append(tok)
+                        yield ("token", {"content": tok})
+                except Exception as e:  # noqa: BLE001
+                    ls.mark_error(e)
+                    msg = f"\n[LLM 调用失败：{type(e).__name__}: {e}]"
+                    parts.append(msg)
+                    yield ("token", {"content": msg})
+                    gen_aborted = True
+                if cost is not None:
+                    # M42：usage 真值记量（拿不到 → chars/4 估算；ls 仅块内可见故在此结算）
+                    u = dict(ls.usage_out)
+                    if u.get("prompt_tokens") is not None:
+                        cost.record_usage(prompt=u.get("prompt_tokens") or 0,
+                                          completion=u.get("completion_tokens") or 0)
+                    else:
+                        cost.record_usage(completion=sum(len(p) for p in parts) // 4,
+                                          estimated=True)
+            if not parts:
+                fallback = "（模型未返回内容）"
+                parts.append(fallback)
+                yield ("token", {"content": fallback})
     else:
         notice = _no_key_notice(meta)
         parts.append(notice)
@@ -322,10 +343,14 @@ async def stream_chat(
 
     # ---- 生成结束：同一事务补写完整 trace（request span 收口）----
     collector.end(rq)
+    if cost is not None:
+        meta["cost"] = cost.to_meta()   # M42：预算账本随 meta 回写（recall_results 持久化）
     try:
         rlog.agent_steps = collector.to_payload()
+        if cost is not None:
+            rlog.recall_results = dict(meta)   # 重赋值触发 SQLAlchemy 变更检测（JSONB 原地改不落）
         await session.flush()
-    except Exception:  # noqa: BLE001  trace 旁观者：补写失败不影响主流程
+    except Exception:  # noqa: BLE001  trace/cost 旁观者：补写失败不影响主流程
         pass
 
     # ---- 6. assistant 消息 ----

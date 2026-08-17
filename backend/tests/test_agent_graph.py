@@ -17,7 +17,7 @@ async def _wire_graph_mocks(monkeypatch):
 
     monkeypatch.setattr("app.agent.nodes.query_analysis.rewrite_query", fake_rw)
     # 意图分类：返回 chitchat（无对应场景 Agent），使 router 走 retrieve→generate 兜底支路（agent 支路另测）
-    async def fake_classify(q, *, pack=None):
+    async def fake_classify(q, *, pack=None, collector=None):
         return IntentSchema(intent="chitchat", needs_collab=False)
 
     monkeypatch.setattr("app.agent.nodes.query_analysis.classify_intent_and_collab", fake_classify)
@@ -50,7 +50,7 @@ async def _wire_graph_mocks(monkeypatch):
     # LLM：固定 token 流
     monkeypatch.setattr(llm_mod.LLMClient, "configured", property(lambda self: True))
 
-    async def fake_stream(messages):
+    async def fake_stream(messages, **kw):
         for t in ("An", "sw", "er"):
             yield t
 

@@ -6,6 +6,7 @@
     并在图跑完后补发 conversation（前置）/ done（后置）事件。
 
 会话/消息/检索日志的写库顺序与 legacy stream_chat 完全一致。
+M41：入口建 SpanCollector + request span + configurable 注入；持久化改 dict payload（version 2）。
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.citation_enforcer import enforce
 from app.agent.graph import get_graph
+from app.agent.trace import SpanCollector
 from app.core.config import settings
 from app.db.models.chat import Conversation
 from app.domain_packs.models import DomainPack
@@ -89,31 +91,34 @@ async def stream_graph(
     state = {"query": query, "conversation_id": conversation_id,
              "agent_type": agent_type, "history": history,
              "active_pack_name": active_pack.manifest.name if active_pack else None}
-    # 运行时上下文经 configurable 传入（不进被 checkpoint 的 state）。
+    # M41：请求级 SpanCollector + request span
+    collector = SpanCollector()
     config = {"configurable": {
         "thread_id": conversation_id,
         "session": session,
         "top_k": top_k,
         "agent_type": agent_type,
+        "trace": collector,
     }}
     retrieval_meta: dict = {}
     citations: list[dict] = []
-    agent_steps: list[dict] = []  # Agent 工具调用轨迹（mode:agent 路径才有）；落库供回放
+    agent_steps: list[dict] = []  # Agent 工具调用轨迹（SSE 事件累积，仅供 SSE 流出；持久化改用 collector）
     answer_parts: list[str] = []
 
     graph_app = get_graph()
-    async for chunk in graph_app.astream(state, config=config, stream_mode="custom"):
-        event = chunk.get("event")
-        data = chunk.get("data", {})
-        yield (event, data)
-        if event == "retrieval":
-            retrieval_meta = data
-        elif event == "citation":
-            citations.append(data)
-        elif event == "agent_step":
-            agent_steps.append(data)
-        elif event == "token":
-            answer_parts.append(data.get("content", ""))
+    with collector.span("request", "chat"):
+        async for chunk in graph_app.astream(state, config=config, stream_mode="custom"):
+            event = chunk.get("event")
+            data = chunk.get("data", {})
+            yield (event, data)
+            if event == "retrieval":
+                retrieval_meta = data
+            elif event == "citation":
+                citations.append(data)
+            elif event == "agent_step":
+                agent_steps.append(data)
+            elif event == "token":
+                answer_parts.append(data.get("content", ""))
 
     # ---- 2.5 HITL 中断检测（M10）：图因节点 interrupt() 暂停 → custom 流到此结束 ----
     snap = await graph_app.aget_state(config)
@@ -121,7 +126,10 @@ async def stream_graph(
     if interrupts:
         # 落「中断」assistant 消息（retrieval_logs 已含 propose 的漏斗，抽屉可见）；发 interrupt 事件，不发 done
         proposal = interrupts[0].value
-        rlog = await persist_retrieval_log(session, query, retrieval_meta, citations, agent_steps)
+        rlog = await persist_retrieval_log(
+            session, query, retrieval_meta, citations,
+            agent_steps=collector.to_payload(),   # M41：dict 新形状
+        )
         assistant_id = await add_assistant_message(
             session, conv, "（等待人工确认）", citations, rlog.log_id, agent_type, status="interrupted",
         )
@@ -138,7 +146,10 @@ async def stream_graph(
                                                    whitelist=collab_whitelist)
     for _td in _enforce_tokens:
         yield ("token", _td)
-    rlog = await persist_retrieval_log(session, query, retrieval_meta, citations, agent_steps)
+    rlog = await persist_retrieval_log(
+        session, query, retrieval_meta, citations,
+        agent_steps=collector.to_payload(),   # M41：dict 新形状
+    )
     assistant_id = await add_assistant_message(
         session, conv, answer, citations, rlog.log_id, agent_type,
     )

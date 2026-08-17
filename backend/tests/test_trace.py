@@ -7,6 +7,9 @@ from uuid import uuid4
 import pytest
 
 from app.agent.llm import TraceCallbackHandler
+from app.agent.nodes.generate import generate as generate_node
+from app.agent.nodes.query_analysis import query_analysis
+from app.agent.nodes.retrieve import retrieve as retrieve_node
 from app.agent.trace import SpanCollector, llm_span, tokens_from_usage
 from app.retrieval.query_understanding import rewrite_query
 
@@ -188,3 +191,138 @@ async def test_rewrite_query_without_usage_out_unchanged(monkeypatch):
     monkeypatch.setattr(qu.llm, "chat", fake_chat)
     rw = await rewrite_query("q")
     assert rw == {"semantic_query": "q2", "extra_keywords": []}
+
+
+# ---- Task 4 追加 ----
+
+
+def _cfg(trace=None, session=None, top_k=8):
+    return {"configurable": {"session": session, "top_k": top_k, "trace": trace}}
+
+
+async def test_query_analysis_records_intent_and_llm_spans(monkeypatch):
+    import app.agent.nodes.query_analysis as qa
+    captured: dict = {}
+
+    async def fake_rewrite(query, *, usage_out=None):
+        captured["usage_out"] = usage_out
+        return {"semantic_query": query, "extra_keywords": []}
+
+    async def fake_classify(query, pack=None, *, collector=None):
+        captured["collector"] = collector
+        from app.agent.llm import IntentSchema
+        return IntentSchema(intent="code", needs_collab=False)
+
+    monkeypatch.setattr(qa, "rewrite_query", fake_rewrite)
+    monkeypatch.setattr(qa, "classify_intent_and_collab", fake_classify)
+    c = SpanCollector()
+    state = await query_analysis({"query": "Broker 启动流程"}, _cfg(trace=c))
+    assert state["intent"] == "code"
+    spans = c.to_payload()["spans"]
+    kinds = [s["kind"] for s in spans]
+    assert "intent" in kinds and kinds.count("llm") >= 1
+    assert captured["collector"] is c
+
+
+async def test_query_analysis_without_trace_unchanged(monkeypatch):
+    import app.agent.nodes.query_analysis as qa
+
+    async def fake_rewrite(query, *, usage_out=None):
+        return {"semantic_query": query, "extra_keywords": []}
+
+    async def fake_classify(query, pack=None, *, collector=None):
+        from app.agent.llm import IntentSchema
+        return IntentSchema(intent="doc", needs_collab=False)
+
+    monkeypatch.setattr(qa, "rewrite_query", fake_rewrite)
+    monkeypatch.setattr(qa, "classify_intent_and_collab", fake_classify)
+    state = await query_analysis({"query": "q"}, _cfg())  # 无 trace → 零开销直通
+    assert state["intent"] == "doc"
+
+
+async def test_retrieve_node_records_retrieval_span(monkeypatch):
+    import app.agent.nodes.retrieve as rn
+
+    class _Ranked(dict):
+        pass
+
+    async def fake_recall(session, query, top_k=8, **kw):
+        return [{"chunk_id": "c1", "kind": "code", "score": 0.9,
+                 "content": "src", "class_name": "A", "method_name": "m1"}], {
+            "mode": "default", "merged": 1,
+            "recall": {"vector": 1, "lexical": 0, "graph": 0}}
+
+    async def fake_enrich(session, ranked):
+        return None
+
+    monkeypatch.setattr(rn.pipeline, "recall", fake_recall)
+    monkeypatch.setattr(rn, "_enrich_content_types", fake_enrich)
+    monkeypatch.setattr(rn, "get_stream_writer", lambda: (lambda chunk: None))
+    c = SpanCollector()
+    out = await retrieve_node({"query": "q", "semantic_query": "s", "keywords": [],
+                               "rewritten": False}, _cfg(trace=c))
+    assert out["ranked"]
+    s = [x for x in c.to_payload()["spans"] if x["kind"] == "retrieval"][0]
+    assert s["attrs"]["merged"] == 1
+
+
+async def test_generate_node_records_llm_span(monkeypatch):
+    import app.agent.nodes.generate as gn
+    import app.clients.llm_client as llm_mod
+
+    async def fake_stream(messages, *, usage_out=None, **kw):
+        if usage_out is not None:
+            usage_out.update({"prompt_tokens": 8, "completion_tokens": 6})
+        for t in ("答", "案"):
+            yield t
+
+    monkeypatch.setattr(llm_mod.LLMClient, "configured", property(lambda self: True))
+    monkeypatch.setattr(llm_mod.llm, "stream_tokens", fake_stream)
+    monkeypatch.setattr(gn, "get_stream_writer", lambda: (lambda chunk: None))
+    c = SpanCollector()
+    await generate_node({"query": "q", "ranked": [], "retrieval_meta": {}}, _cfg(trace=c))
+    s = [x for x in c.to_payload()["spans"] if x["kind"] == "llm"][0]
+    assert s["tokens"] == {"prompt": 8, "completion": 6, "estimated": False}
+
+
+async def test_run_scenario_agent_records_agent_span_and_degrade(monkeypatch):
+    """agent span 包住嵌套 astream；异常 → degrade span，请求不中断。"""
+    import app.clients.llm_client as llm_mod
+    from app.agent.agents._base import run_scenario_agent
+
+    class _BoomAgent:
+        async def astream(self, *a, **kw):
+            raise RuntimeError("agent boom")
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(
+        "app.agent.agents._base.configured", lambda: True)
+    monkeypatch.setattr(
+        "app.agent.agents._base.TokenSSEHandler",
+        lambda *a, **kw: None)  # 防真实回调
+    import app.agent.agents._base as base
+
+    async def fake_recall(session, query, top_k=8, **kw):
+        return [], {"mode": "default", "merged": 0}
+
+    monkeypatch.setattr(base.pipeline, "recall", fake_recall)
+
+    monkeypatch.setattr(llm_mod.LLMClient, "configured", property(lambda self: True))
+
+    async def fake_stream_tokens(messages, *, usage_out=None, **kw):
+        yield "降级答案"
+
+    monkeypatch.setattr(llm_mod.llm, "stream_tokens", fake_stream_tokens)
+    monkeypatch.setattr(base, "_safe_writer", lambda: (lambda chunk: None))
+    monkeypatch.setattr(base, "_enrich_content_types", lambda s, r: None)
+
+    c = SpanCollector()
+    await run_scenario_agent(
+        {"query": "q", "history": []}, _cfg(trace=c),
+        agent_name="code_understand", tools=[],
+        build_agent=_BoomAgent, degrade_label="代码理解",
+    )
+    kinds = [s["kind"] for s in c.to_payload()["spans"]]
+    assert "agent" in kinds and "degrade" in kinds
+    agent_span = [s for s in c.to_payload()["spans"] if s["kind"] == "agent"][0]
+    assert agent_span["status"] == "error"

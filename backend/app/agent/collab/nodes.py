@@ -59,7 +59,11 @@ async def _bounded_tool_loop(*, system_prompt: str, user_prompt: str, tools: lis
     tool_used = 0
     # M41：llm_config 由调用方注入（含 TraceCallbackHandler）；未提供则用原始 config
     invoke_config = llm_config if llm_config is not None else (config if isinstance(config, dict) else {})
+    cost = ((config or {}).get("configurable", {}).get("cost")
+            if isinstance(config, dict) else None)
     for _ in range(max_rounds):
+        if cost is not None:
+            cost.check()   # M42：预算超限 → BudgetExceeded → _run_layer I-1 catch 优雅停
         if llm_budget_left - llm_used <= 0:
             break
         resp = await model.ainvoke(messages, config=invoke_config)
@@ -207,7 +211,11 @@ async def _run_layer(state, config, *, layer: str, prompt: str, tools: list, sch
             "collab_tool_calls": loop_res["collab_tool_calls"],
         }
         extracted = None
-        if budget.remaining(used_l + loop_res["collab_llm_calls"], settings.collab_max_llm_calls) > 0:
+        extract_ok = (budget.remaining(used_l + loop_res["collab_llm_calls"],
+                                       settings.collab_max_llm_calls) > 0)
+        if extract_ok and cost is not None and cost.exceeded is not None:
+            extract_ok = False   # M42：预算已超 → 跳过 extract（不 raise，走优雅停）
+        if extract_ok:
             extracted = await _extract(schema, prompt, loop_res["observations"],
                                        llm_config=llm_config)
             if extracted is not None:

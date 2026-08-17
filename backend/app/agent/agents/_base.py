@@ -25,6 +25,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.cost import BudgetExceeded
 from app.agent.llm import CostCallbackHandler, TokenSSEHandler, TraceCallbackHandler, configured
 from app.agent.state import AgentState
 from app.clients.llm_client import llm
@@ -97,7 +98,11 @@ async def _degrade(state: AgentState, config: RunnableConfig, err: Exception | N
             for r in ranked:
                 writer({"event": "citation", "data": _citation(r)})
         context = build_context(ranked)
-        if llm.configured:
+        if isinstance(err, BudgetExceeded):
+            # M42：预算超限降级——不再烧 LLM，模板 notice 逐 token 顶替生成
+            if writer:
+                writer({"event": "token", "data": {"content": err.notice()}})
+        elif llm.configured:
             async for tok in llm.stream_tokens(
                 build_messages(query, context, agent_type, state.get("history", []))
             ):
@@ -117,7 +122,8 @@ async def _degrade(state: AgentState, config: RunnableConfig, err: Exception | N
             collector.record("degrade", degrade_label,
                              (time.perf_counter() - t0) * 1000,
                              parent_id=collector.stack_top,
-                             attrs={"cause": type(err).__name__ if err else "no_key"})
+                             attrs={"cause": (err.reason if isinstance(err, BudgetExceeded)
+                                              else (type(err).__name__ if err else "no_key"))})
 
 
 async def run_scenario_agent(
@@ -165,6 +171,9 @@ async def run_scenario_agent(
                 # Agent 内工具/回调经 get_stream_writer 推到【嵌套】custom 流；此处转发到主图流
                 if parent_writer and isinstance(chunk, dict):
                     parent_writer(chunk)
+                # M42：预算超限 → 中断 Agent 循环进 _degrade（回调里抛不出去，只能在此拦）
+                if cost is not None and cost.exceeded is not None:
+                    raise cost.exceeded
     except Exception as e:  # noqa: BLE001
         await _degrade(state, config, e, degrade_label=degrade_label)
     return {}

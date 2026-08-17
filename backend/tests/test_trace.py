@@ -208,7 +208,7 @@ async def test_query_analysis_records_intent_and_llm_spans(monkeypatch):
         captured["usage_out"] = usage_out
         return {"semantic_query": query, "extra_keywords": []}
 
-    async def fake_classify(query, pack=None, *, collector=None):
+    async def fake_classify(query, pack=None, *, collector=None, cost=None):
         captured["collector"] = collector
         from app.agent.llm import IntentSchema
         return IntentSchema(intent="code", needs_collab=False)
@@ -230,7 +230,7 @@ async def test_query_analysis_without_trace_unchanged(monkeypatch):
     async def fake_rewrite(query, *, usage_out=None):
         return {"semantic_query": query, "extra_keywords": []}
 
-    async def fake_classify(query, pack=None, *, collector=None):
+    async def fake_classify(query, pack=None, *, collector=None, cost=None):
         from app.agent.llm import IntentSchema
         return IntentSchema(intent="doc", needs_collab=False)
 
@@ -422,7 +422,7 @@ async def test_query_analysis_intent_span_parent_is_request(monkeypatch):
     async def fake_rewrite(query, *, usage_out=None):
         return {"semantic_query": query, "extra_keywords": []}
 
-    async def fake_classify(query, pack=None, *, collector=None):
+    async def fake_classify(query, pack=None, *, collector=None, cost=None):
         from app.agent.llm import IntentSchema
         return IntentSchema(intent="code", needs_collab=False)
 

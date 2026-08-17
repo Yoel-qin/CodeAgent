@@ -17,7 +17,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.agents._base import _merge_callbacks
-from app.agent.llm import TraceCallbackHandler, configured, get_chat_model, model_for
+from app.agent.llm import CostCallbackHandler, TraceCallbackHandler, configured, get_chat_model, model_for
 from app.core.config import settings
 
 
@@ -163,13 +163,21 @@ async def _run_layer(state, config, *, layer: str, prompt: str, tools: list, sch
     M41：collector 存在时包 agent span（kind="agent"，name=层名）；collector=None → nullcontext 零开销。
     """
     collector = (config or {}).get("configurable", {}).get("trace") if isinstance(config, dict) else None
-    # M41：构造带 TraceCallbackHandler 的 llm_config（collector=None → None，下层用原始 config）
+    cost = (config or {}).get("configurable", {}).get("cost") if isinstance(config, dict) else None
+    # M41/M42：构造带 Trace/Cost 回调的 llm_config（均 None → None，下层用原始 config）
     llm_config = None
+    cbs: list = []
     if collector is not None:
-        cb = TraceCallbackHandler(collector)
+        cbs.append(TraceCallbackHandler(collector))
+    if cost is not None:
+        cbs.append(CostCallbackHandler(cost))
+    if cbs:
         base = config if isinstance(config, dict) else {}
         llm_config = dict(base)
-        llm_config["callbacks"] = _merge_callbacks(llm_config.get("callbacks"), cb)
+        merged = llm_config.get("callbacks")
+        for cb in cbs:
+            merged = _merge_callbacks(merged, cb)
+        llm_config["callbacks"] = merged
     with (collector.span("agent", layer) if collector is not None else nullcontext()):
         if not configured():
             # 无 LLM key：refine 层仍兜底汇总（用已累积 WM），避免空响应

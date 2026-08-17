@@ -172,13 +172,14 @@ def _rule_needs_collab(query: str, intent: IntentLabel) -> bool:
 
 async def classify_intent_and_collab(query: str,
                                      pack: DomainPack | None = None,
-                                     *, collector=None) -> IntentSchema:
+                                     *, collector=None, cost=None) -> IntentSchema:
     """意图分类 + 协作判定：一次结构化 LLM 调用产 IntentSchema（intent + needs_collab）；
     失败/未配置 → 规则兜底。
 
     pack 非空（激活领域包）→ 用领域版 system prompt（含 trace/diagnose/tune 判定）+ 规则兜底带 pack_active；
     pack=None → 现状（9 标签，不产领域 intent，逐字同 M36）。
     M41：传 collector 时经 TraceCallbackHandler 记 llm span（usage 真值优先）。
+    M42：传 cost 时经 CostCallbackHandler 记预算账本。
     """
     pack_active = pack is not None
     if not configured():
@@ -188,9 +189,14 @@ async def classify_intent_and_collab(query: str,
         sys_prompt = _INTENT_SYS_DOMAIN if pack_active else _INTENT_SYS
         schema = IntentSchema if pack_active else _IntentSchemaBase
         structured = model_for("routing").with_structured_output(schema)
-        cfg: dict = {}
+        cbs: list = []
         if collector is not None:
-            cfg["callbacks"] = [TraceCallbackHandler(collector)]
+            cbs.append(TraceCallbackHandler(collector))
+        if cost is not None:
+            cbs.append(CostCallbackHandler(cost))
+        cfg: dict = {}
+        if cbs:
+            cfg["callbacks"] = cbs
         return await structured.ainvoke([
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": query},
@@ -322,5 +328,44 @@ class TraceCallbackHandler(TokenSSEHandler):
             # 用 t0 回填 start_ms 使 end() 算出的 duration 反映真实 LLM 调用时长
             s.start_ms = round((info["t0"] - self.collector._t0) * 1000, 2)
             self.collector.end(s, error=f"{type(error).__name__}: {error}")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class CostCallbackHandler(BaseCallbackHandler):
+    """M42：把 LLM 调用次数/usage 记入 CostController（只记不抛——langchain 吞回调异常）。
+
+    usage 取值复用 ``_usage_from_response``；拿不到 → 按 generations 文本 chars/4 估算
+    并标 ``estimated=True``（prompt 记 0，与 M41 trace 估算口径一致）。
+    拦截不在回调里做（抛不出去）：由 astream chunk 循环 / 显式调用点 check()。
+    """
+
+    def __init__(self, controller) -> None:
+        self.controller = controller
+        self._seen: set = set()
+
+    def on_llm_start(self, serialized, prompts, *, run_id, **kwargs) -> None:  # noqa: ARG002
+        try:
+            self._seen.add(run_id)
+            self.controller.record_call()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def on_llm_end(self, response, *, run_id, **kwargs) -> None:  # noqa: ARG002
+        if run_id not in self._seen:
+            return
+        try:
+            usage = _usage_from_response(response)
+            if usage:
+                self.controller.record_usage(
+                    prompt=usage.get("prompt_tokens") or 0,
+                    completion=usage.get("completion_tokens") or 0)
+                return
+            text_len = 0
+            for gens in (getattr(response, "generations", None) or []):
+                for g in gens or []:
+                    text_len += len(getattr(g, "text", "") or "")
+            if text_len:
+                self.controller.record_usage(completion=text_len // 4, estimated=True)
         except Exception:  # noqa: BLE001
             pass

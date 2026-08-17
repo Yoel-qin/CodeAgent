@@ -162,7 +162,7 @@ async def test_query_analysis_sets_intent(monkeypatch):
     async def fake_rw(q):
         return {"semantic_query": q, "extra_keywords": ["Foo"]}
 
-    async def fake_classify(q, *, pack=None):
+    async def fake_classify(q, *, pack=None, cost=None):
         return IntentSchema(intent="code", needs_collab=False)
 
     monkeypatch.setattr("app.agent.nodes.query_analysis.rewrite_query", fake_rw)

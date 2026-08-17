@@ -26,6 +26,7 @@ async def query_analysis(state: AgentState, config: RunnableConfig) -> dict:
     query = state["query"]
     pack = _pack_from_state(state)                       # M37：有包才启用领域 intent 分类
     collector: SpanCollector | None = config["configurable"].get("trace")
+    cost = config["configurable"].get("cost")
 
     async def _rewrite() -> dict:
         if collector is None:
@@ -46,12 +47,12 @@ async def query_analysis(state: AgentState, config: RunnableConfig) -> dict:
         with collector.span("intent", "query_analysis") as isp:
             rw, analyzed = await asyncio.gather(
                 _rewrite(),
-                classify_intent_and_collab(query, pack=pack, collector=collector))
+                classify_intent_and_collab(query, pack=pack, collector=collector, cost=cost))
             needs_collab = bool(analyzed.needs_collab and settings.multi_agent_collab_enabled)
             isp.attrs.update({"intent": analyzed.intent, "needs_collab": needs_collab})
     else:
         rw, analyzed = await asyncio.gather(
-            rewrite_query(query), classify_intent_and_collab(query, pack=pack))
+            rewrite_query(query), classify_intent_and_collab(query, pack=pack, cost=cost))
         needs_collab = bool(analyzed.needs_collab and settings.multi_agent_collab_enabled)
 
     sem = rw["semantic_query"]

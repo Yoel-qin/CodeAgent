@@ -25,7 +25,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.llm import TokenSSEHandler, TraceCallbackHandler, configured
+from app.agent.llm import CostCallbackHandler, TokenSSEHandler, TraceCallbackHandler, configured
 from app.agent.state import AgentState
 from app.clients.llm_client import llm
 from app.core.config import settings
@@ -135,15 +135,18 @@ async def run_scenario_agent(
     M41：collector 存在时用 TraceCallbackHandler 替换 TokenSSEHandler；agent span 包嵌套 astream。
     """
     collector = config["configurable"].get("trace")
+    cost = config["configurable"].get("cost")   # M42：预算控制器（off → None 零开销）
     _emit_retrieval_meta(state, agent_name=agent_name, tools=tools)
     if not configured():
         # 无 LLM key：不进 Agent，直接兜底（retrieve 路径自身也会降级，这里统一兜底作答）
         await _degrade(state, config, None, degrade_label=degrade_label)
         return {}
     cfg = dict(config)
-    cfg["callbacks"] = _merge_callbacks(
-        config.get("callbacks"),
-        TraceCallbackHandler(collector, emit_tokens=True) if collector is not None else TokenSSEHandler())
+    base_handler = (TraceCallbackHandler(collector, emit_tokens=True)
+                    if collector is not None else TokenSSEHandler())
+    cfg["callbacks"] = _merge_callbacks(config.get("callbacks"), base_handler)
+    if cost is not None:
+        cfg["callbacks"] = _merge_callbacks(cfg["callbacks"], CostCallbackHandler(cost))
     # Agent 每轮 = agent + tools 两步；recursion_limit 兜住超限（触发 GraphRecursionError → 兜底）
     cfg["recursion_limit"] = settings.agent_max_iterations * 2 + 3
     parent_writer = _safe_writer()  # 主图 custom 流；Agent 是手动嵌套调用，需把其 custom 事件桥接上来

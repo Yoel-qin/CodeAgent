@@ -26,8 +26,13 @@ class LLMClient:
 
     async def stream_tokens(
         self, messages: list[dict], *, temperature: float = 0.3, max_tokens: int = 2048,
+        usage_out: dict | None = None,
     ) -> AsyncIterator[str]:
-        """流式产出 token；未配置 Key 时直接返回（上层负责降级提示）。"""
+        """流式产出 token；未配置 Key 时直接返回（上层负责降级提示）。
+
+        M41：请求 ``stream_options.include_usage``，final chunk 的 ``usage`` 写入
+        ``usage_out``（可选出参，provider 不返则不填；迭代结束后读取）。
+        """
         if not self.configured:
             return
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
@@ -35,6 +40,7 @@ class LLMClient:
             "model": self.model,
             "messages": messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
@@ -54,6 +60,10 @@ class LLMClient:
                         obj = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    u = obj.get("usage")
+                    if isinstance(u, dict) and usage_out is not None:
+                        usage_out.clear()
+                        usage_out.update(u)
                     try:
                         delta = obj["choices"][0].get("delta", {})
                     except (KeyError, IndexError):
@@ -62,12 +72,18 @@ class LLMClient:
                     if tok:
                         yield tok
 
-    async def chat(self, messages: list[dict], **kw) -> str:
-        """非流式：聚合 token 返回全文。"""
+    async def chat_meta(self, messages: list[dict], **kw) -> tuple[str, dict | None]:
+        """非流式：聚合返回 (全文, usage|None)。eval/rewrite 等需要 token 真值的场景用。"""
         chunks: list[str] = []
-        async for t in self.stream_tokens(messages, **kw):
+        usage: dict = {}
+        async for t in self.stream_tokens(messages, usage_out=usage, **kw):
             chunks.append(t)
-        return "".join(chunks)
+        return "".join(chunks), (dict(usage) if usage else None)
+
+    async def chat(self, messages: list[dict], **kw) -> str:
+        """非流式：聚合 token 返回全文（行为不变，内部走 chat_meta）。"""
+        text, _ = await self.chat_meta(messages, **kw)
+        return text
 
 
 llm = LLMClient()

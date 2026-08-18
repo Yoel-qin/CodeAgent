@@ -166,3 +166,32 @@ class TraceDetail(BaseModel):
     spans: list[dict]
     summary: dict | None = None
     created_at: str | None = None
+
+
+# ---- GET /monitor/feedback-report（M43 反馈闭环）----
+
+
+class FeedbackCategoryCount(BaseModel):
+    category: str
+    count: int
+
+
+class FeedbackRepoCount(BaseModel):
+    repo: str
+    count: int
+
+
+class HallucinationAlert(BaseModel):
+    log_id: int
+    query: str
+    correction: str
+    enforcement_ratio: float | None   # M34 ratio；未启用/缺失 → None
+    repo: str | None
+
+
+class FeedbackReportResponse(BaseModel):
+    summary: dict          # {total, negative, negative_rate}
+    categories: list[FeedbackCategoryCount]
+    by_repo: list[FeedbackRepoCount]
+    keywords: list[str]
+    hallucination_alerts: list[HallucinationAlert]

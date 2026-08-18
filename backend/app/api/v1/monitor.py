@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db
 from app.schemas.monitor import (
     ApiUsageResponse,
+    FeedbackReportResponse,
     IndexStatsResponse,
     ResourcesResponse,
     RetrievalPerfResponse,
@@ -19,6 +20,7 @@ from app.schemas.monitor import (
     TraceListResponse,
 )
 from app.services import monitor_service
+from app.services.feedback_service import build_feedback_report
 
 router = APIRouter(prefix="/monitor", tags=["monitor"])
 
@@ -80,3 +82,15 @@ async def trace_detail(
     if d is None:
         raise HTTPException(status_code=404, detail="检索日志不存在")
     return d
+
+
+# ---- GET /monitor/feedback-report（M43 反馈闭环）----
+
+
+@router.get("/feedback-report", response_model=FeedbackReportResponse)
+async def feedback_report(
+    days: int = Query(default=30, ge=1, le=365),
+    session: AsyncSession = Depends(get_db),
+) -> FeedbackReportResponse:
+    """M43 反馈闭环报告：分类分布 / repo 分组 / 关键词 / 幻觉告警（×M34 enforcement 交叉）。"""
+    return FeedbackReportResponse(**await build_feedback_report(session, days=days))

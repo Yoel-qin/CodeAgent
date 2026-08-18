@@ -84,6 +84,13 @@ class SuggestionResponse(BaseModel):
     suggestions: list[str]
 
 
+# M43 反馈分类（中文字面量即存储值；前端 ChatPage 硬编码同枚举）。
+FEEDBACK_CATEGORIES: frozenset[str] = frozenset(
+    {"答案错误", "引用不符", "检索遗漏", "答非所问", "内容编造", "其他"})
+
+
 class FeedbackRequest(BaseModel):
     rating: str  # HELPFUL | NOT_HELPFUL
-    comment: str | None = None
+    comment: str | None = None          # 既有未使用字段，保留
+    categories: list[str] | None = None  # M43：负反馈分类（多选，须 ⊆ FEEDBACK_CATEGORIES）
+    correction: str | None = None        # M43：纠错文本（≤2000 字符）

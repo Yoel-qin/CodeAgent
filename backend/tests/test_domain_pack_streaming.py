@@ -19,6 +19,7 @@ async def test_stream_graph_injects_active_pack_name(monkeypatch):
         title = "t"
         agent_type = None
         conversation_id = "conv1"
+        target_repo = None
     monkeypatch.setattr(mod, "open_conversation", lambda *a, **kw: _async((_Conv(), "conv1")))
     monkeypatch.setattr(mod, "add_user_message", lambda *a, **kw: _async("msg1"))
     monkeypatch.setattr(mod, "load_conversation_history", lambda *a, **kw: _async([]))
@@ -53,6 +54,7 @@ async def test_stream_graph_no_pack_yields_none(monkeypatch):
         title = "t"
         agent_type = None
         conversation_id = "conv1"
+        target_repo = None
     monkeypatch.setattr(mod, "open_conversation", lambda *a, **kw: _async((_Conv(), "conv1")))
     monkeypatch.setattr(mod, "add_user_message", lambda *a, **kw: _async("msg1"))
     monkeypatch.setattr(mod, "load_conversation_history", lambda *a, **kw: _async([]))

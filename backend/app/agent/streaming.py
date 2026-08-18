@@ -89,9 +89,11 @@ async def stream_graph(
     )
     # M37：请求期 resolve 激活包，name 注入 state（图节点经 registry.get(name) 取 pack 对象）。
     active_pack = resolve_active_pack(conv)
+    repo_key = conv.target_repo or settings.domain_pack_default_repo or settings.repo_path
     state = {"query": query, "conversation_id": conversation_id,
              "agent_type": agent_type, "history": history,
-             "active_pack_name": active_pack.manifest.name if active_pack else None}
+             "active_pack_name": active_pack.manifest.name if active_pack else None,
+             "repo_key": repo_key}
     # M41：请求级 SpanCollector + request span
     collector = SpanCollector()
     # M42：请求级预算控制器（开关 off → None，零开销）

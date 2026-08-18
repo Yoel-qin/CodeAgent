@@ -18,9 +18,29 @@ from app.services.chat_service import _citation, _enrich_content_types
 
 
 async def retrieve(state: AgentState, config: RunnableConfig) -> dict:
+    query = state["query"]
+    # M42 QA 缓存（opt-in）：命中 → 跳过 recall，直接回放（token 已在此发，generate 短路）
+    from app.clients.cache_client import get_cache_client, normalize_query, qa_cache_key
+    cc = get_cache_client()
+    if cc is not None:
+        cached = await cc.qa_get(qa_cache_key(state.get("repo_key") or "",
+                                              normalize_query(query)))
+        if cached is not None:
+            hit_meta = dict(cached.get("meta") or {})
+            hit_meta["cache"] = "hit"
+            hit_citations = list(cached.get("citations") or [])
+            writer = get_stream_writer()
+            writer({"event": "retrieval", "data": hit_meta})
+            for cit in hit_citations:
+                writer({"event": "citation", "data": cit})
+            answer_text = cached.get("answer") or ""
+            for i in range(0, len(answer_text), 64):
+                writer({"event": "token", "data": {"content": answer_text[i:i + 64]}})
+            return {"ranked": [], "retrieval_meta": hit_meta,
+                    "citations": hit_citations,
+                    "cache_hit": True, "cached_answer": answer_text}
     session = config["configurable"]["session"]
     top_k = config["configurable"]["top_k"]
-    query = state["query"]
     sem = state.get("semantic_query") or query
     terms = state.get("keywords") or []
     rewritten = state.get("rewritten")

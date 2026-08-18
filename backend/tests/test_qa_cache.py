@@ -118,3 +118,81 @@ async def test_qa_cache_not_stored_when_gen_aborted(monkeypatch, legacy_env):
     _ = [e async for e in cs.stream_chat(None, "failing question", conversation_id=None)]
     stored = await cc_.qa_get(qa_cache_key("repo-x", normalize_query("failing question")))
     assert stored is None                              # 失败答案不入缓存
+
+
+# ---- QA 缓存 langgraph 路径（Task 8）----
+
+@pytest.mark.asyncio
+async def test_retrieve_node_cache_hit(monkeypatch, legacy_env):
+    """retrieve 节点命中：不跑 recall，直接回放事件 + cache_hit state。"""
+    import app.agent.nodes.retrieve as rt
+    box, cc_ = legacy_env
+    await cc_.qa_set(qa_cache_key("repo-y", normalize_query("hit me")),
+                     {"answer": "A", "citations": [], "meta": {"merged": 1}})
+    events: list = []
+    monkeypatch.setattr(rt, "get_stream_writer", lambda: events.append)
+    monkeypatch.setattr(rt.pipeline, "recall",
+                        AsyncMock(side_effect=AssertionError("命中不得跑 recall")))
+    state = {"query": "hit me", "repo_key": "repo-y",
+             "semantic_query": None, "keywords": [], "rewritten": False}
+    out = await rt.retrieve(state, {"configurable": {"session": None, "top_k": 8}})
+    assert out["cache_hit"] is True
+    assert out["cached_answer"] == "A"
+    kinds = [e["event"] for e in events]
+    assert kinds[0] == "retrieval" and "token" in kinds
+    assert events[0]["data"]["cache"] == "hit"
+
+
+@pytest.mark.asyncio
+async def test_retrieve_node_cache_miss(monkeypatch, legacy_env):
+    import app.agent.nodes.retrieve as rt
+    legacy_env
+    events: list = []
+    monkeypatch.setattr(rt, "get_stream_writer", lambda: events.append)
+    monkeypatch.setattr(rt.pipeline, "recall",
+                        AsyncMock(return_value=([], {"merged": 0})))
+    async def _noop(*a, **kw):
+        return None
+    monkeypatch.setattr(rt, "_enrich_content_types", _noop)
+    state = {"query": "not cached at all", "repo_key": "repo-y",
+             "semantic_query": None, "keywords": [], "rewritten": False}
+    out = await rt.retrieve(state, {"configurable": {"session": None, "top_k": 8}})
+    assert out.get("cache_hit") is not True
+    assert "retrieval" in [e["event"] for e in events]
+
+
+@pytest.mark.asyncio
+async def test_generate_short_circuits_on_cache_hit(monkeypatch, legacy_env):
+    import app.agent.nodes.generate as gn
+    events: list = []
+    monkeypatch.setattr(gn, "get_stream_writer", lambda: events.append)
+    monkeypatch.setattr(gn.llm, "configured", True)
+
+    async def _must_not_stream(*a, **kw):
+        raise AssertionError("cache_hit 短路不得调 LLM")
+    monkeypatch.setattr(gn.llm, "stream_tokens", _must_not_stream)
+    out = await gn.generate({"cache_hit": True, "cached_answer": "X", "query": "q",
+                             "ranked": [], "retrieval_meta": {}, "history": []},
+                            {"configurable": {}})
+    assert out == {"answer": "X", "context": ""}
+    assert events == []                    # token 已由 retrieve 发过，generate 零事件
+
+
+@pytest.mark.asyncio
+async def test_generate_stores_qa_cache(monkeypatch, legacy_env):
+    import app.agent.nodes.generate as gn
+    box, cc_ = legacy_env
+    events: list = []
+    monkeypatch.setattr(gn, "get_stream_writer", lambda: events.append)
+    monkeypatch.setattr(gn.llm, "configured", True)
+
+    async def _fake_stream(messages, **kw):
+        yield "ans"
+
+    monkeypatch.setattr(gn.llm, "stream_tokens", _fake_stream)
+    state = {"query": "store me", "repo_key": "repo-y", "ranked": [],
+             "retrieval_meta": {"merged": 0}, "history": [], "cache_hit": False}
+    out = await gn.generate(state, {"configurable": {}})
+    assert out["answer"] == "ans"
+    stored = await cc_.qa_get(qa_cache_key("repo-y", normalize_query("store me")))
+    assert stored is not None and stored["answer"] == "ans"

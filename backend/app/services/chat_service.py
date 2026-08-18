@@ -147,6 +147,34 @@ def _citation(r: dict) -> dict:
     }
 
 
+# ---- M42 QA 缓存 helper（opt-in，开关 off / Redis 挂 → 零开销）----
+
+
+def _qa_repo_key(conv: Conversation) -> str:
+    """QA 缓存键的 repo 维度：与 pack resolve 同链，避免跨库串答案。"""
+    return conv.target_repo or settings.domain_pack_default_repo or settings.repo_path
+
+
+async def _qa_cache_lookup(repo: str, query: str) -> dict | None:
+    """命中返回 {answer, citations, meta}；开关 off / Redis 挂 / miss -> None。"""
+    from app.clients.cache_client import get_cache_client, normalize_query, qa_cache_key
+    cc = get_cache_client()
+    if cc is None:
+        return None
+    return await cc.qa_get(qa_cache_key(repo, normalize_query(query)))
+
+
+async def _qa_cache_store(repo: str, query: str, *, answer: str,
+                          citations: list, meta: dict) -> None:
+    """生成成功后 best-effort 写入（失败仅 log，见 CacheClient 软失败）。"""
+    from app.clients.cache_client import get_cache_client, normalize_query, qa_cache_key
+    cc = get_cache_client()
+    if cc is None:
+        return
+    await cc.qa_set(qa_cache_key(repo, normalize_query(query)),
+                    {"answer": answer, "citations": citations, "meta": meta})
+
+
 # ---- 持久化 helper（legacy stream_chat 与 LangGraph 适配器共用，保证两路同构）----
 
 
@@ -271,6 +299,31 @@ async def stream_chat(
     # ---- 2. user 消息 ----
     current_msg_id = await add_user_message(session, conv, query, agent_type)
 
+    # ---- M42 QA 缓存（opt-in）：同 repo+归一化 query 命中 → 跳过 recall+LLM，回放缓存答案 ----
+    qa_repo = _qa_repo_key(conv)
+    if (cached := await _qa_cache_lookup(qa_repo, query)) is not None:
+        hit_meta = dict(cached.get("meta") or {})
+        hit_meta["cache"] = "hit"
+        hit_citations = list(cached.get("citations") or [])
+        hit_collector = SpanCollector()
+        hrq = hit_collector.start("request", "chat")
+        hit_collector.end(hrq)
+        yield ("retrieval", hit_meta)
+        for cit in hit_citations:
+            yield ("citation", cit)
+        rlog_hit = await persist_retrieval_log(
+            session, query, hit_meta, hit_citations,
+            agent_steps=hit_collector.to_payload())
+        answer_text = cached.get("answer") or ""
+        for i in range(0, len(answer_text), 64):   # 切片回放，SSE 契约不变
+            yield ("token", {"content": answer_text[i:i + 64]})
+        assistant_id = await add_assistant_message(
+            session, conv, answer_text, hit_citations, rlog_hit.log_id, agent_type,
+        )
+        yield ("done", {"citations": len(hit_citations), "message_id": assistant_id,
+                        "conversation_id": conversation_id})
+        return
+
     # ---- 3. 检索（召回 → RRF → 精排）----
     collector = SpanCollector()  # M41 结构化 trace
     cost = make_cost_controller()  # M42：请求级预算控制器（开关 off → None，零开销）
@@ -352,6 +405,11 @@ async def stream_chat(
         await session.flush()
     except Exception:  # noqa: BLE001  trace/cost 旁观者：补写失败不影响主流程
         pass
+
+    # ---- M42 QA 缓存写入：生成成功（非 abort、有 key）才入缓存 ----
+    if llm.configured and not gen_aborted:
+        await _qa_cache_store(qa_repo, query, answer="".join(parts),
+                              citations=citations, meta=meta)
 
     # ---- 6. assistant 消息 ----
     assistant_id = await add_assistant_message(

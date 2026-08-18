@@ -12,6 +12,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from app.clients.llm_client import llm as legacy_llm
+from app.clients.model_router import endpoint_for
 from app.core.config import settings
 from app.domain_packs.models import DomainPack
 
@@ -26,23 +27,24 @@ IntentLabel = Literal["code", "doc", "graph", "bug", "review", "test", "web",
 _IntentLabelBase = Literal["code", "doc", "graph", "bug", "review", "test", "web",
                             "mixed", "chitchat"]
 
-_TIER_MODELS: dict[tuple[str, str], ChatOpenAI] = {}
+_TIER_MODELS: dict[tuple[str, str, str, str], ChatOpenAI] = {}
 
 
 def model_for(purpose: str = "reasoning") -> ChatOpenAI:
-    """M42 模型分级 seam：routing（意图分类）/ extraction（结构化提取）/ reasoning（推理生成）。
+    """M44 端点路由：经 ModelRouter 取 (base_url, api_key, model) 构造 ChatOpenAI。
 
-    model 名取 ``settings.llm_model_{purpose}``，空串回落 ``settings.llm_model``
-    （默认三档同模型 = 零行为变更）。按 (purpose, model名) 缓存惰性单例。
-    M44 ModelRouter 落地时只需替换本函数内部实现，调用点零改。
+    MODEL_ROUTES 空 = 三档回落既有 llm_*（与 M42 行为逐字节一致）。api_key 合成
+    ``endpoint.api_key or "EMPTY"``——哑钥匙防 openai>=1 构造期校验抛（仅当该档
+    显式指向端点且全局无 key 时生效；vLLM 接受任意值）。缓存 key 为
+    (purpose, 端点三元组)，同档换端点换实例；调用点签名与 M42 完全一致。
     """
-    name = (getattr(settings, f"llm_model_{purpose}", "") or "").strip() or settings.llm_model
-    key = (purpose, name)
+    ep = endpoint_for(purpose)
+    key = (purpose, ep.base_url, ep.api_key, ep.model)
     if key not in _TIER_MODELS:
         _TIER_MODELS[key] = ChatOpenAI(
-            model=name,
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url,
+            model=ep.model,
+            api_key=ep.api_key or "EMPTY",
+            base_url=ep.base_url,
             streaming=True,
             temperature=0.3,
         )

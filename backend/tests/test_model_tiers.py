@@ -1,5 +1,7 @@
 """M42 model_for 三档 seam 测试（ChatOpenAI 离线构造，零网络）。"""
 
+import json
+
 import pytest
 
 from app.agent import llm as agent_llm
@@ -101,3 +103,57 @@ def test_usage_from_response_none_when_absent():
         generations = [[Gen()]]
 
     assert agent_llm._usage_from_response(Resp()) is None
+
+
+# ---- M44：端点三元组路由（langgraph 侧）----
+
+
+def _secret(m) -> str:
+    """ChatOpenAI 的 api_key 是 SecretStr，取明文做断言。"""
+    k = getattr(m, "openai_api_key", None) or getattr(m, "api_key", None)
+    return k.get_secret_value() if hasattr(k, "get_secret_value") else str(k)
+
+
+def _base_url(m) -> str:
+    return str(getattr(m, "openai_api_base", None) or getattr(m, "base_url", None) or "")
+
+
+_ROUTES_VLLM = json.dumps({
+    "routing": {"base_url": "http://localhost:8000/v1", "model": "qwen2.5-7b-instruct"},
+    "reasoning": {"base_url": "http://localhost:8000/v1", "api_key": "EMPTY",
+                  "model": "qwen2.5-72b-instruct"},
+})
+
+
+def test_model_for_routes_to_vllm_endpoint(monkeypatch):
+    _reset_cache(monkeypatch)
+    monkeypatch.setattr(settings, "model_routes", _ROUTES_VLLM)
+    r = agent_llm.model_for("routing")
+    assert r.model_name == "qwen2.5-7b-instruct"
+    assert _base_url(r) == "http://localhost:8000/v1"
+    assert _secret(r) == "ci-dummy"        # entry.api_key 缺 → llm_api_key（autouse dummy）
+    m = agent_llm.model_for("reasoning")
+    assert m.model_name == "qwen2.5-72b-instruct"
+    assert _secret(m) == "EMPTY"
+
+
+def test_model_for_empty_key_synthesizes_dummy(monkeypatch):
+    """全局零 key + 档位显式指端点 → 'EMPTY' 哑钥匙防 openai>=1 构造期抛（CI 教训）。"""
+    _reset_cache(monkeypatch)
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    monkeypatch.setattr(settings, "model_routes",
+                        '{"routing": {"base_url": "http://localhost:8000/v1", "model": "q"}}')
+    r = agent_llm.model_for("routing")
+    assert _secret(r) == "EMPTY"
+
+
+def test_model_for_cache_keyed_by_endpoint(monkeypatch):
+    """缓存 key 含端点三元组：同 purpose 换 base_url 换实例（旧 (purpose,名) key 会串档）。"""
+    _reset_cache(monkeypatch)
+    monkeypatch.setattr(settings, "model_routes", "")
+    a = agent_llm.model_for("routing")
+    monkeypatch.setattr(settings, "model_routes",
+                        '{"routing": {"base_url": "http://vllm:8000/v1", "model": "q"}}')
+    b = agent_llm.model_for("routing")
+    assert a is not b
+    assert _base_url(b) == "http://vllm:8000/v1"

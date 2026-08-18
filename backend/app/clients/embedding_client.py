@@ -114,27 +114,43 @@ async def query_embed(query: str) -> dict[str, list[float] | None]:
     unified → {"unified": bge_vec|None}（单 collection，kind 过滤）
     dual    → {"code": codebert_vec|None, "doc": bge_vec|None}
     任一编码器不可用对应值为 None（vector_search 跳过该路）。
+    M42：QA_CACHE_ENABLED 时精确匹配缓存（键含 strategy+模型名+归一化文本）；
+    全 None 结果不缓存（编码器不可用是瞬时态，不落 24h TTL）。
     """
-    if settings.embedding_strategy == "dual":
-        code_vec: list[float] | None = None
-        doc_vec: list[float] | None = None
-        if code_enabled():
-            try:
-                code_vec = (await embed_code([query]))[0]
-            except Exception:
-                code_vec = None
+    from app.clients.cache_client import embed_cache_key, get_cache_client, normalize_query
+    cc = get_cache_client()
+    key = None
+    if cc is not None:
+        models = settings.code_embedding_model if settings.embedding_strategy == "dual" else ""
+        key = embed_cache_key(settings.embedding_strategy, models, normalize_query(query))
+        cached = await cc.embed_get(key)
+        if cached is not None:
+            return cached
+
+    async def _run() -> dict[str, list[float] | None]:
+        if settings.embedding_strategy == "dual":
+            code_vec: list[float] | None = None
+            doc_vec: list[float] | None = None
+            if code_enabled():
+                try:
+                    code_vec = (await embed_code([query]))[0]
+                except Exception:
+                    code_vec = None
+            if enabled():
+                try:
+                    doc_vec = (await embed_doc_texts([query]))[0]
+                except Exception:
+                    doc_vec = None
+            return {"code": code_vec, "doc": doc_vec}
+        uni_vec: list[float] | None = None
         if enabled():
             try:
-                doc_vec = (await embed_doc_texts([query]))[0]
+                uni_vec = (await embed_doc_texts([query]))[0]
             except Exception:
-                doc_vec = None
-        return {"code": code_vec, "doc": doc_vec}
+                uni_vec = None
+        return {"unified": uni_vec}
 
-    # unified
-    uni_vec: list[float] | None = None
-    if enabled():
-        try:
-            uni_vec = (await embed_doc_texts([query]))[0]
-        except Exception:
-            uni_vec = None
-    return {"unified": uni_vec}
+    vecs = await _run()
+    if cc is not None and key is not None and any(v is not None for v in vecs.values()):
+        await cc.embed_set(key, vecs)
+    return vecs

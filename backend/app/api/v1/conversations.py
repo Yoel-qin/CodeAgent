@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.db.models.chat import ChatMessage, Conversation
 from app.db.models.system import RetrievalLog
 from app.schemas.conversation import (
+    FEEDBACK_CATEGORIES,
     AgentTraceResponse,
     ConversationDetailResponse,
     ConversationItem,
@@ -25,6 +26,7 @@ from app.schemas.conversation import (
     SuggestionResponse,
     ThreadStateResponse,
 )
+from app.services.feedback_service import save_feedback
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -231,18 +233,23 @@ async def suggest(
 async def feedback(
     message_id: str, req: FeedbackRequest, session: AsyncSession = Depends(get_db),
 ) -> dict:
-    """消息反馈（HELPFUL/NOT_HELPFUL）写入关联 retrieval_logs（为 Phase 8 LTR 攒数据）。"""
+    """消息反馈写入关联 retrieval_logs（为 Phase 8 LTR 攒数据）。
+
+    M43：NOT_HELPFUL 可带分类（多选）+ 纠错文本；达门槛自动入候选 eval 集表。
+    旧 body（只 rating）行为与响应逐字节兼容（新增 candidate_created 键默认 False）。
+    """
     if req.rating not in {"HELPFUL", "NOT_HELPFUL"}:
         raise HTTPException(status_code=400, detail="rating 必须为 HELPFUL 或 NOT_HELPFUL")
-    msg = await session.get(ChatMessage, message_id)
-    if msg is None:
-        raise HTTPException(status_code=404, detail="消息不存在")
-    persisted = False
-    if msg.retrieval_log_id:
-        rlog = await session.get(RetrievalLog, msg.retrieval_log_id)
-        if rlog is not None:
-            rlog.user_feedback = req.rating
-            rlog.feedback_time = datetime.now(UTC)
-            persisted = True
-    await session.commit()
-    return {"ok": True, "feedback": req.rating, "persisted": persisted}
+    if req.rating == "HELPFUL" and (req.categories or req.correction):
+        raise HTTPException(status_code=422, detail="分类/纠错仅用于负反馈（NOT_HELPFUL）")
+    if req.categories and not set(req.categories) <= FEEDBACK_CATEGORIES:
+        raise HTTPException(status_code=422, detail=f"categories 须为 {sorted(FEEDBACK_CATEGORIES)} 的子集")
+    if req.correction and len(req.correction) > 2000:
+        raise HTTPException(status_code=422, detail="correction 长度上限 2000")
+    try:
+        res = await save_feedback(
+            session, message_id=message_id, rating=req.rating,
+            categories=req.categories, correction=req.correction)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="消息不存在") from None
+    return {"ok": True, "feedback": req.rating, **res}

@@ -9,6 +9,7 @@ from app.agent.llm import (
     _rule_intent,
     classify_intent_and_collab,
 )
+from app.core.config import settings
 from app.domain_packs.models import DomainPack, Manifest
 
 
@@ -45,6 +46,7 @@ def test_classify_no_pack_uses_base_sys(monkeypatch):
             captured["sys"] = messages[0]["content"]
             return llm.IntentSchema(intent="code", needs_collab=False)
 
+    monkeypatch.setattr(settings, "llm_api_key", "ci-dummy")
     monkeypatch.setattr(llm, "configured", lambda: True)
     _fm = type("M", (), {
         "with_structured_output": lambda self, schema: _FakeStructured(schema)})()
@@ -67,6 +69,7 @@ def test_classify_with_pack_uses_domain_sys(monkeypatch):
             captured["sys"] = messages[0]["content"]
             return llm.IntentSchema(intent="trace", needs_collab=False)
 
+    monkeypatch.setattr(settings, "llm_api_key", "ci-dummy")
     monkeypatch.setattr(llm, "configured", lambda: True)
     _fm = type("M", (), {
         "with_structured_output": lambda self, schema: _FakeStructured(schema)})()
@@ -93,6 +96,7 @@ def test_classify_no_pack_uses_base_schema(monkeypatch):
         def with_structured_output(self, schema):
             return _FakeStructured(schema)
 
+    monkeypatch.setattr(settings, "llm_api_key", "ci-dummy")
     monkeypatch.setattr(llm, "configured", lambda: True)
     _fm = _FakeModel()
     monkeypatch.setattr(llm, "get_chat_model", lambda: _fm)
@@ -118,6 +122,7 @@ def test_classify_with_pack_uses_full_schema(monkeypatch):
         def with_structured_output(self, schema):
             return _FakeStructured(schema)
 
+    monkeypatch.setattr(settings, "llm_api_key", "ci-dummy")
     monkeypatch.setattr(llm, "configured", lambda: True)
     _fm = _FakeModel()
     monkeypatch.setattr(llm, "get_chat_model", lambda: _fm)

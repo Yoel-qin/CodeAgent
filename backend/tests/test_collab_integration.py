@@ -21,7 +21,7 @@ async def test_collab_wrapper_bridges_custom_events(monkeypatch):
         return {"tool_steps": [{"agent": layer_name, "tool": "search_code", "args": {"query": "q"}}],
                 "observations": "obs", "collab_llm_calls": 1, "collab_tool_calls": 1}
     monkeypatch.setattr(cn, "_bounded_tool_loop", fake_loop)
-    monkeypatch.setattr(cn, "configured", lambda: True)
+    monkeypatch.setattr("app.core.config.settings.llm_api_key", "ci-dummy")
 
     async def fake_extract(schema, prompt, observations, **kw):
         if schema is memory.HypothesisList:
@@ -107,7 +107,7 @@ async def test_collab_refine_emits_report_token_on_extract_failure(monkeypatch):
                         tool_budget_left, layer_name, config, llm_config=None):
         return {"tool_steps": [], "observations": "", "collab_llm_calls": 0, "collab_tool_calls": 0}
     monkeypatch.setattr(cn, "_bounded_tool_loop", fake_loop)
-    monkeypatch.setattr(cn, "configured", lambda: True)
+    monkeypatch.setattr("app.core.config.settings.llm_api_key", "ci-dummy")
 
     events: list[dict] = []
     monkeypatch.setattr(cn, "_safe_writer", lambda: events.append)

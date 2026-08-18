@@ -157,7 +157,7 @@ def _patch_struct(monkeypatch, returns):
 
     monkeypatch.setattr(cn, "get_chat_model", lambda: _Model())
     monkeypatch.setattr(cn, "model_for", lambda purpose="reasoning": _Model())
-    monkeypatch.setattr(cn, "configured", lambda: True)
+    monkeypatch.setattr("app.core.config.settings.llm_api_key", "ci-dummy")
 
 
 async def test_diagnose_writes_hypotheses_and_accumulates_budget(monkeypatch):
@@ -201,7 +201,6 @@ async def test_refine_writes_suggestions_and_emits_token(monkeypatch):
 
 
 async def test_layer_degrades_when_not_configured(monkeypatch):
-    monkeypatch.setattr(cn, "configured", lambda: False)
     out = await cn.diagnose({"query": "q", "history": ""}, {"configurable": {}})
     # 无 LLM key → 不跑，返回空 delta（不抛、不中断）
     assert out == {} or out.get("collab_hypotheses") in (None, [])
@@ -337,7 +336,7 @@ async def test_run_layer_records_llm_spans_via_trace_callback(monkeypatch):
 
     monkeypatch.setattr(cn, "get_chat_model", lambda: _ModelWithStruct())
     monkeypatch.setattr(cn, "model_for", lambda purpose="reasoning": _ModelWithStruct())
-    monkeypatch.setattr(cn, "configured", lambda: True)
+    monkeypatch.setattr("app.core.config.settings.llm_api_key", "ci-dummy")
 
     out = await cn.diagnose(
         {"query": "消费者堆积", "history": [],
@@ -430,7 +429,7 @@ async def test_run_layer_trace_no_token_leak(monkeypatch):
 
     monkeypatch.setattr(cn, "get_chat_model", lambda: _ModelWithStruct())
     monkeypatch.setattr(cn, "model_for", lambda purpose="reasoning": _ModelWithStruct())
-    monkeypatch.setattr(cn, "configured", lambda: True)
+    monkeypatch.setattr("app.core.config.settings.llm_api_key", "ci-dummy")
 
     out = await cn.diagnose(
         {"query": "消费者堆积", "history": [],

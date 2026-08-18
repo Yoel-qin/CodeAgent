@@ -157,3 +157,42 @@ def test_model_for_cache_keyed_by_endpoint(monkeypatch):
     b = agent_llm.model_for("routing")
     assert a is not b
     assert _base_url(b) == "http://vllm:8000/v1"
+
+
+# ---- M44 终审：classify / collab per-tier configured 门 ----
+
+
+@pytest.mark.asyncio
+async def test_classify_uses_llm_when_only_routing_tier_configured(monkeypatch):
+    """全局零 key + routing 档有独立端点 → classify 走 LLM 分支（不走规则兜底）。"""
+    captured: dict = {}
+
+    class _FakeStructured:
+        async def ainvoke(self, messages, **kwargs):
+            captured["llm_branch"] = True
+            return agent_llm.IntentSchema(intent="code", needs_collab=False)
+
+    class _FakeModel:
+        def with_structured_output(self, schema):
+            return _FakeStructured()
+
+    # 全局零 key（覆盖 autouse fixture 的 ci-dummy）
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    # routing 档独立配置
+    monkeypatch.setattr(settings, "model_routes",
+                        '{"routing":{"base_url":"http://v:8000/v1","api_key":"EMPTY","model":"q"}}')
+    monkeypatch.setattr(agent_llm, "model_for", lambda purpose="reasoning": _FakeModel())
+
+    out = await agent_llm.classify_intent_and_collab("查一下这个类")
+    assert "llm_branch" in captured
+    assert out.intent == "code"
+
+
+@pytest.mark.asyncio
+async def test_classify_rule_fallback_when_all_keys_empty(monkeypatch):
+    """全局零 key + 无档位覆盖 → 规则兜底（回归锚点）。"""
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    monkeypatch.setattr(settings, "model_routes", "")
+
+    out = await agent_llm.classify_intent_and_collab("文档怎么写")
+    assert out.intent == "doc"

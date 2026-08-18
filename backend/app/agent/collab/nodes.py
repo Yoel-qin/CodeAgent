@@ -17,7 +17,8 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.agents._base import _merge_callbacks
-from app.agent.llm import CostCallbackHandler, TraceCallbackHandler, configured, get_chat_model, model_for
+from app.agent.llm import CostCallbackHandler, TraceCallbackHandler, get_chat_model, model_for
+from app.clients.model_router import endpoint_for
 from app.core.config import settings
 
 
@@ -183,8 +184,8 @@ async def _run_layer(state, config, *, layer: str, prompt: str, tools: list, sch
             merged = _merge_callbacks(merged, cb)
         llm_config["callbacks"] = merged
     with (collector.span("agent", layer) if collector is not None else nullcontext()):
-        if not configured():
-            # 无 LLM key：refine 层仍兜底汇总（用已累积 WM），避免空响应
+        if not bool(endpoint_for("extraction").api_key):
+            # 无 extraction 档 key：refine 层仍兜底汇总（用已累积 WM），避免空响应
             if schema is memory.SuggestionList:
                 _emit_report_token(state, None)
                 _emit_collab_retrieval_meta(state, 0, 0, 0)

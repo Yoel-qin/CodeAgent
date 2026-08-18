@@ -152,6 +152,7 @@ def test_classify_accepts_cost_kwarg(monkeypatch):
         def with_structured_output(self, schema):
             return _FakeStructured()
 
+    monkeypatch.setattr("app.core.config.settings.llm_api_key", "ci-dummy")
     monkeypatch.setattr(agent_llm, "configured", lambda: True)
     monkeypatch.setattr(agent_llm, "model_for", lambda purpose="reasoning": _FakeModel())
 

@@ -33,7 +33,7 @@ _TIER_MODELS: dict[tuple[str, str, str, str], ChatOpenAI] = {}
 def model_for(purpose: str = "reasoning") -> ChatOpenAI:
     """M44 端点路由：经 ModelRouter 取 (base_url, api_key, model) 构造 ChatOpenAI。
 
-    MODEL_ROUTES 空 = 三档回落既有 llm_*（与 M42 行为逐字节一致）。api_key 合成
+    MODEL_ROUTES 空 = 三档回落既有 llm_*（与 M42 行为一致；唯一差异：base_url 统一去除尾斜杠——OpenAI 兼容 client 对两者等价）。api_key 合成
     ``endpoint.api_key or "EMPTY"``——哑钥匙防 openai>=1 构造期校验抛（仅当该档
     显式指向端点且全局无 key 时生效；vLLM 接受任意值）。缓存 key 为
     (purpose, 端点三元组)，同档换端点换实例；调用点签名与 M42 完全一致。
@@ -184,7 +184,7 @@ async def classify_intent_and_collab(query: str,
     M42：传 cost 时经 CostCallbackHandler 记预算账本。
     """
     pack_active = pack is not None
-    if not configured():
+    if not bool(endpoint_for("routing").api_key):
         intent = _rule_intent(query, pack_active=pack_active)
         return IntentSchema(intent=intent, needs_collab=_rule_needs_collab(query, intent))
     try:

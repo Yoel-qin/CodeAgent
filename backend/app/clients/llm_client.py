@@ -10,16 +10,19 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from app.core.config import settings
+from app.clients.model_adapter import resolve_endpoint
 
 
 class LLMClient:
     def __init__(self, *, base_url: str | None = None, api_key: str | None = None,
                  model: str | None = None) -> None:
-        self.base_url = (base_url or settings.llm_base_url).rstrip("/")
-        self.api_key = api_key if api_key is not None else settings.llm_api_key
-        # M42：reasoning 档非空时作为默认生成模型（分级 seam 的 legacy 侧入口）
-        self.model = model or settings.llm_model_reasoning or settings.llm_model
+        # M44：默认端点经 ModelAdapter 解析（reasoning 档；MODEL_ROUTES 空 = 旧 llm_*
+        # 逐字节一致）。走 model_adapter 纯函数而非 model_router——防循环导入
+        # （model_router → llm_client）。显式传参优先（legacy_client_for 即经此注入档位）。
+        ep = resolve_endpoint("reasoning")
+        self.base_url = (base_url or ep.base_url).rstrip("/")
+        self.api_key = api_key if api_key is not None else ep.api_key
+        self.model = model or ep.model
 
     @property
     def configured(self) -> bool:

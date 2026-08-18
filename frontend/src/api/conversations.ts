@@ -86,8 +86,36 @@ export const getConversation = (id: string) =>
 export const getRetrieval = (messageId: string) =>
   api.get<RetrievalDetail>(`/v1/chat/messages/${messageId}/retrieval`).then((r) => r.data);
 
-export const postFeedback = (messageId: string, rating: "HELPFUL" | "NOT_HELPFUL") =>
-  api.post(`/v1/chat/messages/${messageId}/feedback`, { rating }).then((r) => r.data);
+export const FEEDBACK_CATEGORIES = [
+  "答案错误", "引用不符", "检索遗漏", "答非所问", "内容编造", "其他",
+] as const;
+
+export const postFeedback = (
+  messageId: string,
+  rating: "HELPFUL" | "NOT_HELPFUL",
+  categories?: string[],
+  correction?: string,
+) =>
+  api
+    .post(`/v1/chat/messages/${messageId}/feedback`, { rating, categories, correction })
+    .then((r) => r.data);
+
+export interface FeedbackReport {
+  summary: { total: number; negative: number; negative_rate: number };
+  categories: { category: string; count: number }[];
+  by_repo: { repo: string; count: number }[];
+  keywords: string[];
+  hallucination_alerts: {
+    log_id: number;
+    query: string;
+    correction: string;
+    enforcement_ratio: number | null;
+    repo: string | null;
+  }[];
+}
+
+export const getFeedbackReport = (days = 30) =>
+  api.get<FeedbackReport>("/v1/monitor/feedback-report", { params: { days } }).then((r) => r.data);
 
 export const postSuggestions = (conversationId: string, lastMessageId: string) =>
   api

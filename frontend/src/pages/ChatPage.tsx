@@ -8,6 +8,7 @@ import {
   Empty,
   Tooltip,
   Modal,
+  Checkbox,
   theme,
 } from "antd";
 import {
@@ -23,7 +24,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useChat, type ChatMessage, type RetrievalInfo, type AgentStep, type Feedback } from "../hooks/useChat";
-import { postFeedback } from "../api/conversations";
+import { postFeedback, FEEDBACK_CATEGORIES } from "../api/conversations";
 import CitationCard from "../components/chat/CitationCard";
 import ConversationList from "../components/chat/ConversationList";
 import RetrievalDrawer from "../components/chat/RetrievalDrawer";
@@ -52,6 +53,9 @@ export default function ChatPage() {
   const [value, setValue] = useState("");
   const [drawerMsgId, setDrawerMsgId] = useState<string | null>(null);
   const [hitlComment, setHitlComment] = useState("");
+  const [dislikeMsgId, setDislikeMsgId] = useState<string | null>(null);
+  const [dislikeCats, setDislikeCats] = useState<string[]>([]);
+  const [dislikeCorrection, setDislikeCorrection] = useState("");
 
   // HITL（M10）：当前等待人工确认的消息（至多一条）
   const awaiting = messages.find((m) => m.interrupt?.awaiting) ?? null;
@@ -73,12 +77,41 @@ export default function ChatPage() {
 
   const handleFeedback = async (m: ChatMessage, rating: Feedback) => {
     if (!m.messageId) return;
+    if (rating === "NOT_HELPFUL") {
+      // 打开分类/纠错弹窗
+      setDislikeMsgId(m.messageId);
+      setDislikeCats([]);
+      setDislikeCorrection("");
+      return;
+    }
     try {
       await postFeedback(m.messageId, rating);
       setFeedback(m.messageId, rating);
     } catch {
       /* 反馈失败静默 */
     }
+  };
+
+  const submitDislike = async () => {
+    if (!dislikeMsgId) return;
+    try {
+      await postFeedback(dislikeMsgId, "NOT_HELPFUL", dislikeCats.length > 0 ? dislikeCats : undefined, dislikeCorrection || undefined);
+      setFeedback(dislikeMsgId, "NOT_HELPFUL");
+    } catch {
+      /* 反馈失败静默 */
+    }
+    setDislikeMsgId(null);
+  };
+
+  const skipDislike = async () => {
+    if (!dislikeMsgId) return;
+    try {
+      await postFeedback(dislikeMsgId, "NOT_HELPFUL");
+      setFeedback(dislikeMsgId, "NOT_HELPFUL");
+    } catch {
+      /* 反馈失败静默 */
+    }
+    setDislikeMsgId(null);
   };
 
   return (
@@ -211,6 +244,30 @@ export default function ChatPage() {
           onChange={(e) => setHitlComment(e.target.value)}
           placeholder="备注（可选，将作为 stale_reason 记录）"
           autoSize={{ minRows: 1, maxRows: 3 }}
+        />
+      </Modal>
+
+      {/* M43：负反馈分类/纠错弹窗 */}
+      <Modal
+        title="这条回答哪里有问题？（可选）"
+        open={!!dislikeMsgId}
+        onOk={submitDislike}
+        onCancel={skipDislike}
+        okText="提交"
+        cancelText="跳过直接反馈"
+      >
+        <Checkbox.Group
+          options={FEEDBACK_CATEGORIES.map((c) => ({ label: c, value: c }))}
+          value={dislikeCats}
+          onChange={(v) => setDislikeCats(v as string[])}
+        />
+        <Input.TextArea
+          rows={3}
+          maxLength={2000}
+          placeholder="纠错（可选）：正确答案或应引用的代码位置"
+          value={dislikeCorrection}
+          onChange={(e) => setDislikeCorrection(e.target.value)}
+          style={{ marginTop: 12 }}
         />
       </Modal>
     </div>

@@ -38,6 +38,10 @@ import {
   type TraceDetail,
   type TraceListItem,
 } from "../api/monitor";
+import {
+  getFeedbackReport,
+  type FeedbackReport,
+} from "../api/conversations";
 import TraceView from "../components/monitor/TraceView";
 
 const { Text } = Typography;
@@ -106,6 +110,7 @@ export default function MonitorPage() {
   const [resources, setResources] = useState<Resources | null>(null);
   const [traces, setTraces] = useState<TraceListItem[] | null>(null);
   const [traceDetail, setTraceDetail] = useState<TraceDetail | null>(null);
+  const [fbReport, setFbReport] = useState<FeedbackReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [timeWindow, setTimeWindow] = useState<MonitorWindow>("today");
 
@@ -126,6 +131,10 @@ export default function MonitorPage() {
       try {
         setTraces((await listTraces(timeWindow)).items);
       } catch { /* traces 降级，静默 */ }
+      // M43: 反馈闭环独立容错
+      try {
+        setFbReport(await getFeedbackReport(30));
+      } catch { /* 反馈闭环降级，静默 */ }
     } catch (e) {
       message.error((e as Error).message || "加载监控数据失败");
     } finally {
@@ -335,6 +344,49 @@ export default function MonitorPage() {
                   </Card>
                 </Space>
               ),
+            },
+          ]}
+        />
+      </Card>
+
+      {/* M43：反馈闭环卡 */}
+      <Card size="small" title="反馈闭环（近 30 天）" style={{ marginBottom: 16 }}>
+        <Row gutter={16}>
+          <Col><Statistic title="负反馈" value={num(fbReport?.summary.negative)} /></Col>
+          <Col><Statistic title="分类数" value={fbReport?.categories.length ?? 0} /></Col>
+          <Col><Statistic title="幻觉告警" value={fbReport?.hallucination_alerts.length ?? 0} /></Col>
+        </Row>
+        {fbReport && fbReport.categories.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            {fbReport.categories.map((c) => (
+              <Tag key={c.category} style={{ margin: 2 }}>
+                {c.category} × {c.count}
+              </Tag>
+            ))}
+            <div style={{ marginTop: 8, color: "var(--ant-color-text-secondary, #999)" }}>
+              关键词：{fbReport.keywords.join(" / ") || "-"}
+            </div>
+          </div>
+        )}
+        <Table
+          size="small"
+          rowKey="log_id"
+          dataSource={fbReport?.hallucination_alerts ?? []}
+          pagination={false}
+          style={{ marginTop: 12 }}
+          locale={{ emptyText: "无「内容编造」反馈" }}
+          columns={[
+            { title: "query", dataIndex: "query", ellipsis: true },
+            { title: "纠错", dataIndex: "correction", ellipsis: true },
+            {
+              title: "M34 ratio",
+              dataIndex: "enforcement_ratio",
+              render: (v: number | null) => (v == null ? "-" : v.toFixed(2)),
+            },
+            {
+              title: "repo",
+              dataIndex: "repo",
+              render: (v: string | null) => v ?? "-",
             },
           ]}
         />

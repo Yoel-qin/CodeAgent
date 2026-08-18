@@ -1,8 +1,8 @@
 """M43 反馈闭环服务：分类/纠错落库 + 候选 eval 集入集门槛 + 聚类报告。
 
-写入侧 ``save_feedback`` 一个事务内做三件事：更新 retrieval_logs（旧列照旧 + M43 新列）、
-按门槛 INSERT candidate_eval_queries（uk source_message_id 幂等：先查后插，重复反馈不重复入集）、
-commit。报告侧 ``build_feedback_report`` 见 Task 4。
+写入侧 ``save_feedback`` 分两步 commit：先落反馈到 retrieval_logs，
+再按门槛 INSERT candidate_eval_queries（uk source_message_id 幂等：先查后插 + IntegrityError 兜底，
+并发 re-submit 安全）。报告侧 ``build_feedback_report`` 见 Task 4。
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.chat import ChatMessage, Conversation
@@ -55,24 +56,29 @@ async def save_feedback(
             rlog.feedback_categories = list(categories) if (rating == "NOT_HELPFUL" and categories) else None
             rlog.feedback_correction = correction if rating == "NOT_HELPFUL" else None
             persisted = True
-            if _should_create_candidate(rating, categories, correction):
-                existing = (await session.execute(
-                    select(CandidateEvalQuery).where(
-                        CandidateEvalQuery.source_message_id == message_id)
-                )).scalars().first()
-                if existing is None:  # uk 幂等：先查后插
-                    conv = await session.get(Conversation, msg.conversation_id)
-                    session.add(CandidateEvalQuery(
-                        query=rlog.query_text,
-                        categories=list(categories) if categories else None,
-                        correction=correction,
-                        source_message_id=message_id,
-                        retrieval_log_id=rlog.log_id,
-                        repo=conv.target_repo if conv else None,
-                        status="CANDIDATE",
-                    ))
-                    candidate_created = True
-    await session.commit()
+    await session.commit()  # 先落反馈（候选入集独立 commit，见下方）
+    # 候选入集：独立 commit，uk 冲突 → 静默跳过（并发 re-submit 安全）
+    if persisted and _should_create_candidate(rating, categories, correction):
+        existing = (await session.execute(
+            select(CandidateEvalQuery).where(
+                CandidateEvalQuery.source_message_id == message_id)
+        )).scalars().first()
+        if existing is None:
+            try:
+                conv = await session.get(Conversation, msg.conversation_id)
+                session.add(CandidateEvalQuery(
+                    query=rlog.query_text,
+                    categories=list(categories) if categories else None,
+                    correction=correction,
+                    source_message_id=message_id,
+                    retrieval_log_id=rlog.log_id,
+                    repo=conv.target_repo if conv else None,
+                    status="CANDIDATE",
+                ))
+                await session.commit()
+                candidate_created = True
+            except IntegrityError:
+                await session.rollback()  # 仅回滚候选 INSERT；反馈已在上面的 commit 落盘
     return {"persisted": persisted, "candidate_created": candidate_created}
 
 

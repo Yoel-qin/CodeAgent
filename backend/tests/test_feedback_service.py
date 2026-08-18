@@ -60,7 +60,7 @@ async def test_save_feedback_negative_with_category_persists_and_creates_candida
         s, message_id="m1", rating="NOT_HELPFUL",
         categories=["答案错误"], correction=None)
     assert res == {"persisted": True, "candidate_created": True}
-    assert s.committed == 1
+    assert s.committed == 2  # 反馈 commit + 候选 commit
     assert len(s.added) == 1
     cand = s.added[0]
     assert cand.query == "RocketMQ 消息堆积怎么排查"       # 取 rlog.query_text
@@ -109,6 +109,35 @@ async def test_save_feedback_no_rlog_not_persisted():
     res = await svc.save_feedback(s, message_id="m1", rating="NOT_HELPFUL",
                                   categories=["答案错误"], correction=None)
     assert res == {"persisted": False, "candidate_created": False}
+
+
+class _IntegrityErrorFakeSession(_FakeSession):
+    """commit 第二次调用时抛 IntegrityError（模拟 uk 并发冲突）。"""
+
+    def __init__(self, *, msg, rlog, conv, existing_candidate=None):
+        super().__init__(msg=msg, rlog=rlog, conv=conv, existing_candidate=existing_candidate)
+        self._call = 0
+
+    async def commit(self):
+        self._call += 1
+        if self._call == 2:  # 候选 INSERT 的 commit
+            from sqlalchemy.exc import IntegrityError
+
+            raise IntegrityError("duplicate key", {}, None)
+        self.committed += 1
+
+    async def rollback(self):
+        pass
+
+
+async def test_save_feedback_integrity_error_on_candidate_treated_as_existing():
+    """uk 冲突（并发 re-submit）不报错，candidate_created=False。"""
+    s = _IntegrityErrorFakeSession(msg=_msg(), rlog=_rlog(), conv=conv())
+    res = await svc.save_feedback(
+        s, message_id="m1", rating="NOT_HELPFUL",
+        categories=["答案错误"], correction=None)
+    assert res == {"persisted": True, "candidate_created": False}  # 反馈落盘，候选跳过
+    assert s.committed == 1  # 仅反馈 commit 成功
 
 
 def test_feedback_categories_enum():

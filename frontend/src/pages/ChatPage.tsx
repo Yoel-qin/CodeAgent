@@ -56,6 +56,7 @@ export default function ChatPage() {
   const [dislikeMsgId, setDislikeMsgId] = useState<string | null>(null);
   const [dislikeCats, setDislikeCats] = useState<string[]>([]);
   const [dislikeCorrection, setDislikeCorrection] = useState("");
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
 
   // HITL（M10）：当前等待人工确认的消息（至多一条）
   const awaiting = messages.find((m) => m.interrupt?.awaiting) ?? null;
@@ -94,6 +95,7 @@ export default function ChatPage() {
 
   const submitDislike = async () => {
     if (!dislikeMsgId) return;
+    setFeedbackSubmitting(true);
     try {
       await postFeedback(dislikeMsgId, "NOT_HELPFUL", dislikeCats.length > 0 ? dislikeCats : undefined, dislikeCorrection || undefined);
       setFeedback(dislikeMsgId, "NOT_HELPFUL");
@@ -101,6 +103,7 @@ export default function ChatPage() {
       /* 反馈失败静默 */
     }
     setDislikeMsgId(null);
+    setFeedbackSubmitting(false);
   };
 
   const skipDislike = async () => {
@@ -255,6 +258,7 @@ export default function ChatPage() {
         onCancel={skipDislike}
         okText="提交"
         cancelText="跳过直接反馈"
+        confirmLoading={feedbackSubmitting}
       >
         <Checkbox.Group
           options={FEEDBACK_CATEGORIES.map((c) => ({ label: c, value: c }))}

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -34,10 +35,10 @@ def build_fragment(rows) -> str:
         return "# 无候选（CANDIDATE 状态为空）\n"
     lines = ["queries:"]
     for r in rows:
-        note = f"  # 纠错: {r.correction}" if r.correction else ""
+        note = f"  # 纠错: {json.dumps(r.correction, ensure_ascii=False)}" if r.correction else ""
         repo_note = f"  # 来源 repo: {r.repo}" if r.repo else ""
         lines.append(
-            f'- {{ id: fb_{r.id}, text: "{r.query}", relevant: [] }}{repo_note}{note}'
+            f'- {{ id: fb_{r.id}, text: {json.dumps(r.query, ensure_ascii=False)}, relevant: [] }}{repo_note}{note}'
         )
     return "\n".join(lines) + "\n"
 

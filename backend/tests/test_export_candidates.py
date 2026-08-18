@@ -22,13 +22,23 @@ def test_fragment_shape_matches_eval_set():
     frag = build_fragment([_row()])
     assert "queries:" in frag
     assert '- { id: fb_1, text: "RocketMQ 消息堆积怎么排查", relevant: [] }' in frag
-    assert "# 纠错: 应该是刷盘" in frag            # 纠错进注释，供标注者参考
+    assert '# 纠错: "应该是刷盘"' in frag            # 纠错进注释（json.dumps 转义）
     assert "# 来源 repo: apache/rocketmq" in frag
 
 
 def test_fragment_empty():
     """测试空候选列表返回提示。"""
     assert build_fragment([]) == "# 无候选（CANDIDATE 状态为空）\n"
+
+
+def test_fragment_double_quote_escaped_and_yaml_parseable():
+    """含双引号的 query → json.dumps 转义 → yaml.safe_load 回读原文。"""
+    import yaml
+
+    q = 'String.getBytes("UTF-8") 怎么写'
+    frag = build_fragment([_row(query=q, correction=None)])
+    parsed = yaml.safe_load(frag)
+    assert parsed["queries"][0]["text"] == q
 
 
 def test_fragment_multiple_rows():
@@ -41,11 +51,11 @@ def test_fragment_multiple_rows():
     frag = build_fragment(rows)
     assert "queries:" in frag
     assert 'id: fb_1, text: "查询1"' in frag
-    assert "# 纠错: 纠错1" in frag
+    assert '# 纠错: "纠错1"' in frag
     assert "# 来源 repo: repo1" in frag
     # row 2: 无任何注释
     assert 'id: fb_2, text: "查询2", relevant: [] }\n' in frag  # 行尾无注释
     # row 3: 有纠错和 repo
     assert 'id: fb_3, text: "查询3"' in frag
-    assert "# 纠错: 纠错3" in frag
+    assert '# 纠错: "纠错3"' in frag
     assert "# 来源 repo: repo3" in frag

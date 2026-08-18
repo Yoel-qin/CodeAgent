@@ -17,8 +17,9 @@ from app.services.chat_service import _no_key_notice, build_context, build_messa
 
 async def generate(state: AgentState, config: RunnableConfig) -> dict:
     # M42 QA 缓存命中短路：token 已由 retrieve 发过，此处零 LLM 零事件
-    if state.get("cache_hit"):
-        return {"answer": state.get("cached_answer", ""), "context": ""}
+    qa_ctx = config["configurable"].get("qa_cache")
+    if qa_ctx is not None and qa_ctx.get("hit"):
+        return {"answer": qa_ctx.get("answer", ""), "context": ""}
     cost = config["configurable"].get("cost")
     query = state["query"]
     agent_type = config["configurable"].get("agent_type")
@@ -66,7 +67,7 @@ async def generate(state: AgentState, config: RunnableConfig) -> dict:
         writer({"event": "token", "data": {"content": notice}})
 
     # M42 QA 缓存写入：生成成功才入缓存（collab/Agent 路径不经 generate → 天然不写）
-    if llm.configured and not state.get("cache_hit"):
+    if llm.configured and not (qa_ctx is not None and qa_ctx.get("hit")):
         from app.services.chat_service import _qa_cache_store
         await _qa_cache_store(state.get("repo_key") or "", state["query"],
                               answer="".join(parts),

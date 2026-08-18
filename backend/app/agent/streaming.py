@@ -98,6 +98,9 @@ async def stream_graph(
     collector = SpanCollector()
     # M42：请求级预算控制器（开关 off → None，零开销）
     cost = make_cost_controller()
+    # M42 QA 缓存命中上下文：per-request 可变 dict（同 SpanCollector/CostController 模式，
+    # configurable 本身不可变，但其持有的对象可由节点原地改写；不进 checkpoint）
+    qa_cache_ctx: dict = {"hit": False}
     config = {"configurable": {
         "thread_id": conversation_id,
         "session": session,
@@ -105,6 +108,7 @@ async def stream_graph(
         "agent_type": agent_type,
         "trace": collector,
         "cost": cost,
+        "qa_cache": qa_cache_ctx,
     }}
     retrieval_meta: dict = {}
     citations: list[dict] = []

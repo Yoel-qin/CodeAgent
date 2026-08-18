@@ -22,7 +22,8 @@ async def retrieve(state: AgentState, config: RunnableConfig) -> dict:
     # M42 QA 缓存（opt-in）：命中 → 跳过 recall，直接回放（token 已在此发，generate 短路）
     from app.clients.cache_client import get_cache_client, normalize_query, qa_cache_key
     cc = get_cache_client()
-    if cc is not None:
+    qa_ctx = config["configurable"].get("qa_cache")
+    if cc is not None and qa_ctx is not None:
         cached = await cc.qa_get(qa_cache_key(state.get("repo_key") or "",
                                               normalize_query(query)))
         if cached is not None:
@@ -36,9 +37,10 @@ async def retrieve(state: AgentState, config: RunnableConfig) -> dict:
             answer_text = cached.get("answer") or ""
             for i in range(0, len(answer_text), 64):
                 writer({"event": "token", "data": {"content": answer_text[i:i + 64]}})
+            qa_ctx["hit"] = True
+            qa_ctx["answer"] = answer_text
             return {"ranked": [], "retrieval_meta": hit_meta,
-                    "citations": hit_citations,
-                    "cache_hit": True, "cached_answer": answer_text}
+                    "citations": hit_citations}
     session = config["configurable"]["session"]
     top_k = config["configurable"]["top_k"]
     sem = state.get("semantic_query") or query

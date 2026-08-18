@@ -1,7 +1,16 @@
 """M42 model_for 三档 seam 测试（ChatOpenAI 离线构造，零网络）。"""
 
+import pytest
+
 from app.agent import llm as agent_llm
 from app.core.config import settings
+
+
+@pytest.fixture(autouse=True)
+def _dummy_api_key(monkeypatch):
+    """CI 零密钥环境：ChatOpenAI 构造期即校验 api_key（openai>=1 空串=缺失即抛），
+    离线构造需 dummy key——与 test_llm_client_usage 的 "k" 同一模式，不发起任何网络。"""
+    monkeypatch.setattr(settings, "llm_api_key", "ci-dummy")
 
 
 def _reset_cache(monkeypatch):

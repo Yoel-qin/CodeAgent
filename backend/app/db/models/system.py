@@ -37,6 +37,9 @@ class RetrievalLog(Base):
     agent_steps: Mapped[list | None] = mapped_column(JSONB)
     user_feedback: Mapped[str | None] = mapped_column(String(32))  # HELPFUL/NOT_HELPFUL
     feedback_time: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+    # M43 反馈闭环：负反馈的分类（JSONB 数组，中文字面量）+ 纠错文本；旧列不动（monitor/agent_stats 口径不变）。
+    feedback_categories: Mapped[list | None] = mapped_column(JSONB)
+    feedback_correction: Mapped[str | None] = mapped_column(Text)
     recall_latency_ms: Mapped[int | None] = mapped_column(Integer)
     coarse_rank_ms: Mapped[int | None] = mapped_column(Integer)
     fine_rank_ms: Mapped[int | None] = mapped_column(Integer)

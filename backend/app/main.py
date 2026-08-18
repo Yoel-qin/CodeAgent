@@ -154,6 +154,9 @@ async def lifespan(app: FastAPI):
     if settings.mcp_enabled:
         await init_mcp_client()
         await init_web_tools()
+    # M42 QA/embedding 缓存（opt-in；Redis 不可达只 warning，缓存降级为 miss）
+    from app.clients.cache_client import init_cache_client
+    await init_cache_client()
     # 运营维护循环（M14）：仅 langgraph 启用；每轮跑 HITL 超时过期 + 检查点清理。
     maintenance_task = None
     if settings.rag_engine == "langgraph" and settings.maintenance_enabled:
@@ -216,6 +219,9 @@ async def lifespan(app: FastAPI):
         await close_checkpointer()
         # 关闭联网 MCP 客户端会话；未启用时 no-op。
         await close_mcp_client()
+        # 关闭缓存客户端（M42）；未启用时 no-op。
+        from app.clients.cache_client import close_cache_client
+        await close_cache_client()
 
 
 app = FastAPI(

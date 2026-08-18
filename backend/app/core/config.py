@@ -128,6 +128,10 @@ class Settings(BaseSettings):
     llm_model_extraction: str = ""     # 结构化提取档（collab _extract）；空 = 回落 llm_model
     llm_model_reasoning: str = ""      # 推理生成档（Agent/生成）；空 = 回落 llm_model
 
+    # M44 ModelRouter：三档端点路由 JSON（{"routing": {"base_url"/"api_key"/"model"}, ...}），
+    # 每档每字段可选、缺省回落 llm_*；空串 = 三档全默认（零行为变更）。坏 JSON 软失败忽略。
+    model_routes: str = ""
+
     # M42 高频 QA / 查询 embedding 缓存（Redis，opt-in；默认 off）
     qa_cache_enabled: bool = False
     qa_cache_ttl_seconds: int = 3600

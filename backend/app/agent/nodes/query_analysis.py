@@ -18,6 +18,7 @@ from app.agent.agents._domain_prompt import _pack_from_state
 from app.agent.llm import classify_intent_and_collab
 from app.agent.state import AgentState
 from app.agent.trace import SpanCollector, tokens_from_usage
+from app.clients.model_router import endpoint_for
 from app.core.config import settings
 from app.retrieval.query_understanding import extract_query_terms, rewrite_query
 
@@ -31,7 +32,8 @@ async def query_analysis(state: AgentState, config: RunnableConfig) -> dict:
     async def _rewrite() -> dict:
         if collector is None:
             return await rewrite_query(query)
-        span = collector.start("llm", "rewrite", parent_id=collector.stack_top)
+        span = collector.start("llm", "rewrite", parent_id=collector.stack_top,
+                               attrs={"model": endpoint_for("extraction").model})
         u: dict = {}
         try:
             rw = await rewrite_query(query, usage_out=u)

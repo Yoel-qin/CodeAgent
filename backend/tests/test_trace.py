@@ -221,6 +221,8 @@ async def test_query_analysis_records_intent_and_llm_spans(monkeypatch):
     spans = c.to_payload()["spans"]
     kinds = [s["kind"] for s in spans]
     assert "intent" in kinds and kinds.count("llm") >= 1
+    rw_span = next(s for s in spans if s["kind"] == "llm" and s["name"] == "rewrite")
+    assert rw_span["attrs"].get("model")  # M44：rewrite span 记录实际服务模型名
     assert captured["collector"] is c
 
 
@@ -483,3 +485,35 @@ async def test_run_scenario_agent_emit_tokens_true_streams(monkeypatch):
     # token 事件通过 parent_writer 桥接（_base 内 parent_writer 转发）
     assert any(e["event"] == "token" for e in token_events), \
         f"_base emit_tokens=True 应产生 token 事件，实际: {token_events}"
+
+
+# ---- M44：llm span 记实际服务模型名 ----
+
+
+class _Gen4:
+    message = None
+    text = "x"
+
+
+class _Resp4:
+    llm_output = None
+    generations = [[_Gen4()]]
+
+
+def test_trace_handler_model_extraction():
+    from app.agent.llm import TraceCallbackHandler
+    from app.core.config import settings
+    h = TraceCallbackHandler(None)
+    assert h._model({}, {"invocation_params": {"model": "qwen-7b"}}) == "qwen-7b"
+    assert h._model({}, {}) == settings.llm_model          # 缺 invocation_params 回落
+
+
+def test_llm_span_carries_model_attr():
+    from uuid import uuid4 as _uuid4
+    c = SpanCollector()
+    h = TraceCallbackHandler(c)
+    rid = _uuid4()
+    h.on_llm_start({}, ["p"], run_id=rid, invocation_params={"model": "qwen-7b"})
+    h.on_llm_end(_Resp4(), run_id=rid)
+    llm_spans = [s for s in c._spans if s.kind == "llm"]
+    assert llm_spans and llm_spans[0].attrs.get("model") == "qwen-7b"

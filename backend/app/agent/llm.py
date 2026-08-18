@@ -280,6 +280,21 @@ class TraceCallbackHandler(TokenSSEHandler):
         except Exception:  # noqa: BLE001
             return settings.llm_model
 
+    @staticmethod
+    def _model(serialized: dict, kwargs: dict) -> str:  # noqa: ARG004
+        """M44：llm span 记实际服务模型名（invocation_params.model 优先，缺则回落
+        settings.llm_model）。任何异常静默（旁观者契约）。"""
+        try:
+            m = (kwargs.get("invocation_params") or {}).get("model")
+            if m:
+                return str(m)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            return str(serialized.get("name") or settings.llm_model)
+        except Exception:  # noqa: BLE001
+            return settings.llm_model
+
     def on_llm_start(self, serialized, prompts, *, run_id, **kwargs) -> None:  # noqa: ARG002
         if self.collector is None:
             return
@@ -288,6 +303,7 @@ class TraceCallbackHandler(TokenSSEHandler):
             self._pending[run_id] = {
                 "t0": time.perf_counter(), "parent_id": self.collector.stack_top,
                 "chars": 0, "name": self._name(serialized or {}),
+                "model": self._model(serialized or {}, kwargs),
             }
         except Exception:  # noqa: BLE001
             pass
@@ -316,6 +332,7 @@ class TraceCallbackHandler(TokenSSEHandler):
                 "llm", info["name"], dur, parent_id=info["parent_id"],
                 tokens=tokens_from_usage(usage, prompt_chars=0,
                                          completion_chars=info["chars"]),
+                attrs={"model": info.get("model")},
             )
         except Exception:  # noqa: BLE001
             pass
@@ -326,7 +343,8 @@ class TraceCallbackHandler(TokenSSEHandler):
         try:
             info = self._pending.pop(run_id)
             s = self.collector.start("llm", info["name"],
-                                     parent_id=info["parent_id"])
+                                     parent_id=info["parent_id"],
+                                     attrs={"model": info.get("model")})
             # 用 t0 回填 start_ms 使 end() 算出的 duration 反映真实 LLM 调用时长
             s.start_ms = round((info["t0"] - self.collector._t0) * 1000, 2)
             self.collector.end(s, error=f"{type(error).__name__}: {error}")

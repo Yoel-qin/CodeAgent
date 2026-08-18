@@ -7,8 +7,13 @@ from __future__ import annotations
 
 import re
 
-from app.clients.llm_client import llm
+from app.clients.model_router import legacy_client_for
 from app.pipeline.metadata import extract_doc_keywords, split_identifier
+
+# M44：Stage-0 改写属 extraction 档（改写/摘要，架构 §9 语义分类）；MODEL_ROUTES 空
+# 时与旧默认单例同端点（llm_model_extraction 名字链 + llm_* 回落）。保持模块属性名
+# `llm` 不变——rewrite_query 内 llm.configured/chat/chat_meta 与既有测试桩面零改。
+llm = legacy_client_for("extraction")
 
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]+")
 

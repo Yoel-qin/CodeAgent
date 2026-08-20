@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_current_user, get_db, pagination
@@ -68,10 +68,11 @@ async def list_conversations(
     pg = pagination(page, page_size)
     q = select(Conversation).order_by(Conversation.created_at.desc())
     cq = select(func.count()).select_from(Conversation)
-    # M45：非 admin 且有真实用户 → 仅看自己
+    # M45：非 admin 且有真实用户 → 仅看自己 + off 时期无属主对话（user_id IS NULL）
     if user.id is not None and not user.is_admin:
-        q = q.where(Conversation.user_id == user.id)
-        cq = cq.where(Conversation.user_id == user.id)
+        _own = or_(Conversation.user_id == user.id, Conversation.user_id.is_(None))
+        q = q.where(_own)
+        cq = cq.where(_own)
     if agent_type:
         q = q.where(Conversation.agent_type == agent_type)
         cq = cq.where(Conversation.agent_type == agent_type)

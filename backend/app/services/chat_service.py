@@ -321,6 +321,11 @@ async def stream_chat(
     按 settings.rag_engine 分流：langgraph → app/agent StateGraph（行为同构）；
     否则走下方 legacy 线性流水线（默认）。
     """
+    # ---- 0. M45 属主预检（双引擎共用，在引擎分流之前）----
+    # RBAC on 且指定了 conversation_id → 先属主校验（防向他人对话追加消息）
+    if conversation_id and user is not None and user.id is not None:
+        await get_owned_conversation(session, conversation_id, user)
+
     if settings.rag_engine == "langgraph":
         # 延迟导入：避免 chat_service ↔ agent.streaming 循环，且 legacy 路径零 langgraph 开销。
         from app.agent.streaming import stream_graph
@@ -331,10 +336,7 @@ async def stream_chat(
             yield event, data
         return
 
-    # ---- 1. 属主校验 + 解析或新建会话 ----
-    # M45：RBAC on 且指定了 conversation_id → 先属主校验（防向他人对话追加消息）
-    if conversation_id and user is not None and user.id is not None:
-        await get_owned_conversation(session, conversation_id, user)
+    # ---- 1. 解析或新建会话 ----
     # M45：仅真实用户才传 user_id（避免 monkeypatch stub 不兼容）
     _open_kw = {}
     if user and user.id is not None:

@@ -43,6 +43,11 @@ async def test_get_owned_conversation():
         await get_owned_conversation(sess, "conv_x", _user(uid=2))
     assert ei2.value.status_code == 404
 
+    # off 时期历史（user_id=None）：真实非 admin 用户应放行
+    conv_null = SimpleNamespace(conversation_id="conv_1", user_id=None)
+    sess_null = _ConvSess(conv_null)
+    assert (await get_owned_conversation(sess_null, "conv_1", _user(uid=5))) is conv_null
+
 
 # ---- open_conversation 绑 user_id ----
 

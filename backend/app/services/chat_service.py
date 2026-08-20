@@ -10,11 +10,13 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncIterator
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.cost import BudgetExceeded, make_cost_controller
 from app.agent.trace import SpanCollector, llm_span
+from app.api.deps import CurrentUser, ensure_owner  # M45 RBAC
 from app.clients.llm_client import llm
 from app.core.config import settings
 from app.core.ids import prefixed_id
@@ -181,8 +183,12 @@ async def _qa_cache_store(repo: str, query: str, *, answer: str,
 async def open_conversation(
     session: AsyncSession, query: str, agent_type: str | None,
     conversation_id: str | None, target_repo: str | None = None,
+    user_id: int | None = None,
 ) -> tuple[Conversation, str]:
-    """解析或新建会话（首条消息自动建会话，标题取首问）。返回 (conv, conversation_id)。"""
+    """解析或新建会话（首条消息自动建会话，标题取首问）。返回 (conv, conversation_id)。
+
+    M45：user_id 非 None 时新建对话绑定属主（conversations.user_id）。
+    """
     conv: Conversation | None = None
     if conversation_id:
         conv = await session.get(Conversation, conversation_id)
@@ -191,10 +197,43 @@ async def open_conversation(
         conv = Conversation(
             conversation_id=conversation_id, title=_derive_title(query),
             agent_type=agent_type, message_count=0, target_repo=target_repo,
+            user_id=user_id,
         )
         session.add(conv)
         await session.flush()
     return conv, conversation_id
+
+
+async def get_owned_conversation(
+    session: AsyncSession, conversation_id: str, user: CurrentUser | None,
+) -> Conversation | None:
+    """对话属主校验（M45）：不存在或非属主 → 404；匿名（off）/admin 放行。
+
+    user.id 为 None（ANONYMOUS/off）时仅返回会话（不做存在性校验），
+    保证 RBAC off 时零行为变更。
+    """
+    conv = await session.get(Conversation, conversation_id)
+    if user is not None and user.id is not None:
+        if conv is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        ensure_owner(user, conv.user_id)   # M45：本人/admin 放行（见 deps.ensure_owner）
+    return conv
+
+
+async def get_owned_message_conversation(
+    session: AsyncSession, message_id: str, user: CurrentUser | None,
+) -> tuple[ChatMessage, Conversation | None]:
+    """消息 → 所属对话属主校验（M45，供 retrieval/suggestions/feedback/resume 复用）。
+
+    user.id 为 None（ANONYMOUS/off）时仅校验消息存在性，跳过对话属主校验。
+    """
+    msg = await session.get(ChatMessage, message_id)
+    if msg is None:
+        raise HTTPException(status_code=404, detail="消息不存在")
+    if user is not None and user.id is not None:
+        conv = await get_owned_conversation(session, msg.conversation_id, user)
+        return msg, conv
+    return msg, None
 
 
 async def add_user_message(
@@ -275,7 +314,7 @@ async def get_message_status(session: AsyncSession, message_id: str) -> str | No
 
 async def stream_chat(
     session: AsyncSession, query: str, *, top_k: int = 8, agent_type: str | None = None,
-    conversation_id: str | None = None,
+    conversation_id: str | None = None, user: CurrentUser | None = None,
 ) -> AsyncIterator[tuple[str, dict]]:
     """产出 SSE 事件并落库。事件：conversation / retrieval / citation / token / done。
 
@@ -287,12 +326,22 @@ async def stream_chat(
         from app.agent.streaming import stream_graph
         async for event, data in stream_graph(
             session, query, top_k=top_k, agent_type=agent_type, conversation_id=conversation_id,
+            user=user,
         ):
             yield event, data
         return
 
-    # ---- 1. 解析或新建会话 ----
-    conv, conversation_id = await open_conversation(session, query, agent_type, conversation_id)
+    # ---- 1. 属主校验 + 解析或新建会话 ----
+    # M45：RBAC on 且指定了 conversation_id → 先属主校验（防向他人对话追加消息）
+    if conversation_id and user is not None and user.id is not None:
+        await get_owned_conversation(session, conversation_id, user)
+    # M45：仅真实用户才传 user_id（避免 monkeypatch stub 不兼容）
+    _open_kw = {}
+    if user and user.id is not None:
+        _open_kw["user_id"] = user.id
+    conv, conversation_id = await open_conversation(
+        session, query, agent_type, conversation_id, **_open_kw,
+    )
     yield ("conversation", {"conversation_id": conversation_id, "title": conv.title,
                             "agent_type": conv.agent_type})
 
@@ -329,7 +378,10 @@ async def stream_chat(
     cost = make_cost_controller()  # M42：请求级预算控制器（开关 off → None，零开销）
     rq = collector.start("request", "chat")  # 外层 span，手动管理（不入栈）
     t0 = time.perf_counter()
-    ranked, meta = await pipeline.recall(session, query, top_k=top_k)
+    ranked, meta = await pipeline.recall(
+        session, query, top_k=top_k,
+        allowed_kinds=user.allowed_kinds if user else None,   # M45
+    )
     await _enrich_content_types(session, ranked)
     collector.record("retrieval", "recall", (time.perf_counter() - t0) * 1000,
                      parent_id=rq.span_id,

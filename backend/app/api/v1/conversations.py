@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, pagination
+from app.api.deps import CurrentUser, get_current_user, get_db, pagination
 from app.clients.llm_client import llm
 from app.core.config import settings
 from app.db.models.chat import ChatMessage, Conversation
@@ -63,10 +63,15 @@ async def list_conversations(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     agent_type: str | None = Query(None),
+    user: CurrentUser = Depends(get_current_user),
 ) -> ConversationListResponse:
     pg = pagination(page, page_size)
     q = select(Conversation).order_by(Conversation.created_at.desc())
     cq = select(func.count()).select_from(Conversation)
+    # M45：非 admin 且有真实用户 → 仅看自己
+    if user.id is not None and not user.is_admin:
+        q = q.where(Conversation.user_id == user.id)
+        cq = cq.where(Conversation.user_id == user.id)
     if agent_type:
         q = q.where(Conversation.agent_type == agent_type)
         cq = cq.where(Conversation.agent_type == agent_type)
@@ -85,8 +90,10 @@ async def list_conversations(
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
 async def get_conversation(
     conversation_id: str, session: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
 ) -> ConversationDetailResponse:
-    conv = await session.get(Conversation, conversation_id)
+    from app.services.chat_service import get_owned_conversation
+    conv = await get_owned_conversation(session, conversation_id, user)
     if conv is None:
         raise HTTPException(status_code=404, detail="会话不存在")
     rows = (
@@ -113,6 +120,7 @@ async def get_conversation(
 @router.get("/conversations/{conversation_id}/state", response_model=ThreadStateResponse)
 async def get_thread_state(
     conversation_id: str, session: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
 ) -> ThreadStateResponse:
     """会话线程执行状态（HITL 可观测，M14 Part C）：是否有待审批 interrupt + 最新 assistant 消息状态。
 
@@ -120,6 +128,11 @@ async def get_thread_state(
     """
     if settings.rag_engine != "langgraph":
         raise HTTPException(status_code=501, detail="线程状态仅在 RAG_ENGINE=langgraph 下可用")
+    # M45 属主校验（仅真实用户；ANONYMOUS / 直接调用测试兼容跳过）
+    if getattr(user, 'id', None) is not None:
+        from app.services.chat_service import get_owned_conversation
+        await get_owned_conversation(session, conversation_id, user)
+
     from app.agent.graph import get_graph
     from app.agent.streaming import _extract_interrupts
 
@@ -158,11 +171,11 @@ async def get_thread_state(
 @router.get("/messages/{message_id}/retrieval", response_model=RetrievalDetailResponse)
 async def get_retrieval(
     message_id: str, session: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
 ) -> RetrievalDetailResponse:
     """返回该消息的检索漏斗（stage1 召回+RRF / stage2 粗排 / stage3 精排候选）。"""
-    msg = await session.get(ChatMessage, message_id)
-    if msg is None:
-        raise HTTPException(status_code=404, detail="消息不存在")
+    from app.services.chat_service import get_owned_message_conversation
+    msg, _conv = await get_owned_message_conversation(session, message_id, user)
     if not msg.retrieval_log_id:
         raise HTTPException(status_code=404, detail="该消息无检索详情")
     rlog = await session.get(RetrievalLog, msg.retrieval_log_id)
@@ -200,8 +213,12 @@ async def get_retrieval(
 @router.post("/suggestions", response_model=SuggestionResponse)
 async def suggest(
     req: SuggestionRequest, session: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
 ) -> SuggestionResponse:
     """基于会话最近消息生成 3 条追问建议；未配置 LLM 或失败则返回空。"""
+    # M45 属主校验
+    from app.services.chat_service import get_owned_conversation
+    await get_owned_conversation(session, req.conversation_id, user)
     rows = (
         await session.execute(
             select(ChatMessage)
@@ -232,12 +249,16 @@ async def suggest(
 @router.post("/messages/{message_id}/feedback")
 async def feedback(
     message_id: str, req: FeedbackRequest, session: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """消息反馈写入关联 retrieval_logs（为 Phase 8 LTR 攒数据）。
 
     M43：NOT_HELPFUL 可带分类（多选）+ 纠错文本；达门槛自动入候选 eval 集表。
     旧 body（只 rating）行为与响应逐字节兼容（新增 candidate_created 键默认 False）。
     """
+    # M45 属主校验（404 在 KeyError→404 之前）
+    from app.services.chat_service import get_owned_message_conversation
+    await get_owned_message_conversation(session, message_id, user)
     if req.rating not in {"HELPFUL", "NOT_HELPFUL"}:
         raise HTTPException(status_code=400, detail="rating 必须为 HELPFUL 或 NOT_HELPFUL")
     if req.rating == "HELPFUL" and (req.categories or req.correction):

@@ -73,10 +73,17 @@ def _enforce_into_stream(answer: str, citations: list[dict], retrieval_meta: dic
 async def stream_graph(
     session: AsyncSession, query: str, *, top_k: int = 8, agent_type: str | None = None,
     conversation_id: str | None = None, target_repo: str | None = None,
+    user=None,
 ) -> AsyncIterator[tuple[str, dict]]:
     """产出 SSE 事件并落库。事件序：conversation → retrieval → citation(s) → token(s) → done。"""
     # ---- 1. 会话 + user 消息（同 legacy）----
-    conv, conversation_id = await open_conversation(session, query, agent_type, conversation_id, target_repo=target_repo)
+    # M45：仅真实用户才传 user_id（避免 monkeypatch stub 不兼容）
+    _open_kw = {"target_repo": target_repo}
+    if user and user.id is not None:
+        _open_kw["user_id"] = user.id
+    conv, conversation_id = await open_conversation(
+        session, query, agent_type, conversation_id, **_open_kw,
+    )
     yield ("conversation", {"conversation_id": conversation_id, "title": conv.title,
                             "agent_type": conv.agent_type})
     current_msg_id = await add_user_message(session, conv, query, agent_type)
@@ -109,6 +116,7 @@ async def stream_graph(
         "trace": collector,
         "cost": cost,
         "qa_cache": qa_cache_ctx,
+        "allowed_kinds": user.allowed_kinds if user else None,   # M45（不进 checkpoint）
     }}
     retrieval_meta: dict = {}
     citations: list[dict] = []
@@ -170,6 +178,7 @@ async def stream_graph(
 
 async def resume_graph(
     session: AsyncSession, *, conversation_id: str, message_id: str, decision: dict,
+    user=None,
 ) -> AsyncIterator[tuple[str, dict]]:
     """HITL 续跑：在同一 thread（``conversation_id``）上用 ``Command(resume=decision)`` 续跑主图，
     转发 apply/reject 的 token 事件，跑完把中断消息落库为完成态并发 done。
@@ -177,6 +186,11 @@ async def resume_graph(
     图状态来自 checkpoint（M8：postgres 跨重启存活 / memory 进程内）；``session`` 为本请求级，
     经 ``configurable`` 注入续跑节点（不进被 checkpoint 的 state）。
     """
+    # M45 属主校验（404）—仅真实用户；直接调用测试兼容跳过
+    if user is not None and getattr(user, 'id', None) is not None:
+        from app.services.chat_service import get_owned_conversation
+        await get_owned_conversation(session, conversation_id, user)
+
     config = {"configurable": {"thread_id": conversation_id, "session": session,
                                "message_id": message_id}}
     answer_parts: list[str] = []
@@ -200,6 +214,7 @@ def _extract_interrupts(snap) -> list:
 
 async def continue_graph(
     session: AsyncSession, *, conversation_id: str, message_id: str | None = None,
+    user=None,
 ) -> AsyncIterator[tuple[str, dict]]:
     """通用续跑（M14 Part C）：在已存在 thread（``conversation_id``）上推进执行。
 
@@ -216,6 +231,11 @@ async def continue_graph(
 
     最佳努力恢复，不持久化 retrieval_log（``retrieval_log_id`` 留空）。
     """
+    # M45 属主校验（404）—仅真实用户；直接调用测试兼容跳过
+    if user is not None and getattr(user, 'id', None) is not None:
+        from app.services.chat_service import get_owned_conversation
+        await get_owned_conversation(session, conversation_id, user)
+
     config = {"configurable": {"thread_id": conversation_id, "session": session}}
     graph_app = get_graph()
     snap = await graph_app.aget_state(config)

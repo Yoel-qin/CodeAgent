@@ -55,15 +55,17 @@ def _snippet(content: str | None, terms: list[str], width: int = _SNIPPET_WIDTH)
 
 async def search(
     session: AsyncSession, q: str, *, kind: str | None = None, top_k: int = 12,
+    allowed_kinds: set[str] | None = None,
 ) -> dict:
     """关键词搜索 code+doc chunk。
 
     返回 ``{"q", "total", "items": [{chunk_id, kind, label, snippet, score}]}``。
     ``kind`` 为 ``"code"``/``"doc"`` 时仅留对应路；``top_k`` 控制最终返回条数（召回取
-    2× 宽进严出，给过滤留余量）。
+    2× 宽进严出，给过滤留余量）。``allowed_kinds`` 为 RBAC 角色可见 kind 过滤（M45）。
     """
     terms = extract_query_terms(q)
-    rows = await lexical_recall(session, terms, top_k=max(top_k * 2, top_k))
+    rows = await lexical_recall(session, terms, top_k=max(top_k * 2, top_k),
+                                allowed_kinds=allowed_kinds)   # M45
     if kind in ("code", "doc"):
         rows = [r for r in rows if r.get("kind") == kind]
     items = [

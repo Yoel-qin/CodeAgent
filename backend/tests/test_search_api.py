@@ -38,7 +38,7 @@ def test_snippet_around_term_head_and_empty():
 
 
 async def test_search_assembles_label_and_snippet(monkeypatch):
-    async def fake_recall(session, terms, *, top_k=20):
+    async def fake_recall(session, terms, *, top_k=20, allowed_kinds=None):
         assert terms  # 经 extract_query_terms 切词后非空
         return _canned()
 
@@ -53,7 +53,7 @@ async def test_search_assembles_label_and_snippet(monkeypatch):
 
 
 async def test_search_kind_filter(monkeypatch):
-    async def fake_recall(session, terms, *, top_k=20):
+    async def fake_recall(session, terms, *, top_k=20, allowed_kinds=None):
         return _canned()
 
     monkeypatch.setattr(svc, "lexical_recall", fake_recall)
@@ -71,7 +71,7 @@ async def test_search_endpoint(monkeypatch):
     from app.api.deps import get_db
     from app.main import app
 
-    async def fake_recall(session, terms, *, top_k=20):
+    async def fake_recall(session, terms, *, top_k=20, allowed_kinds=None):
         return _canned()
 
     monkeypatch.setattr(svc, "lexical_recall", fake_recall)

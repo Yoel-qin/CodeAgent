@@ -2,6 +2,7 @@
 
 纯 PG（``lexical_recall``），零 API key、零向量——按键场景要快；语义检索走 ``/v1/chat``。
 逻辑见 ``services/search_service.py``；空 ``q`` 由 FastAPI 422 拦截。
+M45 RBAC：根据用户角色 ``allowed_kinds`` 过滤结果。
 """
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import CurrentUser, get_current_user, get_db
 from app.schemas.search import SearchResponse
 from app.services import search_service
 
@@ -23,7 +24,11 @@ async def search(
     kind: Literal["code", "doc"] | None = Query(None, description="限定 code/doc，缺省全部"),
     top_k: int = Query(12, ge=1, le=50),
     session: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
 ) -> SearchResponse:
-    """全局关键词搜索：返回 code+doc chunk（含 label/snippet/score），供 ⌘K 跳转/聚焦。"""
-    data = await search_service.search(session, q, kind=kind, top_k=top_k)
+    """全局关键词搜索：返回 code+doc chunk（含 label/snippet/score），供 ⌘K 跳转/聚焦。
+    M45：根据用户角色 allowed_kinds 过滤可见 chunk 类型。
+    """
+    data = await search_service.search(session, q, kind=kind, top_k=top_k,
+                                       allowed_kinds=user.allowed_kinds)
     return SearchResponse(**data)

@@ -74,8 +74,10 @@ def index_chunks_safe(file_path: str, docs: list[dict]) -> None:
         pass
 
 
-def search(query_terms: list[str], raw_query: str, top_k: int = 20) -> list[dict]:
-    """BM25 召回：terms 命中 keywords（中文）+ match 命中 content（英文/代码）。"""
+def search(query_terms: list[str], raw_query: str, top_k: int = 20,
+           kinds: list[str] | None = None) -> list[dict]:
+    """BM25 召回：terms 命中 keywords（中文）+ match 命中 content（英文/代码）。
+    M45：kinds 非 None → 加 kind terms 过滤（RBAC 检索过滤）。"""
     ensure_index()
     should: list[dict[str, Any]] = []
     if query_terms:
@@ -84,7 +86,10 @@ def search(query_terms: list[str], raw_query: str, top_k: int = 20) -> list[dict
         should.append({"match": {"content": {"query": raw_query, "boost": 1.0}}})
     if not should:
         return []
-    body = {"query": {"bool": {"should": should, "minimum_should_match": 1}}, "size": top_k}
+    bool_q: dict[str, Any] = {"should": should, "minimum_should_match": 1}
+    if kinds:
+        bool_q["filter"] = [{"terms": {"kind": kinds}}]
+    body = {"query": {"bool": bool_q}, "size": top_k}
     resp = get_es().search(index=INDEX, **body)
     out: list[dict] = []
     for hit in resp["hits"]["hits"]:

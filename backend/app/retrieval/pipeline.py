@@ -38,6 +38,7 @@ class RetrievalPipeline:
         semantic_query: str | None = None, terms: list[str] | None = None,
         rewritten: bool | None = None,
         ablation: AblationConfig | None = None,
+        allowed_kinds: set[str] | None = None,
     ) -> tuple[list[dict], dict]:
         # ---- Stage 0：LLM 查询改写（失败优雅降级）----
         # 调用方可预计算 Stage 0（如 LangGraph 的 query_analysis 节点）后透传，避免重复改写；
@@ -67,7 +68,8 @@ class RetrievalPipeline:
         used_vec = False
         if ab.vector:
             try:
-                vector = await vector_recall(session, sem, top_k=settings.top_k_recall)
+                vector = await vector_recall(session, sem, top_k=settings.top_k_recall,
+                                                allowed_kinds=allowed_kinds)
                 used_vec = bool(vector)
             except Exception:
                 vector = []
@@ -76,18 +78,20 @@ class RetrievalPipeline:
         used_es = False
         if ab.lexical:
             try:
-                lexical = await bm25_recall(sem, top_k=settings.top_k_recall)
+                lexical = await bm25_recall(sem, top_k=settings.top_k_recall,
+                                                  allowed_kinds=allowed_kinds)
                 used_es = bool(lexical)
             except Exception:
                 lexical = []
             if not lexical:  # ES BM25 不可用 → PG 词法召回降级
-                lexical = await lexical_recall(session, terms, top_k=settings.top_k_recall)
+                lexical = await lexical_recall(session, terms, top_k=settings.top_k_recall,
+                                                              allowed_kinds=allowed_kinds)
 
         seed_ids = [
             r["chunk_id"] for r in (vector + lexical) if r.get("kind") == "code"
         ][:_SEED_TOP]
         graph: list[dict] = []
-        if ab.graph:
+        if ab.graph and (allowed_kinds is None or "code" in allowed_kinds):
             graph = await graph_recall(
                 session, seed_ids, depth=_SEED_DEPTH, max_nodes=_GRAPH_MAX_NODES
             )
@@ -98,6 +102,9 @@ class RetrievalPipeline:
             weights=DEFAULT_WEIGHTS,
             k=settings.rrf_k,
         )
+        # M45：RRF 后兜底过滤（防止下游 store 泄漏非允许 kind）
+        if allowed_kinds is not None:
+            fused = [c for c in fused if c.get("kind") in allowed_kinds]
         pool = fused[: settings.rerank_pool]
         recall_ms = int((time.perf_counter() - t_start) * 1000)
 
@@ -130,6 +137,9 @@ class RetrievalPipeline:
                     logger.warning("fine rerank failed ({}): {}", settings.reranker_fine_model, e)
         rerank_ms = int((time.perf_counter() - t_rerank) * 1000)
         candidates = candidates[:top_k]
+        # M45：最终兜底过滤（精排不应改变 kind，但防御性兜底）
+        if allowed_kinds is not None:
+            candidates = [c for c in candidates if c.get("kind") in allowed_kinds]
 
         meta = {
             # 检索漏斗（前端检索详情 / 设计 §11 全景）

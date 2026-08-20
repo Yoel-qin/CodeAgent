@@ -23,15 +23,15 @@ def _patch(monkeypatch):
     """把三路召回 + 精排换成记录型 async 假函数；reranker 强制 enabled。返回调用计数 dict。"""
     calls = {"vector": 0, "bm25": 0, "lexical": 0, "graph": 0, "rerank": 0}
 
-    async def v_recall(session, sem, *, top_k):
+    async def v_recall(session, sem, *, top_k, **kwargs):
         calls["vector"] += 1
         return [{"chunk_id": "v1", "kind": "code", "content": "vc", "score": 0.9}]
 
-    async def b_recall(sem, *, top_k):
+    async def b_recall(sem, *, top_k, **kwargs):
         calls["bm25"] += 1
         return [{"chunk_id": "b1", "kind": "code", "content": "bc", "score": 0.8}]
 
-    async def l_recall(session, terms, *, top_k):
+    async def l_recall(session, terms, *, top_k, **kwargs):
         calls["lexical"] += 1
         return [{"chunk_id": "l1", "kind": "code", "content": "lc", "score": 0.7}]
 

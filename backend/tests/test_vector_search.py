@@ -36,7 +36,7 @@ def _setup(monkeypatch, *, query_vecs, search_by_kind, fetch_rows=None):
 
     calls: list[tuple] = []
 
-    def fake_search(strategy, kind, vec, top_k):
+    def fake_search(strategy, kind, vec, top_k, expr_kinds=None):
         calls.append((kind, vec, top_k))
         return [{"chunk_id": cid, "kind": kind, "score": 0.9} for cid in search_by_kind.get(kind, [])]
 

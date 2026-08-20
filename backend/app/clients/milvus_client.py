@@ -91,13 +91,20 @@ def delete_vectors(strategy: str | None, kind: str, chunk_ids: list[str]) -> int
 
 
 def search(strategy: str | None, kind: str | None, query_vec: list[float],
-           top_k: int = 20) -> list[dict]:
+           top_k: int = 20, allowed_kinds: list[str] | None = None) -> list[dict]:
     """ANN 检索。unified + kind=None → 不加 kind 过滤（混检 code+doc）。
+    M45：allowed_kinds 非 None → unified 加 ``kind in [...]`` 过滤（dual 靠 collection 隔离，
+    code 权限被拒时由 vector_search 直接跳过 code collection，不走到这里）。
     返回 [{chunk_id, kind, score}]（dual 的 kind 由入参/collection 名回填）。
     """
     name, _, has_kind = collection_for(strategy, kind)
     ensure_collection(strategy, kind)
-    flt = f'kind == "{kind}"' if (has_kind and kind) else ""
+    if has_kind and kind:
+        flt = f'kind == "{kind}"'
+    elif has_kind and allowed_kinds:
+        flt = 'kind in [' + ", ".join(f'"{k}"' for k in allowed_kinds) + ']'
+    else:
+        flt = ""
     out_fields = ["kind"] if has_kind else []
     res = get_client().search(
         collection_name=name, data=[query_vec], anns_field="embedding",

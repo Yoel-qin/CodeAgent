@@ -18,28 +18,36 @@ from app.core.config import settings
 from app.retrieval.graph_traverse import fetch_chunks
 
 
-async def vector_recall(session: AsyncSession, query: str, *, top_k: int = 20) -> list[dict]:
-    # query_embed 按 strategy 返回 {role: vec|None}：unified→{"unified":..}，dual→{"code":..,"doc":..}
+async def vector_recall(session: AsyncSession, query: str, *, top_k: int = 20,
+                        allowed_kinds: set[str] | None = None) -> list[dict]:
+    # M45：allowed_kinds 非 None 时——unified 传 expr 过滤；dual 跳过被拒的 collection
+    # （code 无权限 → 不搜 code_vectors/code_vectors_bge；doc 侧 chunk 运行时 kind 一律
+    #  "doc"（媒体不分），故 doc collection 的去留由 "doc" 是否在白名单决定）。
     vecs = await embedding_client.query_embed(query)
+    allowed = allowed_kinds  # None = 不过滤
     hits: list[dict] = []
     for role, vec in vecs.items():
         if vec is None:
             continue
-        kind = None if role == "unified" else role  # unified 混检；dual 按 role=code/doc
+        if allowed is not None and role != "unified" and role not in allowed:
+            continue  # dual：code/doc collection 按 role 粗过滤
+        kind = None if role == "unified" else role
+        expr_kinds = sorted(allowed) if (allowed is not None and kind is None) else None
         try:
             # 位置参数（避免 asyncio.to_thread 关键字参数陷阱，见 CLAUDE.md）
             h = await asyncio.to_thread(
-                milvus_client.search, settings.embedding_strategy, kind, vec, top_k,
+                milvus_client.search, settings.embedding_strategy, kind, vec, top_k, expr_kinds,
             )
             hits.extend(h)
         except Exception:
             continue
     # M25：dual 模式额外用 BGE-M3 查询向量（vecs["doc"]）检索代码镜像索引 code_vectors_bge——
-    # 让多语言 BGE-M3 也能找回代码（CodeBERT 无中文，对中文 NL 查询召回弱）。复用已算好的 doc 向量不重算；
+    # 让多语言 BGE-M3 也能找回代码（CodeBERT 无中文，对中文 NL 代码查询召回弱）。复用已算好的 doc 向量不重算；
     # unified 无 vecs["doc"] → 跳过；空/未建 collection → search 返 [] no-op；top_k 位置参。
     if (settings.embedding_strategy == "dual"
             and settings.dual_code_bgem3_enabled
-            and vecs.get("doc") is not None):
+            and vecs.get("doc") is not None
+            and (allowed is None or "code" in allowed)):   # M45：code 镜像索引同受 code 权限门
         try:
             h = await asyncio.to_thread(
                 milvus_client.search, settings.embedding_strategy, "code_bge", vecs["doc"], top_k,

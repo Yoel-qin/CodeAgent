@@ -26,6 +26,15 @@ def test_token_roundtrip_and_expiry(monkeypatch):
     with pytest.raises(ValueError):
         svc.decode_token(expired)
 
+    # expires_minutes=0 应创建立即过期 token（不回落到默认值）
+    # 由于 JWT 库有时钟容差，这里验证 payload 中的 exp 时间戳是否为当前时间
+    import time
+    zero_min = svc.create_access_token(7, "developer", expires_minutes=0)
+    payload_zero = svc.decode_token(zero_min)
+    now_ts = time.time()
+    # 验证 exp 在当前时间附近（允许 2 秒误差，证明用的是 expires_minutes=0 而非默认 720 分钟）
+    assert abs(payload_zero["exp"] - now_ts) < 2, f"Expected exp≈now, got {payload_zero['exp']} vs {now_ts}"
+
     with pytest.raises(ValueError):
         svc.decode_token("not-a-jwt")
 

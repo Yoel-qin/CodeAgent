@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from app.db.base import Base
+from app.db.models.auth import Role, User
 from app.db.models.chat import ChatMessage, Conversation
 from app.db.models.code import CallGraph, CodeChunk, CodeFile
 from app.db.models.doc import DocChunk, DocFile, DocResource
@@ -13,6 +14,8 @@ from app.db.models.system import RankingModelConfig, RetrievalLog
 
 __all__ = [
     "Base",
+    "Role",
+    "User",
     "CodeFile",
     "CodeChunk",
     "CallGraph",

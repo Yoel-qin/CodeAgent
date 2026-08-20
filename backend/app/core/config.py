@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     # 每档每字段可选、缺省回落 llm_*；空串 = 三档全默认（零行为变更）。坏 JSON 软失败忽略。
     model_routes: str = ""
 
+    # ---- M45 RBAC（默认 off：单用户透传，零行为变更）----
+    # on 时全部 API 需 Bearer JWT（/health、/v1、/v1/auth/login 除外）；检索按角色过滤
+    # allowed_kinds（external 看不到 code chunk）。on 且 jwt_secret 空 → startup fail-fast。
+    rbac_enabled: bool = False
+    jwt_secret: str = ""
+    jwt_expire_minutes: int = 720   # token 有效期（内部工具默认 12h）
+
     # M42 高频 QA / 查询 embedding 缓存（Redis，opt-in；默认 off）
     qa_cache_enabled: bool = False
     qa_cache_ttl_seconds: int = 3600

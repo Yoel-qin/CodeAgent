@@ -96,3 +96,16 @@ async def test_retrieve_node_threads_allowed_kinds(monkeypatch):
                             "qa_cache": None}}
     await rn.retrieve(state, cfg)
     assert captured.get("allowed_kinds") == _EXT
+
+
+# ---- 工具防御：get_related_code 无 code 权限 → 文本提示不崩 ----
+
+
+async def test_get_related_code_denied_returns_notice():
+    from app.agent.tools.doc_tools import get_related_code as _grc
+
+    res = await _grc.ainvoke(
+        {"center": "doc_x"},
+        config={"configurable": {"session": None, "allowed_kinds": _EXT}},
+    )
+    assert "无权" in res

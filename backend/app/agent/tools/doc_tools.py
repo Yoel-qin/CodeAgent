@@ -216,6 +216,9 @@ async def get_related_code(center: str, config: RunnableConfig) -> str:
     用于回答"文档描述的配置/逻辑在代码里是怎么实现的"，增强可信度。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    allowed = config["configurable"].get("allowed_kinds")   # M45
+    if allowed is not None and "code" not in allowed:
+        return "（当前角色无权访问代码内容）"
     collector = config["configurable"].get("trace")  # M41
     _t0 = time.perf_counter()
     res = await _get_related_code(center, session)

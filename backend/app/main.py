@@ -121,6 +121,9 @@ async def _run_staleness_sweep_once() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    # M45：RBAC on 但 JWT_SECRET 未配 → 明确配置错误（fail-fast，区别于坏 key 降级契约）
+    if settings.rbac_enabled and not settings.jwt_secret:
+        raise RuntimeError("RBAC_ENABLED=true 但 JWT_SECRET 为空——请配置强随机密钥后重启")
     resync_task = None
     engine = None
     if settings.ingest_resync_enabled:

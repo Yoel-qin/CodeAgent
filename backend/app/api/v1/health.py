@@ -73,5 +73,6 @@ async def health() -> dict:
         "status": "healthy" if overall else "degraded",
         "app": settings.app_name,
         "env": settings.app_env,
+        "auth_required": settings.rbac_enabled,   # M45
         "components": components,
     }

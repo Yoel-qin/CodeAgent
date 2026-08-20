@@ -171,7 +171,9 @@ async def _propose_fallback(state: AgentState, config: RunnableConfig) -> dict:
     """
     session: AsyncSession = config["configurable"]["session"]
     top_k = config["configurable"].get("top_k", 8)
-    ranked, meta = await pipeline.recall(session, state["query"], top_k=top_k)
+    allowed_kinds = config["configurable"].get("allowed_kinds")
+    ranked, meta = await pipeline.recall(session, state["query"], top_k=top_k,
+                                         allowed_kinds=allowed_kinds)
     await _enrich_content_types(session, ranked)
 
     writer = _safe_writer()

@@ -88,9 +88,11 @@ def _emit_citations(chunks: list[dict]) -> None:
 # ---- 工具逻辑（纯函数，可单测）----
 
 
-async def _search_docs(query: str, session: AsyncSession, *, top_k: int = 8, pool: int = 15) -> ToolResult:
+async def _search_docs(query: str, session: AsyncSession, *, top_k: int = 8, pool: int = 15,
+                            allowed_kinds: set[str] | None = None) -> ToolResult:
     """recall 返回 code+doc 混合池，按 kind=="doc" 过滤后切到 top_k。"""
-    ranked, meta = await pipeline.recall(session, query, top_k=pool)
+    ranked, meta = await pipeline.recall(session, query, top_k=pool,
+                                         allowed_kinds=allowed_kinds)
     docs = [_norm(c) for c in ranked if c.get("kind") == "doc"][:top_k]
     recall = meta.get("recall", {})
     note = (f"（文档池 {len(docs)} 段；漏斗 向量 {recall.get('vector', 0)} + 词法 {recall.get('lexical', 0)} "
@@ -172,9 +174,10 @@ async def search_docs(query: str, config: RunnableConfig) -> str:
 
     session: AsyncSession = config["configurable"]["session"]
     top_k = config["configurable"].get("top_k", 8)
+    allowed = config["configurable"].get("allowed_kinds")   # M45
     collector = config["configurable"].get("trace")  # M41
     _t0 = time.perf_counter()
-    res = await _search_docs(query, session, top_k=top_k)
+    res = await _search_docs(query, session, top_k=top_k, allowed_kinds=allowed)
     _dur = (time.perf_counter() - _t0) * 1000
     if collector is not None:
         collector.record("tool", "search_docs", _dur,
@@ -191,6 +194,9 @@ async def read_doc(chunk_id: str, config: RunnableConfig) -> str:
     search_docs 的返回。用于精读某段文档的完整说明。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    allowed = config["configurable"].get("allowed_kinds")   # M45
+    if allowed is not None and "doc" not in allowed:
+        return "（当前角色无权访问该文档内容）"
     collector = config["configurable"].get("trace")  # M41
     _t0 = time.perf_counter()
     res = await _read_doc(chunk_id, session)
@@ -231,6 +237,9 @@ async def image_search(query: str, config: RunnableConfig) -> str:
 
     session: AsyncSession = config["configurable"]["session"]
     top_k = config["configurable"].get("top_k", 8)
+    allowed = config["configurable"].get("allowed_kinds")   # M45
+    if allowed is not None and "image" not in allowed:
+        return "（当前角色无权访问image内容）"
     collector = config["configurable"].get("trace")  # M41
     _t0 = time.perf_counter()
     res = await _search_media(query, session, media_type="image", top_k=top_k)
@@ -252,6 +261,9 @@ async def table_search(query: str, config: RunnableConfig) -> str:
 
     session: AsyncSession = config["configurable"]["session"]
     top_k = config["configurable"].get("top_k", 8)
+    allowed = config["configurable"].get("allowed_kinds")   # M45
+    if allowed is not None and "table" not in allowed:
+        return "（当前角色无权访问table内容）"
     collector = config["configurable"].get("trace")  # M41
     _t0 = time.perf_counter()
     res = await _search_media(query, session, media_type="table", top_k=top_k)

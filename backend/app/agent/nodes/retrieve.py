@@ -43,6 +43,7 @@ async def retrieve(state: AgentState, config: RunnableConfig) -> dict:
                     "citations": hit_citations}
     session = config["configurable"]["session"]
     top_k = config["configurable"]["top_k"]
+    allowed_kinds = config["configurable"].get("allowed_kinds")   # M45
     sem = state.get("semantic_query") or query
     terms = state.get("keywords") or []
     rewritten = state.get("rewritten")
@@ -52,6 +53,7 @@ async def retrieve(state: AgentState, config: RunnableConfig) -> dict:
     ranked, meta = await pipeline.recall(
         session, query, top_k=top_k,
         semantic_query=sem, terms=terms, rewritten=rewritten,
+        allowed_kinds=allowed_kinds,
     )
     if collector is not None:
         collector.record("retrieval", "recall",

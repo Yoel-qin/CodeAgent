@@ -88,8 +88,10 @@ def _emit_citations(chunks: list[dict]) -> None:
 # ---- 工具逻辑（纯函数，可单测）----
 
 
-async def _search_code(query: str, session: AsyncSession, *, top_k: int = 8) -> ToolResult:
-    ranked, meta = await pipeline.recall(session, query, top_k=top_k)
+async def _search_code(query: str, session: AsyncSession, *, top_k: int = 8,
+                            allowed_kinds: set[str] | None = None) -> ToolResult:
+    ranked, meta = await pipeline.recall(session, query, top_k=top_k,
+                                         allowed_kinds=allowed_kinds)
     chunks = [_norm(c) for c in ranked]
     recall = meta.get("recall", {})
     note = (f"（向量 {recall.get('vector', 0)} + 词法 {recall.get('lexical', 0)} "
@@ -331,9 +333,10 @@ async def search_code(query: str, config: RunnableConfig) -> str:
 
     session: AsyncSession = config["configurable"]["session"]
     top_k = config["configurable"].get("top_k", 8)
+    allowed = config["configurable"].get("allowed_kinds")   # M45
     collector = config["configurable"].get("trace")  # M41
     _t0 = time.perf_counter()
-    res = await _search_code(query, session, top_k=top_k)
+    res = await _search_code(query, session, top_k=top_k, allowed_kinds=allowed)
     _dur = (time.perf_counter() - _t0) * 1000
     if collector is not None:
         collector.record("tool", "search_code", _dur,
@@ -431,6 +434,9 @@ async def read_code(chunk_id: str, config: RunnableConfig) -> str:
     search_symbol/get_call_chain 的返回。用于精读某个方法的实现细节。"""
 
     session: AsyncSession = config["configurable"]["session"]
+    allowed = config["configurable"].get("allowed_kinds")   # M45
+    if allowed is not None and "code" not in allowed:
+        return "（当前角色无权访问代码内容）"
     collector = config["configurable"].get("trace")  # M41
     _t0 = time.perf_counter()
     res = await _read_code(chunk_id, session)

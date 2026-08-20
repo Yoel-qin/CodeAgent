@@ -109,7 +109,7 @@ async def test_propose_sets_state_and_emits_retrieval_citation_no_token(monkeypa
                "method_name": "run", "score": 0.9, "content": "..."}]
     meta = {"merged": 1, "recall": {"vector": 1}}
 
-    async def fake_recall(session, query, top_k=8):
+    async def fake_recall(session, query, top_k=8, **kwargs):
         return ranked, meta
 
     async def fake_enrich(session, rs):
@@ -138,7 +138,7 @@ async def test_propose_sets_state_and_emits_retrieval_citation_no_token(monkeypa
 
 
 async def test_propose_no_anchor_emits_token_and_short_circuits(monkeypatch):
-    async def fake_recall(session, query, top_k=8):
+    async def fake_recall(session, query, top_k=8, **kwargs):
         return [{"chunk_id": "c1", "kind": "code", "score": 0.5, "content": ""}], {"merged": 1}
 
     monkeypatch.setattr(dm, "pipeline", SimpleNamespace(recall=fake_recall))

@@ -87,11 +87,13 @@ async def _degrade(state: AgentState, config: RunnableConfig, err: Exception | N
     t0 = time.perf_counter()
     session: AsyncSession = config["configurable"]["session"]
     top_k = config["configurable"].get("top_k", 8)
+    allowed_kinds = config["configurable"].get("allowed_kinds")   # M45
     query = state["query"]
     agent_type = config["configurable"].get("agent_type")
     writer = _safe_writer()
     try:
-        ranked, meta = await pipeline.recall(session, query, top_k=top_k)
+        ranked, meta = await pipeline.recall(session, query, top_k=top_k,
+                                             allowed_kinds=allowed_kinds)
         await _enrich_content_types(session, ranked)
         if writer:
             writer({"event": "retrieval", "data": meta})

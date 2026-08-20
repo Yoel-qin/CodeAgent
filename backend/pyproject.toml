@@ -25,6 +25,7 @@ dependencies = [
     "httpx>=0.27",
     "python-jose[cryptography]>=3.3",
     "passlib[bcrypt]>=1.7",
+    "bcrypt<4.0.0",  # passlib 兼容：bcrypt 4.x/5.x 移除 __about__ 导致 passlib 后端检测失败
     # ---- Agent 编排（Phase 7）----
     # langgraph 提供 StateGraph / get_stream_writer / MemorySaver / create_react_agent；
     # langchain-core 提供 reducer/类型；langchain-openai 提供工具调用 + with_structured_output（场景 Agent）。

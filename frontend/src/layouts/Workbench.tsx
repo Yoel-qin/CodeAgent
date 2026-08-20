@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { Layout, Menu, Input, Space, Tag, Typography, theme } from "antd";
+import { useEffect, useMemo } from "react";
+import { Layout, Menu, Input, Space, Tag, Typography, theme, type MenuProps } from "antd";
 import {
   MessageOutlined,
   FolderOutlined,
@@ -12,9 +12,12 @@ import {
   SettingOutlined,
   SearchOutlined,
   BarChartOutlined,
+  LogoutOutlined,
 } from "@ant-design/icons";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "../stores/app";
+import { useAuthStore } from "../stores/auth";
+import { getToken } from "../api/client";
 import ContextPanel from "../components/ContextPanel";
 import CommandPalette from "../components/CommandPalette";
 import { useHotkey } from "../hooks/useHotkey";
@@ -56,7 +59,12 @@ export default function Workbench() {
   const health = useAppStore((s) => s.health);
   const fetchHealth = useAppStore((s) => s.fetchHealth);
   const setCmdkOpen = useAppStore((s) => s.setCmdkOpen);
+  const authLogout = useAuthStore((s) => s.logout);
   useHotkey();
+
+  useEffect(() => {
+    useAuthStore.getState().hydrate();
+  }, []);
 
   useEffect(() => {
     fetchHealth();
@@ -64,8 +72,28 @@ export default function Workbench() {
     return () => clearInterval(t);
   }, [fetchHealth]);
 
+  // RBAC 开启时，无 token 跳转登录页
+  useEffect(() => {
+    if (health?.auth_required && !getToken()) {
+      navigate("/login", { replace: true });
+    }
+  }, [health, navigate]);
+
   const selected = "/" + (location.pathname.split("/")[1] || "chat");
   const ok = health?.status === "healthy";
+
+  const menuItems: MenuProps["items"] = useMemo(() => {
+    const items: MenuProps["items"] = [...navItems];
+    if (health?.auth_required) {
+      items.push({
+        key: "logout",
+        label: "登出",
+        icon: <LogoutOutlined />,
+        onClick: () => { authLogout(); navigate("/login"); },
+      });
+    }
+    return items;
+  }, [health?.auth_required, authLogout, navigate]);
 
   return (
     <Layout style={{ height: "100vh" }}>
@@ -109,7 +137,7 @@ export default function Workbench() {
             theme="dark"
             mode="inline"
             selectedKeys={[selected]}
-            items={navItems}
+            items={menuItems}
             onClick={({ key }) => navigate(key)}
             style={{ borderRight: 0, paddingTop: 8 }}
           />

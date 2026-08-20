@@ -1,5 +1,5 @@
 import { fetchEventSource } from "@microsoft/fetch-event-source";
-import { API_BASE } from "./client";
+import { API_BASE, getToken } from "./client";
 
 export interface ChatStreamHandlers {
   onConversation?: (info: unknown) => void;
@@ -63,7 +63,11 @@ export async function streamChat(
 ): Promise<void> {
   await fetchEventSource(`${API_BASE}/v1/chat/completions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
+    },
     body: JSON.stringify(payload),
     signal,
     openWhenHidden: true,
@@ -86,7 +90,11 @@ export async function streamResume(
 ): Promise<void> {
   await fetchEventSource(`${API_BASE}/v1/chat/resume`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
+    },
     body: JSON.stringify(payload),
     signal,
     openWhenHidden: true,

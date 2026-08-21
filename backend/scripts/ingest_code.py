@@ -5,6 +5,7 @@
 本地（连容器化的 PG）:
     uv run python scripts/ingest_code.py --repo ../data/repo/sample --module demo
 可选 --small-file-lines 0：强制方法级切片（默认 <200 行按整文件切片）。
+M46 起默认构建关联（锚点 + 跨类调用图）；--no-relations 跳过（旧默认行为）。
 
 实现：薄封装 app.pipeline.ingest.ingest_repo（exts={".java":"code"}），不再内联遍历/提交逻辑。
 """
@@ -32,6 +33,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--commit", default="UNKNOWN", help="git commit hash")
     ap.add_argument("--small-file-lines", type=int, default=None,
                     help="覆盖小文件阈值（0=强制方法级切片）")
+    ap.add_argument("--no-relations", action="store_true",
+                    help="跳过关联构建（锚点 + 调用图）；默认构建（M46）")
     ap.add_argument("--ext", default=".java", help="文件扩展名（默认 .java）")
     args = ap.parse_args(argv)
 
@@ -44,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     with Session(engine) as session:
         stats = ingest_repo(
             session, repo, module=args.module, commit_hash=args.commit,
-            small_file_lines=args.small_file_lines, build_relations=False,
+            small_file_lines=args.small_file_lines, build_relations=not args.no_relations,
             exts={args.ext: "code"},
         )
         session.commit()

@@ -143,3 +143,34 @@ def test_build_call_graph_cross_class_edges(tmp_path: Path):
     # this/无 receiver → 同类（现行为回归）
     assert ("c_prod_send", "c_prod_send") in edges
     assert ("c_prod_send", "c_prod_retry") in edges
+
+
+# ---------- CLI：ingest_code.py 默认 build_relations=True + --no-relations 逃生口 ----------
+
+def _run_cli(monkeypatch, tmp_path, argv_extra=()):
+    import scripts.ingest_code as cli
+
+    captured: dict = {}
+
+    def fake_ingest_repo(session, repo, **kw):
+        captured.update(kw)
+        return {"details": [], "errors": []}
+
+    monkeypatch.setattr(cli, "ingest_repo", fake_ingest_repo)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "A.java").write_text("class A {}", encoding="utf-8")
+    rc = cli.main(["--repo", str(repo), "--module", "demo", *argv_extra])
+    return rc, captured
+
+
+def test_cli_defaults_build_relations_true(monkeypatch, tmp_path):
+    rc, captured = _run_cli(monkeypatch, tmp_path)
+    assert rc == 0
+    assert captured["build_relations"] is True
+
+
+def test_cli_no_relations_flag(monkeypatch, tmp_path):
+    rc, captured = _run_cli(monkeypatch, tmp_path, ["--no-relations"])
+    assert rc == 0
+    assert captured["build_relations"] is False

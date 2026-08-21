@@ -1,12 +1,14 @@
 """关联构建（设计 §6）：
 - 锚点匹配：CODE_ANCHOR → DOC_TO_CODE / CODE_TO_DOC + anchor_mappings（置信度 1.0）
-- 调用图：方法调用表达式 → call_graph 边（Phase 1 仅同类内简单名解析；
-  跨类/类型感知解析留待后续，note）
+- 调用图：方法调用表达式 → call_graph 边（M46 起跨类四步解析：
+  ① receiver 定型（参数>字段>局部变量，miss 则 receiver 名当类名=静态调用）
+  ② 类型简单名匹配 class_name ③ 继承闭包分发到后代实现类 ④ this/super/无 receiver 同类）
 
 幂等：每次全量重建（先删后插）。
 """
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import AnchorMapping, CallGraph, ChunkRelation, CodeChunk, DocChunk
 from app.pipeline.parsing.code_parser import parse_java
+from app.pipeline.parsing.doc_element import CodeClass, CodeMethod
 
 
 def build_anchor_relations(session: Session) -> dict:
@@ -65,10 +68,74 @@ def build_anchor_relations(session: Session) -> dict:
     }
 
 
+# ============================================================================
+# M46 跨类调用解析（纯函数，单测覆盖）：定型 → 类匹配 → 继承闭包分发
+# ============================================================================
+
+_MODIFIER_TOKENS = {"final", "transient", "volatile", "static"}
+_GENERIC_RE = re.compile(r"<[^<>]*>")
+
+
+def _simple_name(type_text: str) -> str:
+    """"final Map<String, String>" / "org.acme.Foo[]" → "Map"/"Foo"。"""
+    t = _GENERIC_RE.sub("", type_text).split("[", 1)[0].strip()
+    toks = [x for x in t.split() if x not in _MODIFIER_TOKENS]
+    if not toks:
+        return ""
+    return toks[-1].rsplit(".", 1)[-1]
+
+
+def _param_types(m: CodeMethod) -> dict[str, str]:
+    """参数原文（"final MessageStore store" / "@A Map<K,V> cache"）→ {变量名: 类型简单名}。
+
+    过滤 @注解 token 与修饰词后：末 token 为变量名，其余拼回为类型文本；可变参 "Msg..." 去省略号。
+    """
+    out: dict[str, str] = {}
+    for p in m.parameters:
+        toks = [x for x in _GENERIC_RE.sub("", p).split() if not x.startswith("@")]
+        if len(toks) < 2:
+            continue
+        tname = _simple_name(" ".join(toks[:-1]))
+        if tname:
+            out[toks[-1].rstrip("...")] = tname
+    return out
+
+
+def _infer_type(recv: str, m: CodeMethod, cls: CodeClass) -> str | None:
+    """receiver 变量 → 声明类型简单名。优先级：方法参数 > 本类字段 > 局部变量；全 miss → None。"""
+    for scope in (_param_types(m), cls.fields, m.local_types):
+        t = scope.get(recv)
+        if t:
+            return t
+    return None
+
+
+def _descendants(name: str, children: dict[str, set[str]], limit: int = 5) -> set[str]:
+    """类型名的全部后代类（沿 implements/extends 向下 BFS；防环，限深 limit）。
+
+    起点预置进 seen——环（A↔B）把起点带回时不重复入集合，起点自身不算后代。
+    """
+    seen: set[str] = {name}
+    frontier = [name]
+    for _ in range(limit):
+        nxt: list[str] = []
+        for n in frontier:
+            for ch in children.get(n, ()):
+                if ch not in seen:
+                    seen.add(ch)
+                    nxt.append(ch)
+        if not nxt:
+            break
+        frontier = nxt
+    return seen - {name}
+
+
 def build_call_graph(session: Session, repo_path: str | Path) -> dict:
-    """从仓库源码重新解析调用表达式 → call_graph 边（同类内简单名解析）。
+    """从仓库源码重新解析调用表达式 → call_graph 边（M46：跨类四步解析）。
 
     calls 未落库，故此处重解析仓库；方法 → chunk_id 经 code_anchor_key 映射。
+    四步：①receiver 定型（参数>字段>局部变量，miss 则 receiver 名当类名=静态调用）
+    ②类型简单名匹配 class_name ③继承闭包分发到后代实现类 ④this/super/无 receiver 同类。
     """
     code_chunks = session.execute(
         select(CodeChunk).where(
@@ -79,11 +146,17 @@ def build_call_graph(session: Session, repo_path: str | Path) -> dict:
 
     by_pair: dict[tuple[str, str], list[str]] = defaultdict(list)
     by_key: dict[str, list[str]] = defaultdict(list)
+    children: dict[str, set[str]] = defaultdict(set)  # 父类型简单名 → 子类名集合
     for c in code_chunks:
         if c.class_name and c.method_name:
             by_pair[(c.class_name, c.method_name)].append(c.chunk_id)
         if c.code_anchor_key:
             by_key[c.code_anchor_key].append(c.chunk_id)
+        if c.extends_class:
+            children[c.extends_class.rsplit(".", 1)[-1]].add(c.class_name)
+        for iface in (c.implements_interface or "").split(","):
+            if iface := iface.strip():
+                children[iface.rsplit(".", 1)[-1]].add(c.class_name)
 
     session.execute(delete(CallGraph))
     session.flush()
@@ -100,15 +173,17 @@ def build_call_graph(session: Session, repo_path: str | Path) -> dict:
                     if not caller_ids:
                         continue
                     caller_id = caller_ids[0]
-                    for call in m.calls:
-                        callees = by_pair.get((cls.name, call))
-                        if not callees:
-                            continue
-                        for cid in callees:
-                            if cid == caller_id:
-                                edges.add((caller_id, cid, call, True))
-                            else:
-                                edges.add((caller_id, cid, call, False))
+                    for recv, name in m.calls:
+                        if recv in (None, "this", "super"):
+                            target_ids = by_pair.get((cls.name, name), [])
+                        else:
+                            t = _infer_type(recv, m, cls)
+                            if t is None:
+                                t = recv  # fallback：receiver 名直接当类名（静态调用/同包直呼）
+                            cands = {t} | _descendants(t, children)
+                            target_ids = [cid for cn in cands for cid in by_pair.get((cn, name), [])]
+                        for cid in target_ids:
+                            edges.add((caller_id, cid, name, cid == caller_id))
 
     for caller, callee, expr, recursive in edges:
         session.add(CallGraph(caller_chunk_id=caller, callee_chunk_id=callee,

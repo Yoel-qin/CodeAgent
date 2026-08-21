@@ -45,4 +45,6 @@ class User(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    role: Mapped[Role] = relationship(Role)
+    # lazy="joined"：async 会话不允许属性惰性加载（MissingGreenlet），
+    # 登录/get_current_user 都要读 role.name/权限，随主查询 JOIN 预载（M45）。
+    role: Mapped[Role] = relationship(Role, lazy="joined")

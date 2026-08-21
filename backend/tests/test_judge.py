@@ -175,3 +175,61 @@ async def test_judge_diag_empty_lists_omit_anchor_section():
     await judge.judge("Q", "A", "ctx", [], rubric=QA_RUBRIC, scoring_hints=hints)
     user_msg = next(m["content"] for m in client.captured if m["role"] == "user")
     assert "评分锚点" not in user_msg
+
+
+# ---------- M46 容错增强：deepseek-v4-flash 噪声输出形态 ----------
+
+def test_parse_survives_wrapping_prose():
+    """JSON 前后包自然语言噪声（flash 常见）→ 大括号平衡提取仍成功。"""
+    raw = ('好的，以下是评分：\n{"faithfulness": 0.9, "answer_relevance": 0.8, '
+           '"citation_accuracy": 0.7, "hallucination": 0.2, "rationale": "ok"}\n希望有帮助。')
+    res = _parse(raw, QA_RUBRIC)
+    assert res.scores["faithfulness"].score == 0.9
+    assert res.rationale == "ok"
+
+
+def test_parse_survives_prose_with_braces_in_string():
+    """rationale 文本里含大括号 → 字符串感知提取不被误导。"""
+    raw = ('```json\n{"faithfulness": 0.6, "answer_relevance": 0.6, '
+           '"citation_accuracy": 0.6, "hallucination": 0.4, "rationale": "评分 { 一般 } 而已"}\n```')
+    res = _parse(raw, QA_RUBRIC)
+    assert res.scores["faithfulness"].score == 0.6
+    assert "{ 一般 }" in res.rationale
+
+
+@pytest.mark.asyncio
+async def test_judge_retries_once_on_parse_failure():
+    """首次输出垃圾 → 强化指令重试一次成功（eval 门的意义大于一次额外调用）。"""
+
+    class _FlakyLLM:
+        configured = True
+        calls = 0
+
+        async def chat(self, messages, **kw):
+            _FlakyLLM.calls += 1
+            if _FlakyLLM.calls == 1:
+                return "我认为这个回答质量还可以，各方面都不错。"
+            return '{"faithfulness": 0.7, "answer_relevance": 0.7, "citation_accuracy": 0.7, "hallucination": 0.3}'
+
+    judge = LLMJudge(client=_FlakyLLM())
+    res = await judge.judge("Q", "A", "ctx", [], rubric=QA_RUBRIC)
+    assert _FlakyLLM.calls == 2
+    assert res.scores["faithfulness"].score == 0.7
+
+
+@pytest.mark.asyncio
+async def test_judge_retry_also_fails_degrades():
+    """两次都垃圾 → 维持 None（不无限重试）。"""
+
+    class _AlwaysBad:
+        configured = True
+        calls = 0
+
+        async def chat(self, messages, **kw):
+            _AlwaysBad.calls += 1
+            return "我无法给出 JSON。"
+
+    judge = LLMJudge(client=_AlwaysBad())
+    res = await judge.judge("Q", "A", "ctx", [], rubric=QA_RUBRIC)
+    assert _AlwaysBad.calls == 2
+    assert all(s.score is None for s in res.scores.values())

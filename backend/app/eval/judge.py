@@ -25,18 +25,56 @@ class JudgeResult:
     raw: str
 
 
+def _extract_json_object(text: str) -> str | None:
+    """提取首个平衡大括号块（字符串感知——跳过字符串字面量里的 { } 与转义）。
+
+    覆盖轻量模型（如 deepseek-v4-flash）的噪声形态：JSON 前后包自然语言、
+    fence 混排。无完整平衡块（截断）→ None。
+    """
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
 def _parse(raw: str, rubric: dict) -> JudgeResult:
-    """解析 LLM 文本 → JudgeResult。剥 fence → json.loads → clip [0,1]；失败 → 全 None。"""
+    """解析 LLM 文本 → JudgeResult。
+
+    快路径整体 json.loads → 失败再大括号平衡提取（M46 容错增强）→ 仍失败 → 全 None。
+    """
     scores = {k: DimensionScore(None, cfg["weight"]) for k, cfg in rubric.items()}
     text = (raw or "").strip()
-    if text.startswith("```"):
-        # 剥首行 fence（```json / ```）
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        text = text[:-3].strip() if text.endswith("```") else text.strip()
+    obj = None
     try:
         obj = json.loads(text)
     except (json.JSONDecodeError, TypeError):
-        return JudgeResult(scores=scores, rationale="judge parse failed", raw=raw)
+        frag = _extract_json_object(text)
+        if frag:
+            try:
+                obj = json.loads(frag)
+            except (json.JSONDecodeError, TypeError):
+                obj = None
     if not isinstance(obj, dict):
         return JudgeResult(scores=scores, rationale="judge parse failed", raw=raw)
     rationale = str(obj.get("rationale", ""))
@@ -101,15 +139,28 @@ class LLMJudge:
         kw = {}
         if self._model:
             kw["model"] = self._model
+        msgs = _build_prompt(question, answer, context, citations, rubric, scoring_hints=scoring_hints)
         try:
-            raw = await self._client.chat(
-                _build_prompt(question, answer, context, citations, rubric, scoring_hints=scoring_hints),
-                temperature=0, max_tokens=512, **kw,
-            )
+            raw = await self._client.chat(msgs, temperature=0, max_tokens=1024, **kw)
         except Exception as exc:
             scores = {k: DimensionScore(None, cfg["weight"]) for k, cfg in rubric.items()}
             return JudgeResult(scores=scores, rationale=f"llm call failed: {exc}", raw="")
-        return _parse(raw, rubric)
+        result = _parse(raw, rubric)
+        if all(s.score is None for s in result.scores.values()):
+            # M46：轻量模型易夹带噪声/拒答 JSON → 强化指令重试一次（eval 门的意义大于一次额外调用）
+            try:
+                raw2 = await self._client.chat(
+                    [*msgs, {"role": "assistant", "content": raw or ""},
+                     {"role": "user", "content": "上一次输出无法解析为 JSON。请重新输出：只给一个 JSON 对象，"
+                                                 "无任何解释文字、无 markdown fence。"}],
+                    temperature=0, max_tokens=1024, **kw,
+                )
+                retry = _parse(raw2, rubric)
+                if any(s.score is not None for s in retry.scores.values()):
+                    return retry
+            except Exception:
+                pass
+        return result
 
 
 # M39 QA rubric（4 维；unverified_rate 不在此，由 M34 enforce 算）

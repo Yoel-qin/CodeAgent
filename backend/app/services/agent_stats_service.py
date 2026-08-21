@@ -21,8 +21,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, case, func, literal, or_, select, true
+from sqlalchemy import and_, case, cast, func, literal, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.types import UserDefinedType
 
 from app.db.models import ChatMessage, RetrievalLog
 from app.schemas.agent import (
@@ -43,20 +44,29 @@ _ASSIST = and_(
 # 标签：成功 run 用 meta.agent；降级 run（meta 丢 agent）回退 chat_messages.agent_type
 _LABEL = func.coalesce(_AGENT, ChatMessage.agent_type).label("agent")
 
-# M41 三形状：「有工具步」谓词——旧 list 非空 / 新 dict 含 kind=="tool" 的 span
+# M41 三形状：「有工具步」谓词——旧 list 非空 / 新 dict 含 kind=="tool" 的 span。
+# jsonpath 参数必须显式 CAST：SQLAlchemy literal 默认绑定为 VARCHAR，而
+# jsonb_path_query_array(jsonb, jsonpath) 无 varchar 形参签名——psql 里裸字面量靠
+# unknown 类型隐式转换，asyncpg prepared 参数不行（function does not exist）。
+class _JSONPATH(UserDefinedType):
+    cache_ok = True  # 无状态字面量类型，允许语句缓存
+
+    def get_col_spec(self) -> str:
+        return "JSONPATH"
+
+
 _STEPS = RetrievalLog.agent_steps
 _STYPE = func.jsonb_typeof(_STEPS)
+_TOOL_SPANS = cast(literal('$.spans[*] ? (@.kind == "tool")'), _JSONPATH)
 _HAS_TOOLS = or_(
     and_(_STYPE == "array", func.jsonb_array_length(_STEPS) > 0),
     and_(_STYPE == "object",
-         func.jsonb_array_length(func.jsonb_path_query_array(
-             _STEPS, literal('$.spans[*] ? (@.kind == "tool")'))) > 0),
+         func.jsonb_array_length(func.jsonb_path_query_array(_STEPS, _TOOL_SPANS)) > 0),
 )
 # 工具步数（步数均值用）：array → 长度；object → tool span 数；其余 NULL
 _STEPS_LEN = case(
     (_STYPE == "array", func.jsonb_array_length(_STEPS)),
-    (_STYPE == "object", func.jsonb_array_length(func.jsonb_path_query_array(
-        _STEPS, literal('$.spans[*] ? (@.kind == "tool")')))),
+    (_STYPE == "object", func.jsonb_array_length(func.jsonb_path_query_array(_STEPS, _TOOL_SPANS))),
     else_=None,
 )
 

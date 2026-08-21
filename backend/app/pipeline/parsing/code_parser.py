@@ -137,16 +137,73 @@ def _source_of(node) -> bytes | None:
     return raw if isinstance(raw, bytes) else None
 
 
-def _extract_calls(method_body, src: bytes) -> list[str]:
-    """方法体内的方法调用简单名（去重，保序）。"""
+def _extract_calls(method_body, src: bytes) -> list[tuple[str | None, str]]:
+    """方法体内调用 (receiver, 方法名)，去重保序（M46 调用对）。
+
+    receiver 仅当 method_invocation 的 object 域是 identifier（简单变量/类名）或 this/super
+    关键字节点时记录其文本；链式调用（a.getB().c() 的 c）、字面量、复杂表达式记 None。
+    """
     if method_body is None:
         return []
-    q = _query("(method_invocation name: (identifier) @callee)")
-    caps = QueryCursor(q).captures(method_body).get("callee", [])
-    seen: dict[str, None] = {}
-    for c in caps:
-        seen.setdefault(_text(src, c), None)
+    seen: dict[tuple[str | None, str], None] = {}
+    for inv in QueryCursor(_query("(method_invocation) @inv")).captures(method_body).get("inv", []):
+        name_node = inv.child_by_field_name("name")
+        if name_node is None:
+            continue
+        obj_node = inv.child_by_field_name("object")
+        recv = (_text(src, obj_node)
+                if obj_node is not None and obj_node.type in ("identifier", "this", "super")
+                else None)
+        seen.setdefault((recv, _text(src, name_node)), None)
     return list(seen.keys())
+
+
+def _simple_type_name(raw: str) -> str:
+    """类型文本 → 简单名：剥泛型 <...>、数组 [...]、修饰前缀、包限定（取末段）。"""
+    t = raw.split("<", 1)[0].split("[", 1)[0].strip()
+    parts = t.split()
+    if len(parts) > 1:  # "final MessageStore" 等带修饰前缀 → 类型是最后一段
+        t = parts[-1]
+    return t.rsplit(".", 1)[-1] if "." in t else t
+
+
+def _declarator_names(decl_node, src: bytes) -> list[str]:
+    """field/local 声明节点内的变量名（variable_declarator 的 identifier）。"""
+    q = _query("(variable_declarator name: (identifier) @vn)")
+    return [_text(src, vn) for vn in QueryCursor(q).captures(decl_node).get("vn", [])]
+
+
+def _parse_fields(body, src: bytes) -> dict[str, str]:
+    """类体字段：变量名 → 声明类型简单名。"""
+    fields: dict[str, str] = {}
+    for f in QueryCursor(_query("(field_declaration) @f")).captures(body).get("f", []):
+        type_node = f.child_by_field_name("type")
+        if type_node is None:
+            continue
+        tname = _simple_type_name(_node_text(type_node))
+        if not tname:
+            continue
+        for vn in _declarator_names(f, src):
+            fields[vn] = tname
+    return fields
+
+
+def _parse_local_types(body_node, src: bytes) -> dict[str, str]:
+    """方法体内局部变量声明：变量名 → 类型简单名。
+
+    try-with-resources / for-var / lambda 参数不覆盖（M46 非目标，诚实限制）。
+    """
+    if body_node is None:
+        return {}
+    out: dict[str, str] = {}
+    for d in QueryCursor(_query("(local_variable_declaration) @d")).captures(body_node).get("d", []):
+        type_node = d.child_by_field_name("type")
+        if type_node is None:
+            continue
+        tname = _simple_type_name(_node_text(type_node))
+        for vn in _declarator_names(d, src):
+            out[vn] = tname
+    return out
 
 
 def _parse_method(method_node, class_name: str, src: bytes) -> CodeMethod:
@@ -177,6 +234,7 @@ def _parse_method(method_node, class_name: str, src: bytes) -> CodeMethod:
 
     body_node = method_node.child_by_field_name("body")
     calls = _extract_calls(body_node, src)
+    local_types = _parse_local_types(body_node, src)
 
     return CodeMethod(
         name=name,
@@ -191,6 +249,7 @@ def _parse_method(method_node, class_name: str, src: bytes) -> CodeMethod:
         end_line=end_line,
         source=source,
         calls=calls,
+        local_types=local_types,
     )
 
 
@@ -234,6 +293,7 @@ def _parse_type(type_node, kind: str, src: bytes) -> CodeClass:
         for ch in body.children:
             if ch.type in _METHOD_KINDS:
                 methods.append(_parse_method(ch, name, src))
+    fields = _parse_fields(body, src) if body is not None else {}
 
     return CodeClass(
         name=name,
@@ -246,6 +306,7 @@ def _parse_type(type_node, kind: str, src: bytes) -> CodeClass:
         start_line=type_node.start_point[0] + 1,
         end_line=type_node.end_point[0] + 1,
         methods=methods,
+        fields=fields,
     )
 
 

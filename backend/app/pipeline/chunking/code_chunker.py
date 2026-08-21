@@ -73,7 +73,8 @@ def _build_method_spec(pf: ParsedCodeFile, cls_name: str, cls_implements: list[s
                        chunk_id: str | None = None) -> CodeChunkSpec:
     if chunk_id is None:
         chunk_id = f"code_{_safe(cls_name)}_{_safe(m.name)}_{short_hash(content)}"
-    identifiers = list(m.calls) + list(m.parameters) + list(m.annotations)
+    # M46：m.calls 是 (receiver, 方法名) 对——receiver 变量名无语义价值，只取方法名进 keywords
+    identifiers = [name for _, name in m.calls] + list(m.parameters) + list(m.annotations)
     return CodeChunkSpec(
         chunk_id=chunk_id,
         file_path=pf.file_path,

@@ -22,7 +22,10 @@ class CodeMethod:
     start_line: int                      # 从 1 开始（含 Javadoc）
     end_line: int
     source: str                          # 方法源码（含 Javadoc）
-    calls: list[str] = field(default_factory=list)   # 被调用方法简单名
+    # M46：调用对（receiver 简单标识符 or None, 方法名）。receiver 仅当 object 域为
+    # identifier 时记录——链式调用（a.getB().c() 的 c）记 None（跨类定型够不着的边放弃）。
+    calls: list[tuple[str | None, str]] = field(default_factory=list)
+    local_types: dict[str, str] = field(default_factory=dict)  # 局部变量名 → 类型简单名
 
 
 @dataclass
@@ -37,6 +40,7 @@ class CodeClass:
     start_line: int
     end_line: int
     methods: list[CodeMethod] = field(default_factory=list)
+    fields: dict[str, str] = field(default_factory=dict)  # M46：字段名 → 类型简单名
 
 
 @dataclass
@@ -108,7 +112,7 @@ class CodeChunkSpec:
     keywords: list[str]
     token_count: int
     git_commit_hash: str
-    calls: list[str]                     # 供后续 call_graph 解析（非入库字段）
+    calls: list[tuple[str | None, str]]  # 供后续 call_graph 解析（非入库字段，M46 调用对）
 
 
 @dataclass

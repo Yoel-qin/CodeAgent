@@ -230,7 +230,12 @@ def _parse_method(method_node, class_name: str, src: bytes) -> CodeMethod:
     start_node = _comment_node_before(method_node) if javadoc else method_node
     start_line = (start_node.start_point[0] + 1) if start_node else (method_node.start_point[0] + 1)
     end_line = method_node.end_point[0] + 1
-    source = _text(src, start_node if start_node else method_node) if javadoc else _text(src, method_node)
+    # M46 修复：带 javadoc 时 source 必须取「注释起点 → 方法终点」的跨度——
+    # 旧实现只取注释节点文本，方法体/签名全丢（重载 javadoc 相同 → content 全同 → chunk_id 撞 PK）。
+    if javadoc and start_node is not None:
+        source = src[start_node.start_byte:method_node.end_byte].decode("utf-8", "replace")
+    else:
+        source = _text(src, method_node)
 
     body_node = method_node.child_by_field_name("body")
     calls = _extract_calls(body_node, src)

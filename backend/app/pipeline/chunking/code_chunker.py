@@ -73,6 +73,9 @@ def _build_method_spec(pf: ParsedCodeFile, cls_name: str, cls_implements: list[s
                        chunk_id: str | None = None) -> CodeChunkSpec:
     if chunk_id is None:
         chunk_id = f"code_{_safe(cls_name)}_{_safe(m.name)}_{short_hash(content)}"
+    # M46 防御：列宽 String(512)——超长签名/锚键截断（MQClientAPIImpl.sendMessage 524 字符实锤）
+    sig512 = (m.signature or "")[:512]
+    anchor512 = (make_anchor_key(cls_name, m.name) or "")[:512]
     # M46：m.calls 是 (receiver, 方法名) 对——receiver 变量名无语义价值，只取方法名进 keywords
     identifiers = [name for _, name in m.calls] + list(m.parameters) + list(m.annotations)
     return CodeChunkSpec(
@@ -83,7 +86,7 @@ def _build_method_spec(pf: ParsedCodeFile, cls_name: str, cls_implements: list[s
         chunk_type=chunk_type,
         class_name=cls_name,
         method_name=m.name,
-        method_signature=m.signature,
+        method_signature=sig512,
         access_modifier=_access(m.modifiers),
         return_type=m.return_type,
         start_line=m.start_line,
@@ -96,7 +99,7 @@ def _build_method_spec(pf: ParsedCodeFile, cls_name: str, cls_implements: list[s
         implements_interface=",".join(cls_implements) or None,
         extends_class=cls_extends,
         type_parameters=[],
-        code_anchor_key=make_anchor_key(cls_name, m.name),
+        code_anchor_key=anchor512,
         keywords=extract_keywords(
             class_name=cls_name, method_name=m.name,
             identifiers=identifiers, annotations=m.annotations,
@@ -194,6 +197,23 @@ def chunk_code_file(pf: ParsedCodeFile, *, commit_hash: str | None = None,
             continue
         for m in cls.methods:
             specs.extend(_method_chunk(pf, cls.name, cls.interfaces, cls.superclass, m, ch))
+    return _dedup_ids(specs)
+
+
+def _dedup_ids(specs: list[CodeChunkSpec]) -> list[CodeChunkSpec]:
+    """M46 兜底：同文件内极端同 content（如两个真空方法体 + 相同 javadoc）仍会同 chunk_id
+    → 追加 _r{n} 后缀消歧，避免同批 INSERT 撞 pk_code_chunks。"""
+    used: dict[str, int] = {}
+    for s in specs:
+        cid = s.chunk_id
+        n = used.get(cid, 0)
+        if n:
+            k, new = n, f"{cid}_r{n}"
+            while new in used:
+                k += 1
+                new = f"{cid}_r{k}"
+            s.chunk_id = new
+        used[s.chunk_id] = used.get(s.chunk_id, 0) + 1
     return specs
 
 

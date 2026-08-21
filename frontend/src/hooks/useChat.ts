@@ -74,11 +74,11 @@ export function useChat() {
     setMessages((arr) => arr.map((m) => (m.id === id ? fn(m) : m)));
 
   const send = useCallback(
-    async (query: string, agent: string) => {
+    async (query: string) => {
       const q = query.trim();
       if (!q || streaming) return;
       const userMsg: ChatMessage = {
-        id: uid(), role: "user", content: q, citations: [], agent, createdAt: Date.now(),
+        id: uid(), role: "user", content: q, citations: [], createdAt: Date.now(),
       };
       const aiId = uid();
       const aiMsg: ChatMessage = {
@@ -91,7 +91,8 @@ export function useChat() {
       ctrl.current = ac;
       try {
         await streamChat(
-          { query: q, agent_type: agent, top_k: 8, conversation_id: conversationId ?? undefined },
+          // 不传 agent_type：统一由后端 langgraph 意图识别路由（legacy 引擎下本就忽略该字段）
+          { query: q, top_k: 8, conversation_id: conversationId ?? undefined },
           {
             onConversation: (info) => {
               const c = info as { conversation_id?: string; title?: string };

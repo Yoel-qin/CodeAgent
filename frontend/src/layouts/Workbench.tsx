@@ -2,14 +2,12 @@ import { useEffect, useMemo } from "react";
 import { Layout, Menu, Input, Space, Tag, Typography, theme, type MenuProps } from "antd";
 import {
   MessageOutlined,
-  FolderOutlined,
   FileTextOutlined,
   ApartmentOutlined,
   SyncOutlined,
   RobotOutlined,
   WarningOutlined,
   DashboardOutlined,
-  SettingOutlined,
   SearchOutlined,
   BarChartOutlined,
   LogoutOutlined,
@@ -32,7 +30,6 @@ const navItems = [
     type: "group" as const,
     children: [
       { key: "/chat", label: "智能问答", icon: <MessageOutlined /> },
-      { key: "/code", label: "代码浏览", icon: <FolderOutlined /> },
       { key: "/documents", label: "文档管理", icon: <FileTextOutlined /> },
       { key: "/graph", label: "知识图谱", icon: <ApartmentOutlined /> },
     ],
@@ -47,7 +44,6 @@ const navItems = [
       { key: "/staleness", label: "腐化审批", icon: <WarningOutlined /> },
       { key: "/monitor", label: "系统监控", icon: <DashboardOutlined /> },
       { key: "/eval", label: "检索评测", icon: <BarChartOutlined /> },
-      { key: "/settings", label: "系统设置", icon: <SettingOutlined /> },
     ],
   },
 ];
@@ -125,10 +121,6 @@ export default function Workbench() {
           {ok ? "● 索引正常" : health ? "● 部分降级" : "● 连接中"}
         </Tag>
         <RobotOutlined style={{ fontSize: 16, cursor: "pointer" }} />
-        <SettingOutlined
-          style={{ fontSize: 16, cursor: "pointer" }}
-          onClick={() => navigate("/settings")}
-        />
       </Header>
 
       <Layout>

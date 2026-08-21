@@ -26,7 +26,6 @@ const NAV_COMMANDS: Cmd[] = [
   { key: "/staleness", label: "腐化审批" },
   { key: "/monitor", label: "系统监控" },
   { key: "/eval", label: "检索评测" },
-  { key: "/settings", label: "系统设置" },
 ];
 
 type Entry = { kind: "nav"; cmd: Cmd } | { kind: "kb"; item: SearchItem };

@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import {
   Input,
   Button,
-  Select,
   Space,
   Typography,
   Empty,
@@ -33,15 +32,16 @@ import Suggestions from "../components/chat/Suggestions";
 const { TextArea } = Input;
 const { Text } = Typography;
 
-const AGENTS = [
-  { value: "CODE_UNDERSTAND", label: "代码理解 Agent" },
-  { value: "DOC_ANSWER", label: "文档问答 Agent" },
-  { value: "CHANGE_IMPACT", label: "变更影响 Agent" },
-  { value: "BUG_DIAGNOSIS", label: "缺陷诊断 Agent" },
-  { value: "CODE_REVIEW", label: "代码审查 Agent" }, // M11：主动评估代码质量/改进建议
-  { value: "TEST_GENERATION", label: "测试生成 Agent" }, // M12：为方法生成 JUnit 单元测试
-  { value: "DOC_MAINTAIN", label: "文档维护 Agent" }, // HITL（M10）：人在回路审批
-];
+// 前端不再手动选择 Agent，统一走后端意图识别路由；此映射仅用于历史消息 agent_type 的标签回显。
+const AGENT_LABELS: Record<string, string> = {
+  CODE_UNDERSTAND: "代码理解",
+  DOC_ANSWER: "文档问答",
+  CHANGE_IMPACT: "变更影响",
+  BUG_DIAGNOSIS: "缺陷诊断",
+  CODE_REVIEW: "代码审查", // M11：主动评估代码质量/改进建议
+  TEST_GENERATION: "测试生成", // M12：为方法生成 JUnit 单元测试
+  DOC_MAINTAIN: "文档维护", // HITL（M10）：人在回路审批
+};
 
 export default function ChatPage() {
   const { token } = theme.useToken();
@@ -49,7 +49,6 @@ export default function ChatPage() {
     messages, streaming, send, resume, stop, clear,
     conversationId, conversationTitle, loadConversation, newConversation, setFeedback,
   } = useChat();
-  const [agent, setAgent] = useState("CODE_UNDERSTAND");
   const [value, setValue] = useState("");
   const [drawerMsgId, setDrawerMsgId] = useState<string | null>(null);
   const [hitlComment, setHitlComment] = useState("");
@@ -65,7 +64,7 @@ export default function ChatPage() {
     const text = (q ?? value).trim();
     if (!text || streaming) return;
     setValue("");
-    void send(text, agent);
+    void send(text);
   };
 
   const lastAssistant = useMemo(() => {
@@ -167,7 +166,6 @@ export default function ChatPage() {
           }}
         >
           <Space.Compact style={{ width: "100%" }}>
-            <Select value={agent} onChange={setAgent} options={AGENTS} style={{ width: 190 }} />
             <TextArea
               value={value}
               onChange={(e) => setValue(e.target.value)}
@@ -197,7 +195,7 @@ export default function ChatPage() {
               <Button size="small" icon={<DeleteOutlined />} onClick={clear} disabled={streaming || !messages.length} />
             </Tooltip>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              CodeRAG · RRF + 精排检索增强生成
+              CodeRAG · 意图识别自动路由 · RRF + 精排检索增强生成
               {conversationTitle ? ` · ${conversationTitle}` : ""}
             </Text>
           </Space>
@@ -301,7 +299,7 @@ function MessageRow({
           </>
         ) : (
           <>
-            <RobotOutlined /> {m.agent ? AGENTS.find((a) => a.value === m.agent)?.label ?? "助手" : "助手"}
+            <RobotOutlined /> {m.agent ? AGENT_LABELS[m.agent] ?? "助手" : "助手"}
           </>
         )}
         {m.streaming && " · 生成中…"}

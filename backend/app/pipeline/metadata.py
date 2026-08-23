@@ -109,3 +109,29 @@ def approx_token_count(text: str) -> int:
     words = len(text.split())
     by_char = len(text) // 4
     return max(int(words * 1.3), by_char, 1)
+
+
+# ---------------------------------------------------------------------------
+# M31：代码源文本中的中文注释抽取（ES chinese_comment 字段用，见 spec §3.5）
+# ---------------------------------------------------------------------------
+_BLOCK_COMMENT_RE = re.compile(r"/\*+.*?\*+/", re.DOTALL)
+_LINE_COMMENT_RE = re.compile(r"//[^\n]*")
+_CJK_RE = re.compile(r"[一-鿿]")  # CJK 统一表意文字（一-鿿）
+
+
+def extract_chinese_comment(source: str, max_chars: int = 2000) -> str:
+    """抽取源文本注释段（行注释 + 块注释/javadoc）中**含 CJK** 的行，\n 连接、截断。
+
+    供 ES ``chinese_comment`` 字段用——中文注释独立成字段后 IK 分词 + 检索期 boost 2.0，
+    修复「javadoc 根本不进 ES」缺口（M31 spec §1.3/§3.5）。doc chunk 不调用
+    （其 content 本身即中文，IK 直接受益）。纯函数，代码侧与 rebuild 侧同源。
+    """
+    if not source:
+        return ""
+    segments = _BLOCK_COMMENT_RE.findall(source) + _LINE_COMMENT_RE.findall(source)
+    lines: list[str] = []
+    for seg in segments:
+        for ln in seg.splitlines():
+            if _CJK_RE.search(ln):
+                lines.append(ln.strip())
+    return "\n".join(lines)[:max_chars]

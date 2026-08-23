@@ -44,6 +44,10 @@ class Settings(BaseSettings):
 
     # ---- Elasticsearch ----
     es_url: str = "http://localhost:9200"
+    # M31：ES BM25 路换 IK 分词（content=ik_max_word/ik_smart + content.code 子字段拆 camelCase
+    # + chinese_comment 注释字段 boost）。on 前须先跑 scripts/install_es_plugins.py 装插件，
+    # 否则带 ik analyzer 的索引创建 400、BM25 路降级为空（软失败不崩）。on 后需 rebuild_es_index.py。
+    es_ik_enabled: bool = False
 
     # ---- LLM（默认走 API）----
     llm_provider: str = "deepseek"

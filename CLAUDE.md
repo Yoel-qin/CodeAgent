@@ -58,6 +58,10 @@ uv run python scripts/ingest_docs.py  --repo ../data/repo/sample     # markdown
 # Smoketest external providers:
 uv run python scripts/llm_ping.py && uv run python scripts/embedding_ping.py
 
+# ES IK analyzer (M31, one-time install + index rebuild)
+uv run python scripts/install_es_plugins.py                         # 一次性安装 IK 分词插件到 ES
+ES_IK_ENABLED=1 uv run python scripts/rebuild_es_index.py       # 索引升级为 IK mapping；ES_IK_ENABLED=0 回退
+
 # Retrieval evaluation / A-B ablation / dual-code BGE-M3 mirror (from backend/)
 uv run python scripts/eval_retrieval.py --validate                          # check eval-set anchors resolve (no retrieval)
 uv run python scripts/eval_retrieval.py --top-k 10 --rewrite off --json     # Recall@K/MRR/NDCG over the real funnel
@@ -89,6 +93,7 @@ Missing API keys **degrade gracefully, they don't crash**: empty `LLM_API_KEY` �
 - `QA_CACHE_ENABLED` (default off) + `QA_CACHE_TTL_SECONDS` (3600) + `EMBED_CACHE_TTL_SECONDS` (86400) — M42 Redis caches via `clients/cache_client.py` (process singleton, soft-fail: Redis down = cache miss, never breaks a request): exact-match **QA cache** (query → answer+citations, written only after a fully successful generation; a hit replays the identical SSE contract on both engines — legacy short-circuits in `chat_service`, langgraph replays at `retrieve` + short-circuits `generate`, hit-state travels in `configurable`, not checkpoint state) and **query-embedding exact-match cache** (query → vector; an all-None embedding is never cached).
 - `MODEL_ROUTES` (默认空) — M44 三档端点路由 JSON，如 `{"routing":{"base_url":"http://localhost:8000/v1","api_key":"EMPTY","model":"qwen2.5-7b-instruct"}}`；空 = 三档回落 `llm_*`（含 M42 `LLM_MODEL_{ROUTING,EXTRACTION,REASONING}` 名字链）；坏 JSON/未知档位 log 忽略不崩 startup。
 - `RBAC_ENABLED` (default off) + `JWT_SECRET` (on 时必填, 空→startup fail-fast) + `JWT_EXPIRE_MINUTES` (720) — M45 RBAC：on 时全部 API 需 Bearer JWT（public：/health、/v1、/v1/auth/login）；`roles.allowed_kinds` 过滤检索（external 不见 code chunk，前置穿透 4 路+RRF 兜底）、`roles.endpoint_classes` 按 router 归口（chat/search/graph/readops/writeops）、对话按 `conversations.user_id` 属主隔离（非属主 404，admin 全见）；off → 匿名伪用户透传零行为变更。用户管理：`scripts/create_user.py`。
+- `ES_IK_ENABLED` (default off) — M31 ES BM25 路 IK 分词（`content` 字段 `ik_max_word`/`ik_smart` + `content.code` 子字段 `word_delimiter_graph` 拆 camelCase + `chinese_comment` 注释字段 boost 2.0）；on 需 `scripts/install_es_plugins.py` 装 IK 插件（infinilabs 发布中心直连）+ `scripts/rebuild_es_index.py` 重建索引，旧索引 + on 时未映射子字段 0 命中安全过渡；off 逐字节零行为变更。
 - Document-self-healing / ops toggles (all default *off* or safe in dev): `MAINTENANCE_ENABLED`, `HITL_INTERRUPT_TIMEOUT_HOURS`, `CHECKPOINT_RETENTION_DAYS`, `STALENESS_SWEEP_ENABLED`+`_INTERVAL_SECONDS`, `SWEEP_REWRITE_*`, `EAGER_REEMBED_ENABLED` (default on), `DOC_GIT_ENABLED`/`DOC_GIT_PUSH_ENABLED` (real git PR landing is opt-in).
 - Domain knowledge packs (`app/domain_packs/`, M36–M38): **no boolean opt-in switch** — the mechanism is inherently opt-in (empty `DOMAIN_PACKS_DIR` / no repo match = no activation = zero behavior change). `DOMAIN_PACKS_DIR` (default `"domain_packs"`, relative to the `backend/` run dir) is the scan dir; `DOMAIN_PACK_DEFAULT_REPO` (default `""`) is the fallback repo identifier when a conversation has no `target_repo` (else it falls back to `REPO_PATH`). Packs load once at lifespan startup; a malformed pack is logged + skipped, never crashes startup.
 
@@ -116,7 +121,7 @@ Layered FastAPI app under `backend/app/`:
 **Retrieval pipeline** (`retrieval/pipeline.py`) — three independent recall paths, each wrapped in its own try/except so a failing path degrades to empty rather than breaking the request:
 
 1. **Vector** (`vector_search`): `unified` → query embedded once (BGE-M3) → Milvus `coderag_vectors` (HNSW COSINE 1024-d, kind filter); `dual` → query embedded by **both** CodeBERT (→ `code_vectors` 768-d) and BGE-M3 (→ `doc_vectors` 1024-d), two hit lists merged. In `dual` the already-computed BGE-M3 query vector is **also** searched against a code mirror collection `code_vectors_bge` (M25; gated by `DUAL_CODE_BGEM3_ENABLED`, default on) — this fixes CodeBERT's Chinese-NL blindness, which otherwise left vector-only Recall@10 at ~0.11. Needs embedding key (and, in `dual`, the `model_server`).
-2. **BM25** (`bm25_search` → Elasticsearch) — falls back to **PG lexical** (`lexical_search`) if ES returns nothing.
+2. **BM25** (`bm25_search` → Elasticsearch) — falls back to **PG lexical** (`lexical_search`) if ES returns nothing. M31 起 `ES_IK_ENABLED` on 时使用 IK 分词器（`content` 字段 ik_max_word/ik_smart + `content.code` 子字段 word_delimiter_graph 拆 camelCase + `chinese_comment` 注释字段 boost 2.0，查询侧 4 子句 should），off 时仍用 ES 标准 analyzer。
 3. **Graph traversal** (`graph_traverse` → PG `call_graph` BFS), seeded from the top code hits of paths 1+2. (Graph *vectors* / path C have been dropped.) `call_graph` edges are built by `relations.build_call_graph` (M46 起跨类四步解析：receiver 定型[参数>字段>局部变量，miss 则类名 fallback=静态调用] → 类型简单名匹配 → implements/extends 闭包分发到子类实现 → this/super/无 receiver 同类；RocketMQ 4.9.8 实测 14801 边、79.6% 跨类)。已知漏边：链式调用返回值上的方法（局部推断够不着）、try-with-resources/lambda 变量。
 
 **Stage 0** (`query_understanding`): rule-based term extraction (jieba for Chinese + camelCase split) **+ an LLM query rewrite** (`rewrite_query`: semantic rewrite + extra keywords; M44 重接 extraction 档 — 默认全 DeepSeek 下与旧 reasoning 同端点). If the LLM is unconfigured/fails, it degrades to the original query — never breaks the path. The rewritten query feeds vector+BM25; merged terms feed lexical.
@@ -228,7 +233,7 @@ React 18 + TS + Vite + AntD 5 + Zustand + React Router 6 (`frontend/src/`). `lay
 
 - `docs/项目状态.md` — concise status snapshot (trust this over README for current state).
 - `docs/开发清单.md` — granular phase-by-phase progress ledger for M1–M29 (the authoritative "what's done" list).
-- `docs/重构开发清单.md` — the **M30+ refactor ledger** (six stages: retrieval enhancement, Agent layer evolution [AgentRegistry/CitationEnforcer/collab], domain packs, eval expansion, harness, model+RBAC). The M30 sparse-vector path was empirically disproven (SiliconFlow `/embeddings` returns dense only); M31/M32 are deferred until a real large repo is ingested.
+- `docs/重构开发清单.md` — the **M30+ refactor ledger** (six stages: retrieval enhancement, Agent layer evolution [AgentRegistry/CitationEnforcer/collab], domain packs, eval expansion, harness, model+RBAC). The M30 sparse-vector path was empirically disproven (SiliconFlow `/embeddings` returns dense only); M31 (ES IK 分词) 已实施但验收门 1/2/3 未过（默认保持 off）；M32 deferred.
 - `docs/开发实施计划与方案.md` — implementation plan / phase breakdown.
 - `docs/待确认问题清单.md` — confirmed/open design decisions.
 - `docs/嵌入向量方案.md` — the dual-encoder 方案一 analysis (落地说明 at top maps to the `EMBEDDING_STRATEGY` switch).

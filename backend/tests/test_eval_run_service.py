@@ -250,3 +250,42 @@ async def test_run_diag_and_persist_failed(monkeypatch):
     assert run.status == "FAILED"
     assert run.aggregate is None
     assert "kaboom" in run.error_message
+
+
+# ---- run_and_persist: tags 子集过滤（M31）----
+
+
+async def test_run_and_persist_tags_filters_queries(monkeypatch):
+    """tags 非 None → 只保留 tag 交集非空的 query；n_queries/config["tags"] 同步。"""
+    from app.eval.eval_service import EvalQuery
+    report = _canned_report()
+    captured = {}
+
+    async def fake_run_eval(session, queries, **kw):
+        captured["ids"] = [q.id for q in queries]
+        return report
+
+    monkeypatch.setattr(svc, "run_eval", fake_run_eval)
+    monkeypatch.setattr(svc, "load_eval_queries", lambda p: [
+        EvalQuery(id="rm01", text="甲", relevant=["A.a"], tags=["rocketmq"]),
+        EvalQuery(id="a01", text="乙", relevant=["B.b"]),
+        EvalQuery(id="rm02", text="丙", relevant=["C.c"], tags=["rocketmq", "other"]),
+    ])
+    run = await svc.run_and_persist(None, tags=["rocketmq"], persist=False)
+
+    assert captured["ids"] == ["rm01", "rm02"]
+    assert run.n_queries == 2
+    assert run.config["tags"] == ["rocketmq"]
+
+
+async def test_run_and_persist_tags_empty_filter_raises(monkeypatch):
+    """tags 过滤后无 query → ValueError（配置错误，不落 FAILED 行）。"""
+    import pytest
+
+    from app.eval.eval_service import EvalQuery
+
+    monkeypatch.setattr(svc, "load_eval_queries", lambda p: [
+        EvalQuery(id="a01", text="乙", relevant=["B.b"]),
+    ])
+    with pytest.raises(ValueError):
+        await svc.run_and_persist(None, tags=["rocketmq"], persist=False)

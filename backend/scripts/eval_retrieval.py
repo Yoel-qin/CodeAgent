@@ -17,6 +17,9 @@
   # dump 完整报告（含逐 query 明细）到文件
   uv run python scripts/eval_retrieval.py --out eval_report.json
 
+  # 按 tags 子集评测（M31 RocketMQ 中文子集）+ 消融单路（词法单路：关 vector/graph）
+  uv run python scripts/eval_retrieval.py --tags rocketmq --ablation '{"vector":false,"graph":false}'
+
 前置：评测集（backend/eval/eval_set.yaml）引用的样本仓库须先入库
 （见 eval_set.yaml 的 target_repos）。未解析的 query 会被警告并跳过。
 
@@ -109,10 +112,24 @@ async def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--validate", action="store_true", help="仅校验评测集锚命中率，不调检索")
     ap.add_argument("--no-persist", action="store_true",
                     help="不落 eval_runs（ephemeral，仅 stdout/文件）；默认持久化为 trigger=cli 行")
+    ap.add_argument("--tags", default=None,
+                    help="按 tags 过滤评测集（逗号分隔，如 rocketmq；M31）")
+    ap.add_argument("--ablation", default=None,
+                    help="消融 JSON，如 '{\"vector\":false,\"graph\":false}'（M29 通道，M31 CLI 化）")
     args = ap.parse_args(argv)
 
     _, queries = _load_eval_set(args.eval_set)
     print(f"评测集: {args.eval_set}  ({len(queries)} queries)")
+
+    tags = None
+    if args.tags:
+        tags = [t.strip() for t in args.tags.split(",") if t.strip()]
+    ablation = None
+    if args.ablation:
+        try:
+            ablation = json.loads(args.ablation)
+        except json.JSONDecodeError as e:
+            ap.error(f"--ablation 非法 JSON: {e}")
 
     run = None
     try:
@@ -122,6 +139,7 @@ async def main(argv: list[str] | None = None) -> int:
             run = await eval_run_service.run_and_persist(
                 session, top_k=args.top_k, rewrite=args.rewrite, eval_set=args.eval_set,
                 trigger="cli", persist=not args.no_persist,
+                tags=tags, ablation=ablation,
             )
     finally:
         await engine.dispose()

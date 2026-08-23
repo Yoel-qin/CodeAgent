@@ -104,6 +104,7 @@ async def run_and_persist(
     rewrite: str = "off",
     eval_set: str | None = None,
     ablation: dict[str, bool] | None = None,
+    tags: list[str] | None = None,
     trigger: str = "api",
     persist: bool = True,
 ) -> EvalRun:
@@ -112,9 +113,18 @@ async def run_and_persist(
     ``ablation``（M29）：可选 ``AblationConfig`` 子集（如 ``{"rerank": False}``），经 ``recall_fn``
     注入跑单变体——让单次评测也能探单一环节，落 ``config["ablation"]``。``None`` = 全开 = 生产
     （逐字同 M27 行为）。
+
+    ``tags``（M31）：非 None 时只保留 ``EvalQuery.tags`` 与之交非空的 query（子集评测，
+    如 RocketMQ 中文子集 ``["rocketmq"]``）；过滤后为空 → ValueError（配置错误语义）。
+    ``config["tags"]`` 记录子集标签。
     """
     path = eval_set or str(DEFAULT_EVAL_SET)
     queries = load_eval_queries(path)
+    if tags:
+        tset = set(tags)
+        queries = [q for q in queries if tset.intersection(q.tags)]
+        if not queries:
+            raise ValueError(f"tags={tags} 过滤后无可评 query（评测集 {path}）")
     started = datetime.now(UTC)
 
     run = EvalRun(
@@ -131,6 +141,7 @@ async def run_and_persist(
             "eval_set": path,
             "embedding_strategy": settings.embedding_strategy,
             **({"ablation": ablation} if ablation else {}),
+            **({"tags": tags} if tags else {}),
         },
     )
     if persist:

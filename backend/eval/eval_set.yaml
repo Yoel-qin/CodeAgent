@@ -20,6 +20,7 @@ version: 1
 target_repos:
   - { repo: "../data/repo/gitdemo", module: demo, note: "Account / Profile 方法级 chunk" }
   - { repo: "../data/repo/sample", module: demo, note: "Foo 整文件 chunk" }
+  - { repo: "../data/repo/rocketmq", module: rocketmq, note: "M46 全量 1059 文件；rm* 子集锚点库（M31）" }
 
 queries:
   # ---- Account：单方法直查 ----
@@ -121,3 +122,29 @@ queries:
   - { id: cc01, text: "Account 取款 withdraw 时会触发什么通知", relevant: ["Account.notifyOverdraft"], tags: ["call_chain"] }
   - { id: cc02, text: "Profile 设置邮箱 setEmail 会校验哪个字段", relevant: ["Profile.isEmpty"], tags: ["call_chain"] }
   - { id: cc03, text: "Profile 摘要 summary 调用的格式化方法", relevant: ["Profile.formatName"], tags: ["call_chain"] }
+  # ---- M31：RocketMQ 中文检索子集（tags: [rocketmq]；锚点 2026-08-23 实库核实存在）----
+  - { id: rm01, text: "RocketMQ 默认生产者实现类是怎么初始化的", relevant: ["DefaultMQProducerImpl.DefaultMQProducerImpl"], tags: ["rocketmq"] }
+  - { id: rm02, text: "生产者发送消息 send 的核心流程", relevant: ["DefaultMQProducerImpl.send"], tags: ["rocketmq"] }
+  - { id: rm03, text: "producer 发送消息的默认实现逻辑", relevant: ["DefaultMQProducerImpl.sendDefaultImpl"], tags: ["rocketmq"] }
+  - { id: rm04, text: "生产者启动时做了哪些初始化", relevant: ["DefaultMQProducerImpl.start"], tags: ["rocketmq"] }
+  - { id: rm05, text: "生产者怎么关闭并释放资源", relevant: ["DefaultMQProducerImpl.shutdown"], tags: ["rocketmq"] }
+  - { id: rm06, text: "producer 单向发送 oneway 不等待结果", relevant: ["DefaultMQProducerImpl.sendOneway"], tags: ["rocketmq"] }
+  - { id: rm07, text: "客户端底层怎么把消息发给 broker", relevant: ["MQClientAPIImpl.sendMessage"], tags: ["rocketmq"] }
+  - { id: rm08, text: "发送消息的异步底层调用", relevant: ["MQClientAPIImpl.sendMessageAsync"], tags: ["rocketmq"] }
+  - { id: rm09, text: "消息是怎么被编码成字节流的", relevant: ["MessageDecoder.encode"], tags: ["rocketmq"] }
+  - { id: rm10, text: "从字节流解码还原消息内容", relevant: ["MessageDecoder.decode"], tags: ["rocketmq"] }
+  - { id: rm11, text: "消息属性和字符串之间怎么互相转换", relevant: ["MessageDecoder.messageProperties2String", "MessageDecoder.decodeProperties"], tags: ["rocketmq"] }
+  - { id: rm12, text: "重试主题的 topic 名字怎么取", relevant: ["MixAll.getRetryTopic"], tags: ["rocketmq"] }
+  - { id: rm13, text: "死信队列 topic 怎么构造", relevant: ["MixAll.getDLQTopic"], tags: ["rocketmq"] }
+  - { id: rm14, text: "消费者拉取消息的入口逻辑", relevant: ["DefaultMQPushConsumerImpl.pullMessage"], tags: ["rocketmq"] }
+  - { id: rm15, text: "broker 处理拉取请求的处理器", relevant: ["PullMessageProcessor.processRequest"], tags: ["rocketmq"] }
+  - { id: rm16, text: "broker 异步处理生产者发来的消息", relevant: ["SendMessageProcessor.asyncSendMessage"], tags: ["rocketmq"] }
+  - { id: rm17, text: "批量消息怎么异步写入存储", relevant: ["SendMessageProcessor.asyncSendBatchMessage"], tags: ["rocketmq"] }
+  - { id: rm18, text: "消费重试和死信的兜底处理", relevant: ["SendMessageProcessor.handleRetryAndDLQ"], tags: ["rocketmq"] }
+  - { id: rm19, text: "客户端怎么从 nameserver 更新 topic 路由", relevant: ["MQClientInstance.updateTopicRouteInfoFromNameServer"], tags: ["rocketmq"] }
+  - { id: rm20, text: "按名字查找生产者实例", relevant: ["MQClientInstance.selectProducer"], tags: ["rocketmq"] }
+  - { id: rm21, text: "VIP 通道的端口怎么换算", relevant: ["MixAll.brokerVIPChannel"], tags: ["rocketmq"] }
+  - { id: rm22, text: "创建 topic 的底层请求", relevant: ["MQClientAPIImpl.createTopic"], tags: ["rocketmq"] }
+  - { id: rm23, text: "默认生产者 DefaultMQProducer 的配置项有哪些", relevant: ["DefaultMQProducer"], tags: ["rocketmq"] }
+  - { id: rm24, text: "消息实体 MessageExt 有哪些字段", relevant: ["MessageExt"], tags: ["rocketmq"] }
+  - { id: rm25, text: "消费者启动时做了什么", relevant: ["DefaultMQPushConsumerImpl.start"], tags: ["rocketmq"] }

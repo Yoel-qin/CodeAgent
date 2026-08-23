@@ -16,7 +16,8 @@ _RELEVANT_RE = re.compile(r"^\w+(\.\w+)?$")
 
 def test_eval_set_well_formed():
     queries = load_eval_queries(str(_EVAL_SET))
-    assert 80 <= len(queries) <= 100, f"expected ~85 queries, got {len(queries)}"
+    assert 80 <= len(queries) <= 120, \
+        f"expected 85 gitdemo/sample + 25 rocketmq (M31), got {len(queries)}"
 
     ids = [q.id for q in queries]
     assert len(ids) == len(set(ids)), "duplicate query ids"
@@ -37,3 +38,11 @@ def test_eval_set_qa_structure():
     ids = [q.id for q in qs]
     assert len(ids) == len(set(ids))  # 无重复
     assert all(q.text and isinstance(q.scoring_hints, dict) for q in qs)
+
+
+def test_eval_set_rocketmq_subset():
+    """M31 rocketmq 中文子集：25 条、全带 rocketmq tag、id 前缀 rm。"""
+    queries = load_eval_queries(str(_EVAL_SET))
+    rm = [q for q in queries if "rocketmq" in q.tags]
+    assert len(rm) == 25
+    assert all(q.id.startswith("rm") for q in rm)

@@ -69,3 +69,6 @@ logs/
 
 # Internal design / progress docs directory (kept local, not pushed)
 docs/
+
+# ---- ES plugins (installed by scripts/install_es_plugins.py, binary blobs) ----
+docker/es/plugins/

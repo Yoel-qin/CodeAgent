@@ -71,6 +71,7 @@ services:
       ES_JAVA_OPTS: "-Xms512m -Xmx512m"
     volumes:
       - es_data:/usr/share/elasticsearch/data
+      - ./docker/es/plugins:/usr/share/elasticsearch/plugins
     ports:
       - "${ES_PORT:-9200}:9200"
     healthcheck:

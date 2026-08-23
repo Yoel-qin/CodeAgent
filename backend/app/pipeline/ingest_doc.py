@@ -105,11 +105,8 @@ def _to_orm(spec, file_id: int) -> DocChunk:
 def _index_external(session: Session, specs, file_path: str) -> None:
     """同步 ES 全文 + Milvus 向量（best-effort，自吞；与 Phase 1 行为一致）。"""
     try:
-        indexing.index_chunks_to_es(file_path, [{
-            "chunk_id": s.chunk_id, "kind": "doc", "content": s.content,
-            "keywords": s.keywords, "class_name": None, "method_name": None,
-            "heading_path": s.heading_path, "file_path": file_path,
-        } for s in specs])
+        indexing.index_chunks_to_es(
+            file_path, [indexing.build_doc_es_doc(s, file_path) for s in specs])
     except Exception:
         pass
     try:

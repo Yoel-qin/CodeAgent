@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.clients import embedding_client, es_client, milvus_client
 from app.core.config import settings
 from app.db.models import CodeChunk, DocChunk
+from app.pipeline.metadata import extract_chinese_comment
 
 _CHUNK_MODEL = {"code": CodeChunk, "doc": DocChunk}
 
@@ -59,6 +60,34 @@ def _embed_enabled_for(strategy: str, kind: str) -> bool:
         # unified 下不会出现 code_bge（collection_for 会兜底到 coderag_vectors），故统一返 enabled()。
         return strategy == "dual" and settings.dual_code_bgem3_enabled and embedding_client.enabled()
     return embedding_client.enabled()
+
+
+def build_code_es_doc(spec, file_path: str) -> dict:
+    """code chunk → ES 全文索引 doc（ingest 与 rebuild_es_index 同源，M31 spec §3.5）。
+
+    duck-typed：吃 parser spec 或 ORM ``CodeChunk``（均暴露 chunk_id/content/keywords/
+    class_name/method_name）。``ES_IK_ENABLED`` on 时附 ``chinese_comment``
+    （``metadata.extract_chinese_comment`` 对 content 抽含 CJK 注释行——M46 后 content
+    为「javadoc 起点→方法终点」跨度，注释天然在内）；off 时不写该键，防旧索引
+    dynamic mapping 自动建字段污染 schema。
+    """
+    doc = {
+        "chunk_id": spec.chunk_id, "kind": "code", "content": spec.content,
+        "keywords": spec.keywords, "class_name": spec.class_name,
+        "method_name": spec.method_name, "heading_path": [], "file_path": file_path,
+    }
+    if settings.es_ik_enabled:
+        doc["chinese_comment"] = extract_chinese_comment(spec.content or "")
+    return doc
+
+
+def build_doc_es_doc(spec, file_path: str) -> dict:
+    """doc chunk → ES doc。content 本身即中文（IK 直接受益），不加 chinese_comment。"""
+    return {
+        "chunk_id": spec.chunk_id, "kind": "doc", "content": spec.content,
+        "keywords": spec.keywords, "class_name": None, "method_name": None,
+        "heading_path": spec.heading_path, "file_path": file_path,
+    }
 
 
 def index_chunks_to_es(file_path: str, docs: list[dict]) -> None:

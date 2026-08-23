@@ -101,11 +101,8 @@ def ingest_java_source(session: Session, *, source: str, file_path: str,
 
     # 同步 ES 全文索引（路径 B；index_chunks_safe 已自吞错误，失败不阻断 PG 写入）
     try:
-        indexing.index_chunks_to_es(file_path, [{
-            "chunk_id": s.chunk_id, "kind": "code", "content": s.content,
-            "keywords": s.keywords, "class_name": s.class_name,
-            "method_name": s.method_name, "heading_path": [], "file_path": file_path,
-        } for s in specs])
+        indexing.index_chunks_to_es(
+            file_path, [indexing.build_code_es_doc(s, file_path) for s in specs])
     except Exception:
         pass
 

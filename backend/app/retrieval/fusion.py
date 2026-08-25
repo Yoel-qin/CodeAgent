@@ -11,6 +11,7 @@ Reciprocal Rank Fusion：把多路召回结果按各自排名融合，无需校�
 | 向量语义 | 1.0  | vector   | 基准                          |
 | BM25/词法| 0.8  | lexical  | 精确匹配补充（含 PG 词法降级）|
 | 图遍历   | 1.2  | graph    | 确定性关联，权重最高          |
+| 交叉链接 | 1.0  | crosslink | M32 第 5 路：DOC↔CODE 锚点扩展  |
 
 > 图向量（graph_vec，原 Phase 5 路径 C）已于 2026-07-27 移除；保留图遍历（路径 D）。
 """
@@ -21,6 +22,7 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "vector": 1.0,
     "lexical": 0.8,
     "graph": 1.2,
+    "crosslink": 1.0,   # M32：交叉链接第 5 路（默认关；rrf_fuse 缺失路径自动忽略）
 }
 
 

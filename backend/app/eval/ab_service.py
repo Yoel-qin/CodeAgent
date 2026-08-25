@@ -44,8 +44,12 @@ V_VECTOR_ONLY = ABVariant(
     "vector_only", AblationConfig(lexical=False, graph=False), "仅向量（Phase1 单路基线）"
 )
 V_NO_GRAPH = ABVariant("no_graph", AblationConfig(graph=False), "关闭图遍历召回")
+V_NO_CROSSLINK = ABVariant(
+    "no_crosslink", AblationConfig(crosslink=False), "关闭交叉链接第 5 路（M32）"
+)
 
-_VARIANTS: dict[str, ABVariant] = {v.name: v for v in (V_FULL, V_NO_RERANK, V_VECTOR_ONLY, V_NO_GRAPH)}
+_VARIANTS: dict[str, ABVariant] = {v.name: v for v in (
+    V_FULL, V_NO_RERANK, V_VECTOR_ONLY, V_NO_GRAPH, V_NO_CROSSLINK)}
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ DEFAULT_PAIRS: tuple[ABPair, ...] = (
     ABPair("rerank", "精排使精度 +15~25%", "no_rerank", "full", ("precision", "ndcg", "mrr")),
     ABPair("multipath_rrf", "多路+RRF 召回 +10~15%", "vector_only", "full", ("recall",)),
     ABPair("graph", "调用链召回 +20%+", "no_graph", "full", ("recall",)),
+    ABPair("crosslink", "交叉链接第 5 路召回 +5~15%（M32）", "no_crosslink", "full", ("recall",)),
 )
 
 

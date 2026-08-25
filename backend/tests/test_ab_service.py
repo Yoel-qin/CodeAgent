@@ -13,6 +13,7 @@ import pytest
 from app.eval import ab_service
 from app.eval.ab_service import (
     V_FULL,
+    V_NO_CROSSLINK,
     V_NO_GRAPH,
     V_NO_RERANK,
     V_VECTOR_ONLY,
@@ -44,8 +45,10 @@ _CANNED = {
     "no_rerank": (0.70, 0.50, 0.60, 0.70),
     "vector_only": (0.50, 0.60, 0.55, 0.60),
     "no_graph": (0.65, 0.78, 0.80, 0.85),
+    "no_crosslink": (0.68, 0.79, 0.84, 0.89),  # M32：no_crosslink 预期略低于 full
 }
-_AB_TO_NAME = {v.ablation: v.name for v in (V_FULL, V_NO_RERANK, V_VECTOR_ONLY, V_NO_GRAPH)}
+_AB_TO_NAME = {v.ablation: v.name for v in (
+    V_FULL, V_NO_RERANK, V_VECTOR_ONLY, V_NO_GRAPH, V_NO_CROSSLINK)}
 
 
 def _queries() -> list[EvalQuery]:
@@ -136,9 +139,9 @@ async def test_run_ab_dedup_deltas_and_rerank_counts(monkeypatch):
     monkeypatch.setattr(ab_service, "run_eval", fake_run_eval)
     report = await run_ab(None, _queries(), top_k=10, rewrite="off")
 
-    # 4 个唯一变体 → run_eval 恰调 4 次（FULL 三对共享，去重）
-    assert calls["n"] == 4
-    assert set(report.variants) == {"full", "no_rerank", "vector_only", "no_graph"}
+    # 5 个唯一变体 → run_eval 恰调 5 次（FULL 四对共享，去重）
+    assert calls["n"] == 5
+    assert set(report.variants) == {"full", "no_rerank", "vector_only", "no_graph", "no_crosslink"}
 
     rerank = next(p for p in report.pairs if p["name"] == "rerank")
     assert rerank["delta"]["precision"][1] == {"abs": 0.3, "pct": 60.0}   # no_rerank→full
@@ -184,3 +187,17 @@ async def test_run_ab_propagates_per_query(monkeypatch):
     assert report.variants["vector_only"]["per_query"][0]["id"] == "vector_only_q1"
     # 含 per_query 的报告仍可 JSON 序列化
     json.dumps(report.to_dict())
+
+
+def test_crosslink_variant_and_pair_registered():
+    """M32：no_crosslink 变体 + crosslink 预设对注册（ab_eval --pairs crosslink 可用）。"""
+    from app.eval.ab_service import _VARIANTS, DEFAULT_PAIRS
+    v = _VARIANTS["no_crosslink"]
+    assert v.ablation.crosslink is False and v.ablation.graph is True
+    assert any(p.name == "crosslink" and p.baseline == "no_crosslink" and p.treatment == "full"
+               for p in DEFAULT_PAIRS)
+
+
+def test_ablation_config_crosslink_default_true():
+    from app.retrieval.ablation import AblationConfig
+    assert AblationConfig().crosslink is True  # 默认实例 = 生产链路

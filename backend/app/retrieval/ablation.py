@@ -1,11 +1,11 @@
 """A/B 消融开关配置（横切·评测 / 后端设计 Phase 9 M24）。
 
 ``AblationConfig`` 是给 :func:`app.retrieval.pipeline.RetrievalPipeline.recall` 的**可选消融钩子**：
-控制四条可独立开关的检索环节（向量召回 / 词法召回 / 图遍历 / 精排），供检索 A/B 评测
+控制五条可独立开关的检索环节（向量召回 / 词法召回 / 图遍历 / 精排 / 交叉链接），供检索 A/B 评测
 （``app.eval.ab_service``）逐项测 on/off 的 Recall@K / Precision@K / NDCG delta，兑现
 开发清单 §2/§3/§4「需评测集」验收。
 
-默认实例（``AblationConfig()`` / :func:`full`）四项全 True，**与生产链路完全一致**；
+默认实例（``AblationConfig()`` / :func:`full`）五项全 True，**与生产链路完全一致**；
 ``recall(ablation=None)`` 等价于 ``recall(ablation=full())`` —— 守卫代码在生产是死代码，
 零行为变更。A/B 只在评测侧构造非默认实例注入（经 ``run_eval`` 的 ``recall_fn`` DI 接缝）。
 
@@ -31,6 +31,7 @@ class AblationConfig:
     lexical: bool = True
     graph: bool = True
     rerank: bool = True
+    crosslink: bool = True   # M32：交叉链接第 5 路（chunk_relations DOC↔CODE 锚点扩展）
 
 
 def full() -> AblationConfig:

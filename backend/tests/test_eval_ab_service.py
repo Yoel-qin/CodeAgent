@@ -28,7 +28,7 @@ def _ab_report(*, with_diagnose: bool = True) -> ABReport:
         config={"top_k": 10, "rewrite": "off", "n_queries": 2},
         variants={
             "full": {
-                "ablation": {"vector": True, "lexical": True, "graph": True, "rerank": True},
+                "ablation": {"vector": True, "lexical": True, "graph": True, "rerank": True, "crosslink": True},
                 "desc": "全开",
                 "aggregate": full_agg,
                 "n_evaluable": 2,
@@ -38,7 +38,7 @@ def _ab_report(*, with_diagnose: bool = True) -> ABReport:
                 "per_query": list(per_query),
             },
             "no_rerank": {
-                "ablation": {"vector": True, "lexical": True, "graph": True, "rerank": False},
+                "ablation": {"vector": True, "lexical": True, "graph": True, "rerank": False, "crosslink": True},
                 "desc": "关精排",
                 "aggregate": no_agg,
                 "n_evaluable": 2,
@@ -61,7 +61,7 @@ def _ab_report(*, with_diagnose: bool = True) -> ABReport:
 
 
 def test_resolve_pairs_default_and_subset_and_unknown():
-    assert len(svc._resolve_pairs(None)) == 3                      # 默认 3 组
+    assert len(svc._resolve_pairs(None)) == 4                      # M32：默认 4 组（加 crosslink）
     assert [p.name for p in svc._resolve_pairs(["rerank"])] == ["rerank"]
     try:
         svc._resolve_pairs(["bogus"])

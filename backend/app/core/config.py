@@ -49,6 +49,18 @@ class Settings(BaseSettings):
     # 否则带 ik analyzer 的索引创建 400、BM25 路降级为空（软失败不崩）。on 后需 rebuild_es_index.py。
     es_ik_enabled: bool = False
 
+    # ---- M32：注释增强 / 图多跳 / 交叉链接第 5 路（默认全 off = 生产零行为变更）----
+    # comment_enhance：ingest 期规则注释增强（javadoc 前置补漏 + keywords 吸收注释词含中文）。
+    # graph_multihop：图遍历 depth/关系类型过滤（off=现状 depth=1 混合边）；graph_relation_types
+    #   为 CSV 子集 calls,implements,extends,doc_anchor，空=全部（现行为）。
+    # crosslink_recall：交叉链接第 5 召回路（chunk_relations DOC↔CODE 锚点边双向扩展）。
+    comment_enhance_enabled: bool = False
+    graph_multihop_enabled: bool = False
+    graph_traverse_depth: int = 2
+    graph_max_nodes: int = 12
+    graph_relation_types: str = ""
+    crosslink_recall_enabled: bool = False
+
     # ---- LLM（默认走 API）----
     llm_provider: str = "deepseek"
     llm_api_key: str = ""

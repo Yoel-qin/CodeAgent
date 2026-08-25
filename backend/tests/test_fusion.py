@@ -66,3 +66,9 @@ def test_custom_weights_override():
 def test_empty_rankings():
     assert rrf_fuse({}, k=60) == []
     assert rrf_fuse({"vector": []}, k=60) == []
+
+
+def test_default_weights_include_crosslink():
+    """M32：第 5 路权重注册（缺失路径自动忽略的向后兼容由 rrf_fuse 保证）。"""
+    from app.retrieval.fusion import DEFAULT_WEIGHTS
+    assert DEFAULT_WEIGHTS["crosslink"] == 1.0

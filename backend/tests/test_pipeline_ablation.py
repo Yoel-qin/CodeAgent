@@ -35,7 +35,7 @@ def _patch(monkeypatch):
         calls["lexical"] += 1
         return [{"chunk_id": "l1", "kind": "code", "content": "lc", "score": 0.7}]
 
-    async def g_recall(session, seed_ids, *, depth, max_nodes):
+    async def g_recall(session, seed_ids, *, depth, max_nodes, **kw):
         calls["graph"] += 1
         return [{"chunk_id": "g1", "kind": "code", "content": "gc", "score": 0.6}]
 
@@ -118,3 +118,50 @@ async def test_recall_emits_recall_paths_meta(monkeypatch):
     assert meta["recall_paths"]["vector"] == [{"chunk_id": "v1", "kind": "code"}]
     # 既有 count 断言仍成立（加性改动）
     assert meta["recall"] == {"vector": 1, "lexical": 1, "graph": 1}
+
+
+# ---------- M32 ②：多跳接线 ----------
+
+def test_parse_relation_types_rules():
+    from app.retrieval.pipeline import _parse_relation_types
+    assert _parse_relation_types("") is None
+    assert _parse_relation_types("   ") is None
+    assert _parse_relation_types("calls,implements") == ["calls", "implements"]
+    assert _parse_relation_types("calls,bogus") == ["calls"]          # 未知忽略
+    assert _parse_relation_types("bogus,none") is None                # 全无效 → None
+
+
+async def test_multihop_off_calls_graph_recall_with_legacy_kwargs(monkeypatch):
+    """off（默认）：调用参数与旧版完全一致（depth=1/max_nodes=12/无 relation_types）。"""
+    import app.retrieval.pipeline as pm
+
+    captured = {}
+
+    async def g_recall(session, seed_ids, *, depth, max_nodes, **kw):
+        captured.update(depth=depth, max_nodes=max_nodes, kw=kw)
+        return []
+
+    _patch(monkeypatch)  # patch other召回函数（不计数）
+    monkeypatch.setattr(pm, "graph_recall", g_recall)
+    monkeypatch.setattr(pm.settings, "graph_multihop_enabled", False)
+    await pm.pipeline.recall(_FakeSession(), "query", top_k=5, ablation=None, **_KW)
+    assert captured == {"depth": 1, "max_nodes": 12, "kw": {}}
+
+
+async def test_multihop_on_uses_settings(monkeypatch):
+    import app.retrieval.pipeline as pm
+
+    captured = {}
+
+    async def g_recall(session, seed_ids, *, depth, max_nodes, **kw):
+        captured.update(depth=depth, max_nodes=max_nodes, **kw)
+        return []
+
+    _patch(monkeypatch)  # patch other召回函数（不计数）
+    monkeypatch.setattr(pm, "graph_recall", g_recall)
+    monkeypatch.setattr(pm.settings, "graph_multihop_enabled", True)
+    monkeypatch.setattr(pm.settings, "graph_traverse_depth", 3)
+    monkeypatch.setattr(pm.settings, "graph_max_nodes", 40)
+    monkeypatch.setattr(pm.settings, "graph_relation_types", "calls,extends")
+    await pm.pipeline.recall(_FakeSession(), "query", top_k=5, ablation=None, **_KW)
+    assert captured == {"depth": 3, "max_nodes": 40, "relation_types": ["calls", "extends"]}

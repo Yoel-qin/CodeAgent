@@ -30,6 +30,18 @@ from app.retrieval.vector_search import vector_recall
 _SEED_DEPTH = 1
 _GRAPH_MAX_NODES = 12
 _SEED_TOP = 5  # 取代码召回前 N 条作为图遍历种子
+_GRAPH_RELATION_TOKENS = {"calls", "implements", "extends", "doc_anchor"}
+
+
+def _parse_relation_types(csv: str) -> list[str] | None:
+    """GRAPH_RELATION_TYPES CSV → token 列表；空/全无效 → None（=全部，现行为）。未知 token 告警忽略。"""
+    if not csv or not csv.strip():
+        return None
+    tokens = [t.strip() for t in csv.split(",") if t.strip()]
+    unknown = [t for t in tokens if t not in _GRAPH_RELATION_TOKENS]
+    if unknown:
+        logger.warning("graph_relation_types 未知 token 忽略: {}", unknown)
+    return [t for t in tokens if t in _GRAPH_RELATION_TOKENS] or None
 
 
 class RetrievalPipeline:
@@ -92,9 +104,17 @@ class RetrievalPipeline:
         ][:_SEED_TOP]
         graph: list[dict] = []
         if ab.graph and (allowed_kinds is None or "code" in allowed_kinds):
-            graph = await graph_recall(
-                session, seed_ids, depth=_SEED_DEPTH, max_nodes=_GRAPH_MAX_NODES
-            )
+            if settings.graph_multihop_enabled:
+                graph = await graph_recall(
+                    session, seed_ids,
+                    depth=settings.graph_traverse_depth,
+                    max_nodes=settings.graph_max_nodes,
+                    relation_types=_parse_relation_types(settings.graph_relation_types),
+                )
+            else:
+                graph = await graph_recall(
+                    session, seed_ids, depth=_SEED_DEPTH, max_nodes=_GRAPH_MAX_NODES
+                )
 
         # ---- Stage 1: RRF 融合 ----
         fused = rrf_fuse(

@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import re
 
+from app.core.config import settings
 from app.pipeline.metadata import (
     approx_token_count,
     content_hash,
+    enhance_code_chunk,
     extract_keywords,
     make_anchor_key,
     short_hash,
@@ -197,6 +199,9 @@ def chunk_code_file(pf: ParsedCodeFile, *, commit_hash: str | None = None,
             continue
         for m in cls.methods:
             specs.extend(_method_chunk(pf, cls.name, cls.interfaces, cls.superclass, m, ch))
+    # M32 ①a：规则注释增强（默认 off；content 变更会改 chunk_id，必须在 _dedup_ids 之前）
+    if settings.comment_enhance_enabled:
+        specs = [enhance_code_chunk(s) for s in specs]
     return _dedup_ids(specs)
 
 

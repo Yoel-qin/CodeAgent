@@ -6,6 +6,8 @@ import re
 
 import jieba  # 中文分词（BM25/关键词匹配用）
 
+from app.pipeline.parsing.doc_element import CodeChunkSpec
+
 # 标识符切分：驼峰 + 下划线 + 数字边界
 _CAMEL_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
 # 去除常见停用标识符
@@ -135,3 +137,42 @@ def extract_chinese_comment(source: str, max_chars: int = 2000) -> str:
             if _CJK_RE.search(ln):
                 lines.append(ln.strip())
     return "\n".join(lines)[:max_chars]
+
+
+# ---------------------------------------------------------------------------
+# M32 ①a：规则注释增强（COMMENT_ENHANCE_ENABLED=on；纯函数，无 I/O）
+# ---------------------------------------------------------------------------
+
+def enhance_code_chunk(spec) -> CodeChunkSpec:
+    """注释增强：① block/class chunk 补 javadoc 前缀（这两类 content 丢了 javadoc——
+    块级切分只留签名前缀、无方法类级 chunk 是占位注释）；② keywords ∪ 注释词
+    （extract_doc_keywords，jieba 中文）——修「中文查询词在 PG 词法路 ``keywords ?|``
+    永远匹配不到 code chunk」缺口；③ content 变更时 content_hash/token_count 重算 +
+    chunk_id 尾短哈希替换（四种 chunk_id 模板的短哈希均在末尾；code_anchor_key 不动
+    → 锚点稳定）。method/file chunk 的 content 不改（M46 后 method source 已含 javadoc）。
+    """
+    doc_bits = [spec.javadoc] + list(spec.inline_comments or [])
+    doc_text = "\n".join(t for t in doc_bits if t)
+
+    new_content = spec.content
+    if spec.javadoc and spec.chunk_type in ("block", "class"):
+        new_content = spec.javadoc + "\n" + spec.content
+
+    new_keywords = list(spec.keywords or [])
+    if doc_text:
+        seen = {k.lower() for k in new_keywords}
+        for tok in extract_doc_keywords(doc_text, max_n=32):
+            if tok.lower() not in seen:
+                new_keywords.append(tok)
+                seen.add(tok.lower())
+    new_keywords = new_keywords[:32]
+
+    if new_content != spec.content:
+        old_h = short_hash(spec.content)
+        parts = spec.chunk_id.rsplit(old_h, 1)
+        spec.chunk_id = parts[0] + short_hash(new_content) if len(parts) == 2 else spec.chunk_id
+        spec.content = new_content
+        spec.content_hash = content_hash(new_content)
+        spec.token_count = approx_token_count(new_content)
+    spec.keywords = new_keywords
+    return spec

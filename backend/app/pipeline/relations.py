@@ -68,6 +68,52 @@ def build_anchor_relations(session: Session) -> dict:
     }
 
 
+def build_type_edges(session: Session) -> dict:
+    """M32 ②：物化类继承/实现边进 chunk_relations（CODE_EXTENDS / CODE_IMPLEMENTS）。
+
+    类代表 chunk 语义：优先 chunk_type='class'，否则 (start_line, chunk_id) 最小的
+    method chunk；父类/接口按简单名匹配库内类（跨 repo 同名类不消歧，M46 遗留同款）。
+    幂等：先删后插（build_anchor_relations 同款姿势）。
+    """
+    chunks = session.execute(
+        select(CodeChunk).where(CodeChunk.is_deleted == False)  # noqa: E712
+    ).scalars().all()
+
+    by_class: dict[str, list[CodeChunk]] = defaultdict(list)
+    for c in chunks:
+        if c.class_name:
+            by_class[c.class_name].append(c)
+    rep: dict[str, str] = {}
+    for name, lst in by_class.items():
+        lst.sort(key=lambda c: (0 if c.chunk_type == "class" else 1, c.start_line or 0, c.chunk_id))
+        rep[name] = lst[0].chunk_id
+
+    session.execute(delete(ChunkRelation).where(
+        ChunkRelation.relation_type.in_(["CODE_EXTENDS", "CODE_IMPLEMENTS"])))
+    session.flush()
+
+    edges: set[tuple[str, str, str, str]] = set()   # (src, tgt, relation_type, 类名)
+    for c in chunks:
+        cls = c.class_name
+        if not cls or cls not in rep:
+            continue
+        src = rep[cls]
+        if c.extends_class:
+            parent = _simple_name(c.extends_class)
+            if parent in rep and rep[parent] != src:
+                edges.add((src, rep[parent], "CODE_EXTENDS", cls))
+        for itf in (c.implements_interface or "").split(","):
+            itf = itf.strip()
+            if itf and itf in rep and rep[itf] != src:
+                edges.add((src, rep[itf], "CODE_IMPLEMENTS", cls))
+
+    for src, tgt, rt, cls in edges:
+        session.add(ChunkRelation(source_chunk_id=src, target_chunk_id=tgt,
+                                  relation_type=rt, anchor_key=cls, confidence=1.0))
+    session.flush()
+    return {"type_edges": len(edges), "classes": len(rep)}
+
+
 # ============================================================================
 # M46 跨类调用解析（纯函数，单测覆盖）：定型 → 类匹配 → 继承闭包分发
 # ============================================================================
@@ -196,4 +242,5 @@ def build_all(session: Session, repo_path: str | Path | None = None) -> dict:
     stats = {"anchors": build_anchor_relations(session)}
     if repo_path:
         stats["call_graph"] = build_call_graph(session, repo_path)
+    stats["type_edges"] = build_type_edges(session)
     return stats

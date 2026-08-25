@@ -21,7 +21,7 @@ class _FakeSession:
 
 def _patch(monkeypatch):
     """把三路召回 + 精排换成记录型 async 假函数；reranker 强制 enabled。返回调用计数 dict。"""
-    calls = {"vector": 0, "bm25": 0, "lexical": 0, "graph": 0, "rerank": 0}
+    calls = {"vector": 0, "bm25": 0, "lexical": 0, "graph": 0, "crosslink": 0, "rerank": 0}
 
     async def v_recall(session, sem, *, top_k, **kwargs):
         calls["vector"] += 1
@@ -39,6 +39,10 @@ def _patch(monkeypatch):
         calls["graph"] += 1
         return [{"chunk_id": "g1", "kind": "code", "content": "gc", "score": 0.6}]
 
+    async def c_recall(session, seed_ids, *, top_k, allowed_kinds=None, **kw):
+        calls["crosslink"] += 1
+        return [{"chunk_id": "x1", "kind": "doc", "content": "xc", "score": 0.5}]
+
     async def r_stage(query, candidates, *, model, top_n):
         calls["rerank"] += 1
         return list(candidates)
@@ -47,6 +51,7 @@ def _patch(monkeypatch):
     monkeypatch.setattr(pipeline_mod, "bm25_recall", b_recall)
     monkeypatch.setattr(pipeline_mod, "lexical_recall", l_recall)
     monkeypatch.setattr(pipeline_mod, "graph_recall", g_recall)
+    monkeypatch.setattr(pipeline_mod, "crosslink_recall", c_recall)
     monkeypatch.setattr(pipeline_mod, "rerank_stage", r_stage)
     monkeypatch.setattr(reranker_client, "enabled", lambda: True)
     return calls
@@ -62,8 +67,8 @@ async def _recall(monkeypatch, ablation):
 
 async def test_ablation_none_is_full_pipeline(monkeypatch):
     calls, meta = await _recall(monkeypatch, None)
-    assert calls == {"vector": 1, "bm25": 1, "lexical": 0, "graph": 1, "rerank": 1}
-    assert meta["recall"] == {"vector": 1, "lexical": 1, "graph": 1}  # lexical=BM25 结果
+    assert calls == {"vector": 1, "bm25": 1, "lexical": 0, "graph": 1, "crosslink": 0, "rerank": 1}
+    assert meta["recall"] == {"vector": 1, "lexical": 1, "graph": 1, "crosslink": 0}  # lexical=BM25 结果；crosslink 默认 off
     assert meta["rerank_on"] is True
 
 
@@ -88,7 +93,7 @@ async def test_ablation_vector_only(monkeypatch):
     calls, meta = await _recall(monkeypatch, AblationConfig(lexical=False, graph=False))
     assert calls["bm25"] == 0 and calls["lexical"] == 0 and calls["graph"] == 0
     assert calls["vector"] == 1
-    assert meta["recall"] == {"vector": 1, "lexical": 0, "graph": 0}
+    assert meta["recall"] == {"vector": 1, "lexical": 0, "graph": 0, "crosslink": 0}
     assert meta["rerank_on"] is True   # rerank 仍开（对向量候选重排）
 
 
@@ -109,15 +114,15 @@ async def test_ablation_no_vector(monkeypatch):
 async def test_recall_emits_recall_paths_meta(monkeypatch):
     """M25：meta 带 recall_paths（三路候选 chunk_id+kind 投影），既有 count 键不破。"""
     calls, meta = await _recall(monkeypatch, None)
-    assert set(meta["recall_paths"]) == {"vector", "lexical", "graph"}
-    for path in ("vector", "lexical", "graph"):
+    assert set(meta["recall_paths"]) == {"vector", "lexical", "graph", "crosslink"}
+    for path in ("vector", "lexical", "graph", "crosslink"):
         items = meta["recall_paths"][path]
         assert isinstance(items, list)
         assert all(set(c) == {"chunk_id", "kind"} for c in items)
     # vector 路含 _patch 返回的 v1（kind=code）
     assert meta["recall_paths"]["vector"] == [{"chunk_id": "v1", "kind": "code"}]
     # 既有 count 断言仍成立（加性改动）
-    assert meta["recall"] == {"vector": 1, "lexical": 1, "graph": 1}
+    assert meta["recall"] == {"vector": 1, "lexical": 1, "graph": 1, "crosslink": 0}
 
 
 # ---------- M32 ②：多跳接线 ----------
@@ -165,3 +170,29 @@ async def test_multihop_on_uses_settings(monkeypatch):
     monkeypatch.setattr(pm.settings, "graph_relation_types", "calls,extends")
     await pm.pipeline.recall(_FakeSession(), "query", top_k=5, ablation=None, **_KW)
     assert captured == {"depth": 3, "max_nodes": 40, "relation_types": ["calls", "extends"]}
+
+
+# ---------- M32 ③：crosslink 接线 ----------
+
+
+async def test_crosslink_settings_gate_and_ablation_shortcircuit(monkeypatch):
+    """settings 总闸 × ablation 双门：默认 off=0 次；on 且 ablation.crosslink=False=0；双开=1。"""
+    import app.retrieval.pipeline as pm
+
+    async def _run(settings_on, ab):
+        calls = _patch(monkeypatch)
+        monkeypatch.setattr(pm.settings, "crosslink_recall_enabled", settings_on)
+        _, meta = await pm.pipeline.recall(
+            _FakeSession(), "query", top_k=5, ablation=ab, **_KW)
+        return calls, meta
+
+    calls, meta = await _run(False, None)
+    assert calls["crosslink"] == 0 and meta["recall"]["crosslink"] == 0
+
+    calls, meta = await _run(True, AblationConfig(crosslink=False))
+    assert calls["crosslink"] == 0 and meta["recall"]["crosslink"] == 0
+
+    calls, meta = await _run(True, None)
+    assert calls["crosslink"] == 1
+    assert meta["recall"]["crosslink"] == 1
+    assert meta["recall_paths"]["crosslink"] == [{"chunk_id": "x1", "kind": "doc"}]

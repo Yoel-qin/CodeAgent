@@ -20,6 +20,7 @@ from app.clients import reranker_client
 from app.core.config import settings
 from app.retrieval.ablation import AblationConfig
 from app.retrieval.bm25_search import bm25_recall
+from app.retrieval.crosslink_search import crosslink_recall
 from app.retrieval.fusion import DEFAULT_WEIGHTS, rrf_fuse
 from app.retrieval.graph_traverse import graph_recall
 from app.retrieval.lexical_search import lexical_recall
@@ -30,6 +31,7 @@ from app.retrieval.vector_search import vector_recall
 _SEED_DEPTH = 1
 _GRAPH_MAX_NODES = 12
 _SEED_TOP = 5  # 取代码召回前 N 条作为图遍历种子
+_CROSSLINK_SEED_TOP = 8  # 交叉链接第 5 路种子（vector+lexical 双 kind 混合）
 _GRAPH_RELATION_TOKENS = {"calls", "implements", "extends", "doc_anchor"}
 
 
@@ -116,9 +118,20 @@ class RetrievalPipeline:
                     session, seed_ids, depth=_SEED_DEPTH, max_nodes=_GRAPH_MAX_NODES
                 )
 
+        crosslink: list[dict] = []
+        if ab.crosslink and settings.crosslink_recall_enabled:
+            try:
+                crosslink_seeds = list(dict.fromkeys(
+                    r["chunk_id"] for r in (vector + lexical)))[:_CROSSLINK_SEED_TOP]
+                crosslink = await crosslink_recall(
+                    session, crosslink_seeds,
+                    top_k=settings.top_k_recall, allowed_kinds=allowed_kinds)
+            except Exception:
+                crosslink = []
+
         # ---- Stage 1: RRF 融合 ----
         fused = rrf_fuse(
-            {"vector": vector, "lexical": lexical, "graph": graph},
+            {"vector": vector, "lexical": lexical, "graph": graph, "crosslink": crosslink},
             weights=DEFAULT_WEIGHTS,
             k=settings.rrf_k,
         )
@@ -164,13 +177,14 @@ class RetrievalPipeline:
         meta = {
             # 检索漏斗（前端检索详情 / 设计 §11 全景）
             "terms": terms,
-            "recall": {"vector": len(vector), "lexical": len(lexical), "graph": len(graph)},
+            "recall": {"vector": len(vector), "lexical": len(lexical), "graph": len(graph), "crosslink": len(crosslink)},
             # M25 诊断：三路候选的 slim 投影（chunk_id+kind），供评测逐 query 定位
             # 「向量路漏召 / 返回了什么 kind」（如 dual 向量路对中文 NL 返回 doc 漏 code）。生产不读，加性。
             "recall_paths": {
                 "vector": [{"chunk_id": c.get("chunk_id"), "kind": c.get("kind")} for c in vector],
                 "lexical": [{"chunk_id": c.get("chunk_id"), "kind": c.get("kind")} for c in lexical],
                 "graph": [{"chunk_id": c.get("chunk_id"), "kind": c.get("kind")} for c in graph],
+                "crosslink": [{"chunk_id": c.get("chunk_id"), "kind": c.get("kind")} for c in crosslink],
             },
             "bm25": used_es,
             "vector_on": used_vec,

@@ -63,7 +63,7 @@ class ABPair:
     metric_focus: tuple[str, ...]
 
 
-# ---- 默认 3 组 A/B（对应 §2 精排 / §3 多路+RRF / §4 图遍历）----
+# ---- 默认 4 组 A/B（对应 §2 精排 / §3 多路+RRF / §4 图遍历 / §11 交叉链接）----
 DEFAULT_PAIRS: tuple[ABPair, ...] = (
     ABPair("rerank", "精排使精度 +15~25%", "no_rerank", "full", ("precision", "ndcg", "mrr")),
     ABPair("multipath_rrf", "多路+RRF 召回 +10~15%", "vector_only", "full", ("recall",)),

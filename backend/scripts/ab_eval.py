@@ -130,7 +130,7 @@ async def main(argv: list[str] | None = None) -> int:
                     help="off=绕过 LLM 改写（确定性，默认）；auto=生产全链路")
     ap.add_argument("--pairs", nargs="+", default=list(_PAIR_BY_NAME),
                     choices=list(_PAIR_BY_NAME),
-                    help="跑哪些 A/B 组（默认全部：rerank multipath_rrf graph）")
+                    help="跑哪些 A/B 组（默认全部：rerank multipath_rrf graph crosslink）")
     ap.add_argument("--graph-subset", action="store_true",
                     help=f"图遍历组额外在「{_GRAPH_SUBSET_TAG}」tag 子集上跑")
     ap.add_argument("--tags", default=None,

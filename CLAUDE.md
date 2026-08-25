@@ -233,7 +233,7 @@ React 18 + TS + Vite + AntD 5 + Zustand + React Router 6 (`frontend/src/`). `lay
 
 - `docs/项目状态.md` — concise status snapshot (trust this over README for current state).
 - `docs/开发清单.md` — granular phase-by-phase progress ledger for M1–M29 (the authoritative "what's done" list).
-- `docs/重构开发清单.md` — the **M30+ refactor ledger** (six stages: retrieval enhancement, Agent layer evolution [AgentRegistry/CitationEnforcer/collab], domain packs, eval expansion, harness, model+RBAC). The M30 sparse-vector path was empirically disproven (SiliconFlow `/embeddings` returns dense only); M31 (ES IK 分词) 已实施但验收门 1/2/3 未过（默认保持 off）；M32 deferred.
+- `docs/重构开发清单.md` — the **M30+ refactor ledger** (six stages: retrieval enhancement, Agent layer evolution [AgentRegistry/CitationEnforcer/collab], domain packs, eval expansion, harness, model+RBAC). The M30 sparse-vector path was empirically disproven (SiliconFlow `/embeddings` returns dense only); M31 (ES IK 分词) 验收四门 1/2/3 未过但经中文注释标注回测（seed_chinese_comments.py 101 chunk 注入→还原）收口为**条件性正结果**——机制在有中文注释的代码库上大幅兑现（BM25 单路 R@10 0.054→0.914、full 0.336→0.908，IK+boost 较 standard analyzer 再 +0.08），纯英文 javadoc 库（RocketMQ 原库）无收益且 IK 略反效果，故默认保持 off；M32 deferred.
 - `docs/开发实施计划与方案.md` — implementation plan / phase breakdown.
 - `docs/待确认问题清单.md` — confirmed/open design decisions.
 - `docs/嵌入向量方案.md` — the dual-encoder 方案一 analysis (落地说明 at top maps to the `EMBEDDING_STRATEGY` switch).

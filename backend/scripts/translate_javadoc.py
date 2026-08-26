@@ -89,7 +89,9 @@ async def _translate_batch(llm: LLMClient, docs: list[str]) -> list[str | None]:
     ]
     for _ in range(2):  # first attempt + 1 retry
         try:
-            raw = await llm.chat(msgs)
+            raw = await llm.chat(msgs, max_tokens=8192)
+            if not raw or not raw.strip():
+                continue
             arr = json.loads(_FENCE_RE.sub("", raw.strip()))
             if isinstance(arr, list) and len(arr) == len(docs) and all(isinstance(x, str) for x in arr):
                 return arr
@@ -122,7 +124,7 @@ def _apply_update(
             "UPDATE code_chunks SET content = :new, keywords = :kw, token_count = :tok "
             "WHERE chunk_id = :id"
         ),
-        {"c": chunk_id, "new": block + old_content, "kw": kws[:32],
+        {"c": chunk_id, "new": block + old_content, "kw": json.dumps(kws[:32], ensure_ascii=False),
          "tok": approx_token_count(block + old_content), "id": chunk_id},
     )
 

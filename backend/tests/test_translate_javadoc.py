@@ -55,6 +55,16 @@ async def test_translate_batch_length_mismatch_gives_none(monkeypatch):
     assert out == [None, None]              # 长度不符 → 整批放弃（逐条 None=跳过）
 
 
+@pytest.mark.asyncio
+async def test_translate_batch_reasoning_model_empty_response(monkeypatch):
+    class _LLM:
+        async def chat(self, messages, **kw):
+            return ""  # reasoning model consumed all max_tokens on thinking
+
+    out = await tj._translate_batch(_LLM(), ["a", "b"])
+    assert out == [None, None]  # empty response after retry -> batch None
+
+
 def test_apply_update_keeps_identity_and_merges_keywords():
     class _S:
         def __init__(self):

@@ -178,7 +178,9 @@ async def main(argv: list[str] | None = None) -> int:
     payload = report
     payload["config"]["embedding_strategy"] = settings.embedding_strategy
     if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        sys.stdout.buffer.write(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
+        sys.stdout.buffer.write(b"\n")
+        sys.stdout.buffer.flush()
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)

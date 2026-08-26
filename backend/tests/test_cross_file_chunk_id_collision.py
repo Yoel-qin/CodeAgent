@@ -7,6 +7,8 @@ previously ingested files.
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -86,6 +88,23 @@ def test_cross_file_identical_content_distinct_chunk_ids(engine):
         assert set(va).isdisjoint(set(vb)), (
             f"cross-file chunk_id collision! A={va} B={vb}"
         )
+
+        # File A was ingested first (no prior collision) so its chunk_id must be
+        # the original unsuffixed form: code_{ClassName}_{8-hex-content-hash}.
+        # This catches a bug that needlessly suffixes the non-colliding first file.
+        _FSUFFIX = re.compile(r"_f[0-9a-f]{4,}$")
+        for cid in va:
+            assert cid.startswith("code_SysRole_"), (
+                f"unexpected prefix for first-file chunk: {cid}"
+            )
+            assert not _FSUFFIX.search(cid), (
+                f"first file's chunk was needlessly suffixed: {cid}"
+            )
+            # The trailing segment must be the 8-hex content hash (no extra suffix chars)
+            suffix = cid.rsplit("_", 1)[-1]
+            assert re.fullmatch(r"[0-9a-f]{8}", suffix), (
+                f"expected 8-hex content hash at tail, got: {suffix} (from {cid})"
+            )
 
         # --- cleanup ---
         session.execute(

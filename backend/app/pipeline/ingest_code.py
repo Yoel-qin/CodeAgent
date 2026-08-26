@@ -87,6 +87,7 @@ def replace_chunks(session: Session, file_id: int, specs: list) -> int:
     # 预检当前事务内（含本 session 已 flush 的其他文件数据）属于其他 file_id 的
     # 同名 chunk_id，为当前文件的碰撞 chunk 追加确定性文件路径后缀。
     if specs:
+        file_path = specs[0].file_path
         new_ids = {s.chunk_id for s in specs}
         colliding = set(
             session.execute(
@@ -96,8 +97,8 @@ def replace_chunks(session: Session, file_id: int, specs: list) -> int:
         )
         if colliding:
             fp_suffix = hashlib.sha256(
-                specs[0].file_path.encode("utf-8")
-            ).hexdigest()[:4]
+                file_path.encode("utf-8")
+            ).hexdigest()[:8]
             for s in specs:
                 if s.chunk_id in colliding:
                     new_id = f"{s.chunk_id}_f{fp_suffix}"

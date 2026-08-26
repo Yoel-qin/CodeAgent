@@ -80,6 +80,34 @@ def replace_chunks(session: Session, file_id: int, specs: list) -> int:
     """删除该文件旧 chunk（含被引用的外键行），写入新 chunk；返回写入数。"""
     clear_code_chunk_refs(session, file_id)
     session.execute(delete(CodeChunk).where(CodeChunk.file_id == file_id))
+    session.flush()
+
+    # M47：跨文件 chunk_id 碰撞消歧。
+    # 两个不同文件若 byte-identical 的类/方法内容 → 同一 chunk_id → PK 冲突。
+    # 预检当前事务内（含本 session 已 flush 的其他文件数据）属于其他 file_id 的
+    # 同名 chunk_id，为当前文件的碰撞 chunk 追加确定性文件路径后缀。
+    if specs:
+        new_ids = {s.chunk_id for s in specs}
+        colliding = set(
+            session.execute(
+                select(CodeChunk.chunk_id)
+                .where(CodeChunk.chunk_id.in_(new_ids), CodeChunk.file_id != file_id)
+            ).scalars().all()
+        )
+        if colliding:
+            fp_suffix = hashlib.sha256(
+                specs[0].file_path.encode("utf-8")
+            ).hexdigest()[:4]
+            for s in specs:
+                if s.chunk_id in colliding:
+                    new_id = f"{s.chunk_id}_f{fp_suffix}"
+                    idx = 0
+                    while new_id in new_ids or new_id in colliding:
+                        idx += 1
+                        new_id = f"{s.chunk_id}_f{fp_suffix}_r{idx}"
+                    s.chunk_id = new_id
+                    new_ids.add(new_id)
+
     for spec in specs:
         session.add(_to_orm(spec, file_id))
     session.flush()

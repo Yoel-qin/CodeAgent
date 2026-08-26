@@ -154,6 +154,7 @@ queries:
   - { id: st02, text: "登录时可以设置哪些参数，比如设备类型", relevant: ["SaLoginModel"], tags: ["satoken"] }
   - { id: st03, text: "退出登录 logout 做了哪些清理工作", relevant: ["StpLogic.logout"], tags: ["satoken"] }
   - { id: st04, text: "踢人下线 kickout 是怎么实现的", relevant: ["StpLogic.kickout"], tags: ["satoken"] }
+  - { id: st05, text: "按账号强制注销指定用户的全部会话", relevant: ["StpLogic.logout"], tags: ["satoken"] }
   - { id: st06, text: "校验当前会话是否已经登录，不通过会抛什么", relevant: ["StpLogic.checkLogin"], tags: ["satoken"] }
   - { id: st07, text: "判断用户当前是否处于登录状态", relevant: ["StpLogic.isLogin"], tags: ["satoken"] }
   - { id: st08, text: "权限校验不通过时会抛什么异常", relevant: ["StpLogic.checkPermission"], tags: ["satoken"] }

@@ -70,5 +70,8 @@ logs/
 # Internal design / progress docs directory (kept local, not pushed)
 docs/
 
+# ---- Mxx script backup snapshots (contain DB content, never committed) ----
+backend/scripts/_m*_backup.json
+
 # ---- ES plugins (installed by scripts/install_es_plugins.py, binary blobs) ----
 docker/es/plugins/

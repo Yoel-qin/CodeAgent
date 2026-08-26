@@ -41,8 +41,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.core.config import settings  # noqa: E402
 from app.db import AsyncSessionLocal, engine  # noqa: E402
 from app.eval.ab_service import DEFAULT_PAIRS  # noqa: E402
-from app.eval.eval_service import load_eval_queries  # noqa: E402
 from app.services import eval_run_service  # noqa: E402
+
+# (queries loaded inside run_ab_and_persist; tags passed through)
 
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_EVAL_SET = os.path.join(_BACKEND_ROOT, "eval", "eval_set.yaml")
@@ -134,7 +135,7 @@ async def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--graph-subset", action="store_true",
                     help=f"图遍历组额外在「{_GRAPH_SUBSET_TAG}」tag 子集上跑")
     ap.add_argument("--tags", default=None,
-                    help="只评带某 tag 的 query 子集（如 rocketmq；M31 评测集 tags 字段）")
+                    help="按 tags 过滤评测集（逗号分隔，如 rocketmq 或 a,b；M31）")
     ap.add_argument("--diagnose", action="store_true",
                     help="打印向量路逐 query 诊断（relevant 是否入向量路 + kind 分布；需含 multipath_rrf）")
     ap.add_argument("--out", default=None, help="完整 JSON 报告输出路径")
@@ -143,12 +144,9 @@ async def main(argv: list[str] | None = None) -> int:
                     help="不落 eval_runs（ephemeral，仅 stdout/文件）；默认持久化为 kind=ab/trigger=cli 行")
     args = ap.parse_args(argv)
 
-    queries = load_eval_queries(args.eval_set)
-    print(f"评测集: {args.eval_set}  ({len(queries)} queries)")
-
+    tags = None
     if args.tags:
-        queries = [q for q in queries if args.tags in q.tags]
-        print(f"--tags {args.tags}: {len(queries)} queries")
+        tags = [t.strip() for t in args.tags.split(",") if t.strip()]
 
     run = None
     try:
@@ -156,7 +154,7 @@ async def main(argv: list[str] | None = None) -> int:
             run = await eval_run_service.run_ab_and_persist(
                 session, top_k=args.top_k, rewrite=args.rewrite, eval_set=args.eval_set,
                 pairs=args.pairs, graph_subset=args.graph_subset, diagnose=args.diagnose,
-                trigger="cli", persist=not args.no_persist,
+                trigger="cli", persist=not args.no_persist, tags=tags,
             )
     finally:
         await engine.dispose()

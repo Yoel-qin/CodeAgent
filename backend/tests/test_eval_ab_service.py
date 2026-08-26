@@ -147,6 +147,88 @@ async def test_run_ab_and_persist_diagnose_keep(monkeypatch):
     assert "recall_paths" in pq                               # diagnose=True 保留
 
 
+# ---- run_ab_and_persist: tags 子集过滤透传 ----
+
+
+async def test_run_ab_and_persist_tags_passed(monkeypatch):
+    """tags 非空时过滤 queries 再传入 run_ab；空标签列表 → ValueError。"""
+    from app.eval.eval_service import EvalQuery
+
+    all_q = [
+        EvalQuery(id="a01", text="x", relevant=[], tags=["rocketmq"]),
+        EvalQuery(id="a02", text="y", relevant=[], tags=[]),
+        EvalQuery(id="a03", text="z", relevant=[], tags=["rocketmq"]),
+    ]
+    received_queries: list = []
+
+    async def fake_run_ab(session, queries, *, top_k, rewrite, pairs):
+        received_queries.extend(queries)
+        return _ab_report()
+
+    monkeypatch.setattr(svc, "run_ab", fake_run_ab)
+    monkeypatch.setattr(svc, "load_eval_queries", lambda path: list(all_q))
+
+    run = await svc.run_ab_and_persist(None, pairs=["rerank"], tags=["rocketmq"], persist=False)
+    assert run.status == "COMPLETED"
+    assert len(received_queries) == 2  # only rocketmq-tagged queries
+    assert run.config.get("tags") == ["rocketmq"]
+    assert run.n_queries == 2
+
+
+async def test_run_ab_and_persist_tags_empty_raises(monkeypatch):
+    """tags 过滤后无 query → ValueError。"""
+    from app.eval.eval_service import EvalQuery
+
+    monkeypatch.setattr(
+        svc, "load_eval_queries",
+        lambda path: [EvalQuery(id="a01", text="x", relevant=[], tags=["other"])],
+    )
+    try:
+        await svc.run_ab_and_persist(None, pairs=["rerank"], tags=["rocketmq"], persist=False)
+        raise AssertionError("应抛 ValueError")
+    except ValueError as e:
+        assert "tags=" in str(e)
+
+
+# ---- run_ab_and_persist: graph_subset 触发子集报告 ----
+
+
+# ---- crosslink pair 退化告警 ----
+
+
+async def test_crosslink_pair_warns_when_settings_off(caplog):
+    """CROSSLINK_RECALL_ENABLED=off + crosslink pair → WARNING。"""
+    import logging
+
+    from app.eval.ab_service import EvalReport
+
+    async def fake_run_eval(*a, **kw):
+        return EvalReport(
+            aggregate={"n": 1, "recall": {1: 0.5, 3: 0.5, 5: 0.5, 10: 0.5},
+                      "precision": {1: 0.5, 10: 0.1}, "mrr": 0.5, "ndcg": {10: 0.5}},
+            n_queries=1, n_evaluable=1, rerank_on_count=1, per_query=[], unresolved=[], config={},
+        )
+
+    import app.core.config as cfg_mod
+    import app.eval.ab_service as ab_mod
+    from app.eval.eval_service import EvalQuery
+    orig = ab_mod.run_eval
+    ab_mod.run_eval = fake_run_eval
+    old_val = cfg_mod.settings.crosslink_recall_enabled
+    cfg_mod.settings.crosslink_recall_enabled = False
+    try:
+        with caplog.at_level(logging.WARNING, logger="app.eval.ab_service"):
+            await ab_mod.run_ab(
+                None,
+                [EvalQuery(id="a01", text="x", relevant=[])],
+                pairs=[ab_mod.DEFAULT_PAIRS[3]],  # crosslink pair
+            )
+        assert any("crosslink_recall_enabled=off" in r.message for r in caplog.records)
+    finally:
+        ab_mod.run_eval = orig
+        cfg_mod.settings.crosslink_recall_enabled = old_val
+
+
 # ---- run_ab_and_persist: graph_subset 触发子集报告 ----
 
 

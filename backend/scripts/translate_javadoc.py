@@ -134,7 +134,7 @@ def _reembed_and_reindex(session: Session, chunk_ids: list[str]) -> None:
     rows = session.execute(
         text(
             "SELECT c.chunk_id, c.content, c.keywords, c.class_name, c.method_name, "
-            "       c.chunk_type, c.code_anchor_key, f.file_path FROM code_chunks c "
+            "       c.method_signature, c.chunk_type, c.code_anchor_key, f.file_path FROM code_chunks c "
             "JOIN code_files f ON c.file_id = f.file_id WHERE c.chunk_id = ANY(cast(:ids as text[]))"
         ),
         {"ids": chunk_ids},
@@ -216,9 +216,10 @@ def _restore(session: Session) -> int:
     with open(BACKUP_PATH, encoding="utf-8") as f:
         backup: dict[str, dict] = json.load(f)
     for cid, snap in backup.items():
+        kws = snap["keywords"]
         session.execute(
             text("UPDATE code_chunks SET content = :c, keywords = :k WHERE chunk_id = :id"),
-            {"c": snap["content"], "k": snap["keywords"], "id": cid},
+            {"c": snap["content"], "k": json.dumps(kws, ensure_ascii=False) if isinstance(kws, list) else kws, "id": cid},
         )
     session.commit()
     print(f"还原完成: {len(backup)} chunks（重嵌入/ES 请跑 resync 或 rebuild_es_index.py）")

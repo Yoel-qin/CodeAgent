@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.eval.eval_service import EvalQuery, EvalReport, run_eval
 from app.retrieval.ablation import AblationConfig
 from app.retrieval.pipeline import pipeline
@@ -136,6 +137,19 @@ async def run_ab(
     for p in pairs:
         used.add(p.baseline)
         used.add(p.treatment)
+
+    # 警告 crosslink pair 在设置关闭时退化为 full-vs-full
+    if not settings.crosslink_recall_enabled:
+        for p in pairs:
+            if p.name == "crosslink" or (
+                _VARIANTS.get(p.baseline, ABVariant("", AblationConfig(), "")).ablation.crosslink is False
+                or _VARIANTS.get(p.treatment, ABVariant("", AblationConfig(), "")).ablation.crosslink is False
+            ):
+                logger.warning(
+                    "crosslink_recall_enabled=off：crosslink pair 将退化为 full-vs-full，"
+                    "评测请设 CROSSLINK_RECALL_ENABLED=1"
+                )
+                break  # warn once
 
     variants_out: dict = {}
     for vname in sorted(used):

@@ -226,6 +226,7 @@ async def run_ab_and_persist(
     rewrite: str = "off",
     eval_set: str | None = None,
     pairs: Sequence[str] | None = None,
+    tags: list[str] | None = None,
     graph_subset: bool = False,
     diagnose: bool = False,
     trigger: str = "api",
@@ -236,11 +237,18 @@ async def run_ab_and_persist(
     - 复用 :func:`app.eval.ab_service.run_ab`（经 ``AblationConfig`` 注入跑真实全漏斗变体）。
     - 落 ``EvalRun`` 行：``config.kind="ab"`` 区分单次评测；完整 ABReport 存 ``config["report"]``；
       ``aggregate`` 列冗余 ``full`` 变体的规整 aggregate，让趋势图把 A/B 行画作「full(生产)」锚点。
+    - ``tags``：非 None 时只保留 ``EvalQuery.tags`` 与之交非空的 query（子集评测，
+      如 RocketMQ 中文子集 ``["rocketmq"]``）；过滤后为空 → ValueError。
     - ``graph_subset=True``：对 ``call_chain`` 标签子集额外跑 ``graph`` pair（镜像 CLI ``--graph-subset``）。
     - ``diagnose=False``：裁剪变体 per_query 的诊断重字段（``recall_paths``/``retrieved_kinds``）。
     """
     path = eval_set or str(DEFAULT_EVAL_SET)
     queries = load_eval_queries(path)
+    if tags:
+        tset = set(tags)
+        queries = [q for q in queries if tset.intersection(q.tags)]
+        if not queries:
+            raise ValueError(f"tags={tags} 过滤后无可评 query（评测集 {path}）")
     selected = _resolve_pairs(pairs)
     started = datetime.now(UTC)
 
@@ -259,6 +267,7 @@ async def run_ab_and_persist(
             "eval_set": path,
             "embedding_strategy": settings.embedding_strategy,
             "pairs": [p.name for p in selected],
+            **({"tags": tags} if tags else {}),
             "graph_subset": graph_subset,
         },
     )

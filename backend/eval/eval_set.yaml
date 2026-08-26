@@ -21,6 +21,7 @@ target_repos:
   - { repo: "../data/repo/gitdemo", module: demo, note: "Account / Profile 方法级 chunk" }
   - { repo: "../data/repo/sample", module: demo, note: "Foo 整文件 chunk" }
   - { repo: "../data/repo/rocketmq", module: rocketmq, note: "M46 全量 1059 文件；rm* 子集锚点库（M31）" }
+  - { repo: "../data/repo/sa-token", module: satoken, note: "M47 中文注释真实库（六臂矩阵）" }
 
 queries:
   # ---- Account：单方法直查 ----
@@ -148,3 +149,28 @@ queries:
   - { id: rm23, text: "默认生产者 DefaultMQProducer 的配置项有哪些", relevant: ["DefaultMQProducer"], tags: ["rocketmq"] }
   - { id: rm24, text: "消息实体 MessageExt 有哪些字段", relevant: ["MessageExt"], tags: ["rocketmq"] }
   - { id: rm25, text: "消费者启动时做了什么", relevant: ["DefaultMQPushConsumerImpl.start"], tags: ["rocketmq"] }
+  # ---- M47：sa-token 中文真实库子集（tags: [satoken]；锚点 2026-08-26 实库核实存在）----
+  - { id: st01, text: "sa-token 用户登录的完整流程，会话是怎么创建的", relevant: ["StpLogic.login", "StpLogic.createLoginSession"], tags: ["satoken"] }
+  - { id: st02, text: "登录时可以设置哪些参数，比如设备类型", relevant: ["SaLoginModel"], tags: ["satoken"] }
+  - { id: st03, text: "退出登录 logout 做了哪些清理工作", relevant: ["StpLogic.logout"], tags: ["satoken"] }
+  - { id: st04, text: "踢人下线 kickout 是怎么实现的", relevant: ["StpLogic.kickout"], tags: ["satoken"] }
+  - { id: st06, text: "校验当前会话是否已经登录，不通过会抛什么", relevant: ["StpLogic.checkLogin"], tags: ["satoken"] }
+  - { id: st07, text: "判断用户当前是否处于登录状态", relevant: ["StpLogic.isLogin"], tags: ["satoken"] }
+  - { id: st08, text: "权限校验不通过时会抛什么异常", relevant: ["StpLogic.checkPermission"], tags: ["satoken"] }
+  - { id: st09, text: "判断用户是否具有某个权限", relevant: ["StpLogic.hasPermission"], tags: ["satoken"] }
+  - { id: st10, text: "获取某个用户持有的权限列表", relevant: ["StpLogic.getPermissionList"], tags: ["satoken"] }
+  - { id: st11, text: "角色校验 hasRole 和获取角色列表", relevant: ["StpLogic.hasRole", "StpLogic.getRoleList"], tags: ["satoken"] }
+  - { id: st12, text: "获取当前登录用户的 id", relevant: ["StpLogic.getLoginId"], tags: ["satoken"] }
+  - { id: st13, text: "当前会话的 token 值是从哪里取的", relevant: ["StpLogic.getTokenValue"], tags: ["satoken"] }
+  - { id: st14, text: "token 值是怎么生成的，有哪些风格", relevant: ["StpLogic.createTokenValue"], tags: ["satoken"] }
+  - { id: st15, text: "token 续签，刷新剩余有效期", relevant: ["StpLogic.renewTimeout"], tags: ["satoken"] }
+  - { id: st16, text: "获取某个账号的会话对象", relevant: ["StpLogic.getSessionByLoginId"], tags: ["satoken"] }
+  - { id: st17, text: "Token-Session 和 Account-Session 有什么区别", relevant: ["StpLogic.getTokenSession", "StpLogic.getSessionByLoginId"], tags: ["satoken"] }
+  - { id: st18, text: "会话里怎么存取自定义数据", relevant: ["SaSession.get", "SaSession.set"], tags: ["satoken"] }
+  - { id: st19, text: "敏感操作前的二级认证怎么触发", relevant: ["StpLogic.openSafe", "StpLogic.checkSafe"], tags: ["satoken"] }
+  - { id: st20, text: "判断当前是否处于二级认证安全状态", relevant: ["StpLogic.isSafe"], tags: ["satoken"] }
+  - { id: st21, text: "Token 存储层怎么自定义扩展，比如换成 Redis", relevant: ["SaTokenDao"], tags: ["satoken"] }
+  - { id: st22, text: "全局组件容器是怎么获取实例的", relevant: ["SaManager.getStpLogic", "SaManager.getSaTokenDao"], tags: ["satoken"] }
+  - { id: st23, text: "注解鉴权 SaCheckPermission 在哪里被解析执行", relevant: ["SaAnnotationInterceptor"], tags: ["satoken"] }
+  - { id: st24, text: "微服务内网调用怎么用 same-token 做校验", relevant: ["SaSameUtil"], tags: ["satoken"] }
+  - { id: st25, text: "内置的密码摘要加密工具", relevant: ["SaSecureUtil.md5"], tags: ["satoken"] }

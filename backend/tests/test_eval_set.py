@@ -16,8 +16,8 @@ _RELEVANT_RE = re.compile(r"^\w+(\.\w+)?$")
 
 def test_eval_set_well_formed():
     queries = load_eval_queries(str(_EVAL_SET))
-    assert 80 <= len(queries) <= 120, \
-        f"expected 85 gitdemo/sample + 25 rocketmq (M31), got {len(queries)}"
+    assert 80 <= len(queries) <= 160, \
+        f"expected 85 gitdemo/sample + 25 rocketmq (M31) + 29 satoken (M47), got {len(queries)}"
 
     ids = [q.id for q in queries]
     assert len(ids) == len(set(ids)), "duplicate query ids"
@@ -46,3 +46,14 @@ def test_eval_set_rocketmq_subset():
     rm = [q for q in queries if "rocketmq" in q.tags]
     assert len(rm) == 25
     assert all(q.id.startswith("rm") for q in rm)
+
+
+def test_eval_set_satoken_subset():
+    """M47 satoken 中文真实库子集：29 条（25 code st* + 4 doc sd*）、全带 satoken tag。"""
+    queries = load_eval_queries(str(_EVAL_SET))
+    sa = [q for q in queries if "satoken" in q.tags]
+    assert len(sa) == 29
+    code_sa = [q for q in sa if q.id.startswith("st")]
+    doc_sa = [q for q in sa if q.id.startswith("sd")]
+    assert len(code_sa) == 25
+    assert len(doc_sa) == 4

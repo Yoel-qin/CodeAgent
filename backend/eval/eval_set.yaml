@@ -175,3 +175,8 @@ queries:
   - { id: st23, text: "注解鉴权 SaCheckPermission 在哪里被解析执行", relevant: ["SaAnnotationInterceptor"], tags: ["satoken"] }
   - { id: st24, text: "微服务内网调用怎么用 same-token 做校验", relevant: ["SaSameUtil"], tags: ["satoken"] }
   - { id: st25, text: "内置的密码摘要加密工具", relevant: ["SaSecureUtil.md5"], tags: ["satoken"] }
+  # ---- M47 doc anchor queries (literal doc chunk_id, verify doc bridge effect) ----
+  - { id: sd01, text: "怎么把一个已登录的用户强制下线，和主动退出有什么区别", relevant: ["doc_2714c615_1"], tags: ["satoken"] }
+  - { id: sd02, text: "想自定义 Token 的存储实现替换默认的，需要实现什么接口", relevant: ["doc_694f93b1_1"], tags: ["satoken"] }
+  - { id: sd03, text: "敏感操作前要做一次二次确认认证，怎么用", relevant: ["doc_7241d7cf_0"], tags: ["satoken"] }
+  - { id: sd04, text: "同一个账号只允许一处登录，顶掉旧会话怎么配", relevant: ["doc_4c7c8dd9_1"], tags: ["satoken"] }

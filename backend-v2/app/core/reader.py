@@ -14,6 +14,13 @@ def read_file(repos_root: str | Path, repo: str, file_path: str,
         target = resolve_repo_path(repos_root, repo, file_path)
     except ValueError as e:
         return {"error": str(e)}
+    # 行号参数防御：负数/零/逆序区间显式报错（MCP 调用方是 LLM，坏输入不能静默错窗）
+    if start_line is not None and start_line < 1:
+        return {"error": f"start_line must be >= 1, got {start_line}"}
+    if end_line is not None and end_line < 1:
+        return {"error": f"end_line must be >= 1, got {end_line}"}
+    if start_line is not None and end_line is not None and start_line > end_line:
+        return {"error": f"start_line ({start_line}) exceeds end_line ({end_line})"}
     if not target.exists():
         return {"error": f"file not found: {file_path}"}
     if target.is_dir():
@@ -41,6 +48,7 @@ def read_file(repos_root: str | Path, repo: str, file_path: str,
 
 
 def list_directory(repos_root: str | Path, repo: str, path: str = "", depth: int = 2) -> dict:
+    """List directory contents with depth clamping (max 3; depth < 1 视为 1) and entry limit (500)."""
     try:
         target = resolve_repo_path(repos_root, repo, path)
     except ValueError as e:

@@ -1,4 +1,5 @@
 """SQLAlchemy async engine + 带 naming convention 的 Base（照搬旧库约定）。"""
+from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -13,7 +14,7 @@ naming_convention = {
 
 
 class Base(DeclarativeBase):
-    metadata_naming = naming_convention  # type: ignore[assignment]
+    metadata = MetaData(naming_convention=naming_convention)
 
 
 engine = create_async_engine(settings.postgres_dsn, pool_pre_ping=True, echo=False)

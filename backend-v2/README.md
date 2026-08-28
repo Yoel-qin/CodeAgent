@@ -16,10 +16,25 @@ curl http://localhost:8010/health
 
 ## MCP server（code-mcp）
 
+**启动（server 侧 env/.env 控制仓库路径）：**
+
 ```bash
-uv run python -m app.mcp_servers.code_server          # streamable-http :8110/mcp
-uv run python scripts/dev_up.py                       # backend + 全部 MCP server 一键拉起
-uv run python scripts/smoke_mcp.py                    # 冒烟：tools/list + grep MAX_RECONSUME_TIMES
+# 真实仓库（主 checkout）：
+REPOS_ROOT=D:/project/CodeRagAgent/data/repo DEFAULT_REPO=rocketmq uv run python -m app.mcp_servers.code_server
+# fixture 测试：
+REPOS_ROOT=tests/fixtures DEFAULT_REPO=mini_repo uv run python -m app.mcp_servers.code_server
+
+# 一键拉起（backend + code-mcp）：
+uv run python scripts/dev_up.py
+```
+
+**冒烟验证（另起终端）：**
+
+```bash
+# 真实仓库（默认 MAX_RECONSUME_TIMES）：
+uv run python scripts/smoke_mcp.py
+# fixture 指定参数：
+uv run python scripts/smoke_mcp.py --pattern MAX_RETRY_TIMES --repo mini_repo
 ```
 
 工具：`grep_code` / `read_file` / `list_directory` / `find_symbol`（全部只读，

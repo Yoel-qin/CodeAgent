@@ -10,7 +10,7 @@ import argparse
 import asyncio
 import sys
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.fastmcp import FastMCP
 
 from app.core.config import settings
 from app.core.fs_guard import PathEscapeError
@@ -19,7 +19,7 @@ from app.core.reader import list_directory as _core_list_directory
 from app.core.reader import read_file as _core_read_file
 from app.core.symbols import find_symbol as _core_find_symbol
 
-mcp = MCPServer("code-mcp")
+mcp = FastMCP("code-mcp", host=settings.mcp_host, port=settings.mcp_code_port)
 
 GREP_TIMEOUT = 10
 READ_TIMEOUT = 5
@@ -71,7 +71,7 @@ def main() -> None:
     if args.stdio:
         mcp.run(transport="stdio")
     else:
-        mcp.run(transport="streamable-http", host=settings.mcp_host, port=settings.mcp_code_port)
+        mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":

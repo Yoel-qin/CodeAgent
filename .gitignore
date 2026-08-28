@@ -78,3 +78,6 @@ docker/es/plugins/
 
 # git worktrees（本地开发工作区）
 .worktrees/
+
+# superpowers SDD 工作区（计划执行临时产物）
+.superpowers/

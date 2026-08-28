@@ -32,6 +32,8 @@ async def _run(timeout: float, fn, *args) -> dict:
         return {"error": f"timeout after {timeout}s"}
     except PathEscapeError as e:
         return {"error": f"path outside repos root: {e}"}
+    except Exception as e:  # noqa: BLE001 —— 永不炸穿 MCP 协议层
+        return {"error": f"internal error: {type(e).__name__}: {e}"}
 
 
 @mcp.tool()

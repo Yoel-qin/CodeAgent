@@ -27,15 +27,19 @@ def find_symbol(repos_root, repo: str, symbol_name: str, ref_type: str = "def") 
     else:
         locations = []
         total = 0
+        errors = []
         for kind, rx in (("type", _TYPE_RX), ("method", _METHOD_RX)):
-            res = grep_code(repos_root, repo, rx.format(name=esc), file_glob="*.java")
+            res = grep_code(repos_root, repo, rx.format(name=esc), file_glob="*.java", max_results=50)
             if "error" in res:
+                errors.append(res)
                 continue
+            total += res["total_count"]
             for m in res["matches"]:
-                total += 1
                 if len(locations) < 50:
                     locations.append(
                         {"file": m["file"], "line": m["line"], "content": m["content"], "kind": kind}
                     )
+        if len(errors) == 2:
+            return errors[0]
         return {"locations": locations, "total_count": total, "truncated": total > len(locations)}
     return {"locations": locations, "total_count": res["total_count"], "truncated": res["truncated"]}

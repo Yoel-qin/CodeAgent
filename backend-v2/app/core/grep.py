@@ -28,11 +28,18 @@ def _glob_matches(rel_posix: str, file_glob: str) -> bool:
 
 
 def _grep_python(repo_dir: Path, pattern: str, file_glob: str, case_sensitive: bool, max_results: int) -> dict:
+    """纯 Python 回退引擎。
+
+    残余差异：仅裁剪隐藏条目（dot-files/dot-dirs），不遵守 .gitignore 规则。
+    """
     flags = 0 if case_sensitive else re.IGNORECASE
     rx = re.compile(pattern, flags)
     matches: list[dict] = []
     total = 0
-    for dirpath, _dirnames, filenames in os.walk(repo_dir):
+    for dirpath, dirnames, filenames in os.walk(repo_dir):
+        # 裁剪隐藏目录，使 os.walk 不再下探（与 rg 默认行为对齐）
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        filenames = [f for f in filenames if not f.startswith(".")]
         for fname in filenames:
             full = Path(dirpath) / fname
             rel = full.relative_to(repo_dir).as_posix()
@@ -67,21 +74,26 @@ def _grep_rg(repo_dir: Path, pattern: str, file_glob: str, case_sensitive: bool,
         return None
     if proc is None or proc.returncode not in (0, 1):  # 1 = 无匹配，正常
         return None
+    # 绝对路径前缀列表（Windows D:\...\ 和 Unix /.../），解析前先剥离
+    prefixes = (str(repo_dir) + "\\", str(repo_dir) + "/")
     matches: list[dict] = []
     total = 0
     for raw in proc.stdout.splitlines():
         try:
+            for p in prefixes:
+                if raw.startswith(p):
+                    raw = raw[len(p):]
+                    break
             parts = raw.split(":", 2)
             if len(parts) != 3:
                 continue
             f, lineno, content = parts
-            rel = Path(f).relative_to(repo_dir).as_posix()
             ln = int(lineno)
         except ValueError:
             continue
         total += 1
         if len(matches) < max_results:
-            matches.append({"file": rel, "line": ln, "content": content.rstrip("\r")})
+            matches.append({"file": f.replace("\\", "/"), "line": ln, "content": content.rstrip("\r")})
     return {"matches": matches, "total_count": total, "truncated": total > len(matches), "engine": "rg"}
 
 

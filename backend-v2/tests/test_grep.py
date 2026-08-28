@@ -90,3 +90,58 @@ def test_rg_parsing(monkeypatch, tmp_path):
     assert res["matches"][0]["file"] == "com/CommitLog.java"
     res2 = grep_code("f", "mini", "MAX_RETRY_TIMES|second", max_results=1)
     assert len(res2["matches"]) == 1 and res2["truncated"] is True
+
+
+def test_rg_parsing_absolute_windows_path(monkeypatch, tmp_path):
+    r"""rg 输出含绝对路径前缀时正确解析（Windows 反斜杠和 Unix 正斜杠）。"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "f" / "mini").mkdir(parents=True)
+    repo_abs = (tmp_path / "f" / "mini").resolve()
+    monkeypatch.setattr("app.core.grep.resolve_repo_path", lambda *_a, **_k: repo_abs)
+    # 模拟 rg 输出带绝对路径前缀（含驱动器号冒号）
+    stdout = "\n".join([
+        f"{repo_abs}\\com\\CommitLog.java:14:    public static final int MAX_RETRY_TIMES = 16;",
+        f"{repo_abs}/com/CommitLog.java:20:    second match",
+    ])
+    fake = sp.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+    monkeypatch.setattr(shutil, "which", lambda _n: "/fake/rg")
+    monkeypatch.setattr("app.core.grep._run_rg", lambda *a, **k: fake)
+    res = grep_code("f", "mini", "MAX_RETRY_TIMES|second")
+    assert res["engine"] == "rg"
+    assert res["total_count"] == 2
+    assert [m["line"] for m in res["matches"]] == [14, 20]
+    assert res["matches"][0]["file"] == "com/CommitLog.java"
+    assert res["matches"][1]["file"] == "com/CommitLog.java"
+
+
+def test_python_engine_skips_dot_dirs(monkeypatch, tmp_path):
+    """Python 回退引擎不搜索 .git / .hidden 等隐藏目录和文件。"""
+    repo = tmp_path / "f" / "mini_repo"
+    shutil.copytree(Path(FIX) / "mini_repo", repo, dirs_exist_ok=True)
+    # 在隐藏目录中放入匹配内容
+    git_dir = repo / ".git"
+    git_dir.mkdir(exist_ok=True)
+    (git_dir / "config").write_text("MAX_RETRY_TIMES secret value")
+    (repo / ".hidden.java").write_text("MAX_RETRY_TIMES hidden file")
+    monkeypatch.setattr(shutil, "which", lambda _n: None)
+    res = grep_code(tmp_path / "f", repo="mini_repo", pattern="MAX_RETRY_TIMES")
+    assert res["engine"] == "python"
+    # 隐藏文件/目录中的匹配不应出现
+    for m in res["matches"]:
+        assert ".git" not in m["file"] and not m["file"].startswith(".")
+
+
+def test_rg_parsing_forward_slash_prefix(monkeypatch, tmp_path):
+    """rg 输出带 Unix 风格绝对路径前缀也能正确剥离。"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "f" / "mini").mkdir(parents=True)
+    repo_abs = (tmp_path / "f" / "mini").resolve()
+    monkeypatch.setattr("app.core.grep.resolve_repo_path", lambda *_a, **_k: repo_abs)
+    stdout = f"{repo_abs}/com/X.java:5:some content"
+    fake = sp.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+    monkeypatch.setattr(shutil, "which", lambda _n: "/fake/rg")
+    monkeypatch.setattr("app.core.grep._run_rg", lambda *a, **k: fake)
+    res = grep_code("f", "mini", "some")
+    assert res["engine"] == "rg"
+    assert res["total_count"] == 1
+    assert res["matches"][0]["file"] == "com/X.java"

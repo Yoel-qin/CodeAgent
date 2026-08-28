@@ -9,8 +9,10 @@ SERVER 侧 env/.env 控制 REPOS_ROOT/DEFAULT_REPO——client 无法覆盖。
 import argparse
 import asyncio
 import sys
+from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # backend-v2/ 根，使 `app` 可导入
 
 from langchain_mcp_adapters.client import MultiServerMCPClient  # noqa: E402
 

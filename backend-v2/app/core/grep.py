@@ -8,7 +8,7 @@ import os
 import re
 import shutil
 import subprocess
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from app.core.fs_guard import resolve_repo_path
 
@@ -70,13 +70,12 @@ def _grep_rg(repo_dir: Path, pattern: str, file_glob: str, case_sensitive: bool,
     matches: list[dict] = []
     total = 0
     for raw in proc.stdout.splitlines():
-        # rg --no-heading 行格式: path:line:content（Windows 路径分隔符统一处理）
-        parts = raw.split(":", 2)
-        if len(parts) != 3:
-            continue
-        f, lineno, content = parts
-        rel = str(PurePosixPath(Path(f).relative_to(repo_dir).as_posix()))
         try:
+            parts = raw.split(":", 2)
+            if len(parts) != 3:
+                continue
+            f, lineno, content = parts
+            rel = Path(f).relative_to(repo_dir).as_posix()
             ln = int(lineno)
         except ValueError:
             continue

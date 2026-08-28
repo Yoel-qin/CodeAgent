@@ -1,4 +1,5 @@
 import shutil
+import subprocess as sp
 from pathlib import Path
 
 from app.core.grep import grep_code
@@ -57,10 +58,35 @@ def test_missing_repo_error(monkeypatch, tmp_path):
     assert "error" in res and "nope" in res["error"]
 
 
-def test_rg_engine_used_when_available(monkeypatch, tmp_path):
-    """rg 在 PATH 时走 rg 引擎（结果与 python 引擎一致）。"""
+def test_rg_failure_falls_back_to_python(monkeypatch, tmp_path):
+    """rg 失败时无声回退 Python 引擎。"""
     shutil.copytree(Path(FIX) / "mini_repo", tmp_path / "f" / "mini_repo")
     monkeypatch.setattr(shutil, "which", lambda _n: "/fake/rg")
-    monkeypatch.setattr("app.core.grep._run_rg", lambda *a, **k: None)  # 模拟 rg 失败→仍出结果
+    monkeypatch.setattr("app.core.grep._run_rg", lambda *a, **k: None)
     res = grep_code(tmp_path / "f", repo="mini_repo", pattern="MAX_RETRY_TIMES")
     assert any("CommitLog.java" in m["file"] for m in res.get("matches", []))
+
+
+def test_rg_parsing(monkeypatch, tmp_path):
+    """rg 引擎输出解析：正常行/畸形行/非数字行号/截断。"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "f" / "mini").mkdir(parents=True)
+    repo_rel = Path("f") / "mini"
+    monkeypatch.setattr("app.core.grep.resolve_repo_path", lambda *_a, **_k: repo_rel)
+    jf = str(repo_rel / "com" / "CommitLog.java")
+    stdout = "\n".join([
+        f"{jf}:14:    public static final int MAX_RETRY_TIMES = 16;",
+        "malformed-line-without-colons",
+        f"{jf}:notanumber:bad line no",
+        f"{jf}:20:    second match",
+    ])
+    fake = sp.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+    monkeypatch.setattr(shutil, "which", lambda _n: "/fake/rg")
+    monkeypatch.setattr("app.core.grep._run_rg", lambda *a, **k: fake)
+    res = grep_code("f", "mini", "MAX_RETRY_TIMES|second")
+    assert res["engine"] == "rg"
+    assert res["total_count"] == 2
+    assert [m["line"] for m in res["matches"]] == [14, 20]
+    assert res["matches"][0]["file"] == "com/CommitLog.java"
+    res2 = grep_code("f", "mini", "MAX_RETRY_TIMES|second", max_results=1)
+    assert len(res2["matches"]) == 1 and res2["truncated"] is True

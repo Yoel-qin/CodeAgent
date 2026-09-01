@@ -86,7 +86,7 @@ def hybrid_search(
         {"vector": vec_hits, "bm25": bm25_hits},
         weights={"vector": 1.0, "bm25": 0.8},
     )
-    return {"results": fused[:top_k], "recall": len(fused)}
+    return {"results": fused[:top_k], "recall": len(fused[:top_k])}
 
 
 # ── PG 只读查询 ─────────────────────────────────────────────────────────────
@@ -102,6 +102,7 @@ def read_doc_section(repo: str, doc_id: int, anchor: str) -> dict:
                     select(DocSection, Document.doc_name)
                     .join(Document, DocSection.document_id == Document.id)
                     .where(
+                        Document.repo == repo,
                         DocSection.document_id == doc_id,
                         DocSection.anchor == anchor,
                     )
@@ -133,6 +134,7 @@ def get_doc_toc(repo: str, doc_id: int | None = None) -> dict:
             stmt = (
                 select(DocSection, Document.doc_name)
                 .join(Document, DocSection.document_id == Document.id)
+                .where(Document.repo == repo)
                 .order_by(DocSection.document_id, DocSection.order_index)
             )
             if doc_id is not None:

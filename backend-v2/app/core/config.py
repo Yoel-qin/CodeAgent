@@ -1,5 +1,5 @@
-"""v2 配置。env_file=(".env", "../.env")：backend-v2/.env 优先于根 .env，
-故 POSTGRES_DB=coderag_v2 的覆盖必然生效（根 .env 是旧系统的 coderag）。"""
+"""v2 配置。env_file=("../.env", ".env")：pydantic-settings v2 last-wins，
+backend-v2/.env 排在末尾 = 最高优先级，覆盖根 .env 的旧系统值。"""
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(".env", "../.env"),
+        env_file=("../.env", ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )

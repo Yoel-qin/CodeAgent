@@ -26,7 +26,7 @@ def _get_engine():
 
 
 def _pg_session() -> Session:
-    return Session(bind=_get_engine().connect())
+    return Session(bind=_get_engine())
 
 
 # ── 检索三路 ────────────────────────────────────────────────────────────────

@@ -4,18 +4,25 @@
 """
 from __future__ import annotations
 
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 
 from app.core.config import settings
+
+# ── PG 模块级惰性单例（同步） ──────────────────────────────────────────────
+_engine = None
+
+
+def _get_engine():
+    global _engine
+    if _engine is None:
+        _engine = create_engine(settings.postgres_dsn_sync)
+    return _engine
 
 
 def _exec(sql: str, params: dict) -> list[dict]:
     """执行只读 SQL，返回 row dict 列表。出错返回 None。"""
-    from sqlalchemy import create_engine
-
-    engine = create_engine(settings.postgres_dsn_sync)
     try:
-        with engine.connect() as conn:
+        with _get_engine().connect() as conn:
             result = conn.execute(text(sql), params)
             return [row._asdict() for row in result.fetchall()]
     except Exception:

@@ -2,6 +2,7 @@
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+import app.db.models  # noqa: F401 — 让 target_metadata 看到三表
 from app.core.config import settings
 from app.db.base import Base
 

@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     milvus_port: int = 19530
     es_url: str = "http://localhost:9200"
 
+    # Embedding（SiliconFlow BGE-M3）
+    embedding_base_url: str = "https://api.siliconflow.cn/v1"
+    embedding_api_key: str = ""
+    embedding_model: str = "BAAI/bge-m3"
+
+    # ES IK 分词
+    es_ik_enabled: bool = False
+
     # LLM（三档路由 Plan 3 落地，M0 只做配置探活）
     llm_provider: str = "deepseek"
     llm_api_key: str = ""

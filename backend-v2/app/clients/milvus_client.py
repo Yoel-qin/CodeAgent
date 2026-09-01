@@ -11,6 +11,11 @@ _DIM = 1024
 _client: MilvusClient | None = None
 
 
+def _esc(v: str) -> str:
+    """转义拼进 Milvus filter expr 的字符串值（防止注入）。"""
+    return v.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def get_client() -> MilvusClient:
     global _client
     if _client is None:
@@ -60,9 +65,9 @@ def search_sections(
 ) -> list[dict]:
     """ANN 检索，repo filter 必带。返回 [{section_id, doc_name, title, anchor, score, module}]。"""
     ensure_collection()
-    flt = f'repo == "{repo}"'
+    flt = f'repo == "{_esc(repo)}"'
     if module is not None:
-        flt += f' && module == "{module}"'
+        flt += f' && module == "{_esc(module)}"'
     res = get_client().search(
         collection_name=_COLLECTION,
         data=[query_vec],

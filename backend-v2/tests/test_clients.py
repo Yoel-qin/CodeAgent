@@ -62,3 +62,22 @@ def test_es_search_passes_repo_filter(monkeypatch):
     res = ec.search_sections("刷盘", top_k=5, repo="mini")
     assert res[0]["section_id"] == "s1" and res[0]["score"] == 8.0
     assert "repo" in str(seen), "repo 过滤必须进 ES query"
+
+
+def test_milvus_search_escapes_injection_in_repo(monkeypatch):
+    from app.clients import milvus_client as mc
+    calls = []
+
+    class StubClient:
+        def search(self, **kw):
+            calls.append(kw)
+            return []
+
+    monkeypatch.setattr(mc, "get_client", lambda: StubClient())
+    monkeypatch.setattr(mc, "ensure_collection", lambda: None)
+    evil = 'x" or 1==1 or "'
+    mc.search_sections([0.1] * 1024, top_k=5, repo=evil)
+    flt = calls[0]["filter"]
+    assert '\\"' in flt or '\"\\"' in flt, f'quote not escaped in filter: {flt}'
+    # 确保注入的 or 不被当成表达式运算符
+    assert ' or ' not in flt or '\\"' in flt

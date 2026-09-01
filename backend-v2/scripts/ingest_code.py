@@ -1,4 +1,4 @@
-"""CLI：解析 Java 仓库 → code_entities 入库。
+"""CLI：解析 Java 仓库 → code_entities + call_edges + code_metrics 入库。
 
 Usage:
     uv run python scripts/ingest_code.py --repo ../data/repo/sample
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 # sys.path 自举（允许从 repo 根或 backend/ 运行）
@@ -24,16 +25,19 @@ from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from app.core.config import settings  # noqa: E402
+from app.pipeline.call_graph import build_call_edges  # noqa: E402
+from app.pipeline.code_metrics import compute_metrics  # noqa: E402
 from app.pipeline.ingest_code import (  # noqa: E402
     entities_from_parsed,
     upsert_entities,
     walk_java_files,
 )
+from app.pipeline.ingest_edges import replace_edges  # noqa: E402
 from app.pipeline.parsing.code_parser import parse_java  # noqa: E402
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="解析 Java 仓库 → code_entities 入库")
+    parser = argparse.ArgumentParser(description="解析 Java 仓库 → code_entities + call_edges + code_metrics 入库")
     parser.add_argument("--repo", required=True, help="仓库根目录（绝对/相对路径）")
     parser.add_argument("--batch-size", type=int, default=200, help="每批文件数（进度日志）")
     parser.add_argument("--entities-only", action="store_true", help="仅入库实体，不建调用图")
@@ -56,6 +60,8 @@ def main() -> None:
     total_inserted = 0
     total_updated = 0
 
+    # Stage 1: parse + upsert entities
+    parsed_files: list = []
     with Session(engine) as session:
         batch_rows: list[dict] = []
         for i, fp in enumerate(java_files, 1):
@@ -63,6 +69,7 @@ def main() -> None:
                 src = fp.read_text(encoding="utf-8")
                 rel = fp.relative_to(repo_dir).as_posix()
                 pf = parse_java(src, rel)
+                parsed_files.append(pf)
                 module = pf.module_name or _infer_module(rel)
                 rows = entities_from_parsed(pf, repo=repo_name, module=module)
                 batch_rows.extend(rows)
@@ -78,7 +85,65 @@ def main() -> None:
                 logger.info(f"已处理 {i}/{len(java_files)}")
                 batch_rows = []
 
-    logger.info(f"完成: inserted={total_inserted}, updated={total_updated}")
+    logger.info(f"Stage 1 完成: inserted={total_inserted}, updated={total_updated}")
+
+    if args.entities_only:
+        return
+
+    # Stage 2: build + insert call edges
+    from sqlalchemy import select
+
+    from app.db.models.code_graph import CodeEntity, CodeMetric
+
+    edges = build_call_edges(parsed_files)
+    with Session(engine) as session:
+        edge_count = replace_edges(session, repo=repo_name, edges=edges)
+        session.commit()
+    logger.info(f"Stage 2 完成: {edge_count} edges inserted")
+
+    # Stage 3: compute + upsert metrics
+    fan_in: dict[tuple[str, str], int] = defaultdict(int)
+    fan_out: dict[tuple[str, str], int] = defaultdict(int)
+    for e in edges:
+        caller_key = (e["caller_class"], e["caller_method"])
+        callee_key = (e["callee_class"], e["callee_method"])
+        fan_out[caller_key] += 1
+        fan_in[callee_key] += 1
+    fan_in_out = {
+        k: (fan_in.get(k, 0), fan_out.get(k, 0))
+        for k in set(fan_in) | set(fan_out)
+    }
+    metric_rows = compute_metrics(parsed_files, fan_in_out)
+
+    with Session(engine) as session:
+        # build (class_name, method_name) → entity_id map for this repo
+        stmt = select(CodeEntity.id, CodeEntity.class_name, CodeEntity.method_name).where(
+            CodeEntity.repo == repo_name,
+            CodeEntity.method_name.is_not(None),
+        )
+        id_map: dict[tuple[str, str], int] = {
+            (r.class_name, r.method_name): r.id for r in session.execute(stmt).all()
+        }
+        for mr in metric_rows:
+            eid = id_map.get((mr["class_name"], mr["method_name"]))
+            if eid is None:
+                continue
+            existing = session.get(CodeMetric, eid)
+            if existing is None:
+                session.add(CodeMetric(
+                    entity_id=eid,
+                    complexity=mr["complexity"],
+                    fan_in=mr["fan_in"],
+                    fan_out=mr["fan_out"],
+                    loc=mr["loc"],
+                ))
+            else:
+                existing.complexity = mr["complexity"]
+                existing.fan_in = mr["fan_in"]
+                existing.fan_out = mr["fan_out"]
+                existing.loc = mr["loc"]
+        session.commit()
+    logger.info(f"Stage 3 完成: {len(metric_rows)} metric rows computed")
 
 
 def _infer_module(file_path: str) -> str:

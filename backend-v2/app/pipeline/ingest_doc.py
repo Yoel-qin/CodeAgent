@@ -206,7 +206,7 @@ def _run_external_io(
                     "doc_name": doc_name,
                     "section": sec.anchor,
                     "title": sec.title,
-                    "module": doc.module,
+                    "module": doc.module or "",
                     "page": sec.page or 0,
                 })
             upsert_sections(milvus_rows)

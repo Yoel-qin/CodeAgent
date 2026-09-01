@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     default_repo: str = "rocketmq"
     mcp_host: str = "127.0.0.1"
     mcp_code_port: int = 8110
+    mcp_doc_port: int = 8111
 
     @property
     def postgres_dsn(self) -> str:

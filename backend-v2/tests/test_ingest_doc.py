@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from app.pipeline.ingest_doc import ingest_doc_file
 
@@ -32,3 +33,51 @@ def test_ingest_idempotent_skip(tmp_path, session, monkeypatch):
     second = ingest_doc_file(session, repo="mini", file_path=Path("d/a.md"), data=data)
     assert first["skipped"] is not True
     assert second.get("skipped") is True
+
+
+def test_ingest_different_hash_replaces(tmp_path, session, monkeypatch):
+    """I-3: 不同 hash 重跑 → PG sections 替换非累积、Milvus delete 被调。"""
+    monkeypatch.setattr("app.pipeline.ingest_doc.upload_original", lambda *a, **k: None)
+    monkeypatch.setattr("app.pipeline.ingest_doc.embed_texts",
+                        lambda texts, **k: [[0.1] * 1024 for _ in texts])
+    mock_mc = MagicMock()
+    monkeypatch.setattr("app.pipeline.ingest_doc.get_client", lambda: mock_mc)
+    mock_es = MagicMock()
+    monkeypatch.setattr("app.pipeline.ingest_doc.get_es", lambda: mock_es)
+    upserted = []
+    monkeypatch.setattr("app.pipeline.ingest_doc.upsert_sections",
+                        lambda rows: upserted.extend(rows) or len(rows))
+    monkeypatch.setattr("app.pipeline.ingest_doc.bulk_index_sections", lambda docs: len(docs))
+
+    # First ingest
+    res1 = ingest_doc_file(session, repo="mini", file_path=Path("d/a.md"),
+                           data=b"# Title1\n\nContent1\n")
+    assert res1["skipped"] is not True
+    n1 = res1["sections"]
+    assert n1 >= 1
+
+    # Second ingest with different content (different hash)
+    res2 = ingest_doc_file(session, repo="mini", file_path=Path("d/a.md"),
+                           data=b"# Title2\n\nContent2\n")
+    assert res2["skipped"] is not True
+
+    # PG: sections replaced, not accumulated
+    from app.db.models.doc import DocSection, Document  # noqa: E402
+
+    expected_name = str(Path("d/a.md"))[:512]  # Windows: backslash
+    doc = session.query(Document).filter_by(repo="mini", doc_name=expected_name).first()
+    assert doc is not None
+    count = session.query(DocSection).filter_by(document_id=doc.id).count()
+    assert count == res2["sections"]  # not n1 + n2
+
+    # Content is from second ingest
+    secs = session.query(DocSection).filter_by(document_id=doc.id).all()
+    contents = " ".join(s.content for s in secs)
+    assert "Content2" in contents
+    assert "Content1" not in contents
+
+    # Milvus delete called (at least once for the re-ingest)
+    assert mock_mc.delete.call_count >= 1
+
+    # Milvus upsert called for both ingests
+    assert len(upserted) == n1 + res2["sections"]

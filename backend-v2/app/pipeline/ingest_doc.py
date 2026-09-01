@@ -5,6 +5,12 @@
 
 外部依赖（Milvus/ES/MinIO/embedding）全部软失败——
 不可用时 sections 照落 PG，日志提示，embedded 数为实际成功数。
+
+两阶段设计（I-1）：
+- Phase 1 _ingest_doc_pg：纯 PG 操作（幂等→解析→分段→INSERT），不 commit。
+- Phase 2 _run_external_io：MinIO/embed/Milvus/ES + 短 PG 更新，不 commit。
+ingest_doc_file 保持“不自行 commit”契约（测试用，单 session 全包裹）。
+ingest_doc_repo 每文件独立 begin/commit：Phase 1 提交后再跑 Phase 2（无锁）。
 """
 from __future__ import annotations
 
@@ -31,7 +37,12 @@ def _esc(v: str) -> str:
     return v.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def ingest_doc_file(
+# ---------------------------------------------------------------------------
+# Phase 1: PG-only（幂等→解析→chunk→INSERT）
+# ---------------------------------------------------------------------------
+
+
+def _ingest_doc_pg(
     session: Session,
     *,
     repo: str,
@@ -39,16 +50,14 @@ def ingest_doc_file(
     data: bytes,
     reindex: bool = False,
 ) -> dict:
-    """单文件全管道：hash→幂等跳过→parse→sections/media 组装→
-    PG 事务（Document upsert + 删旧 sections + 插新）→
-    MinIO（软失败）→ embed（空返则只标 embedding_synced=False）→
-    Milvus/ES upsert（删旧 by doc_name 再插，各自 try/except）→
-    返回统计 dict。
+    """PG-only phase. Returns info dict. Does NOT commit.
 
-    PG 操作不在此函数 commit——由调用方控制事务边界。
+    Returns: {doc, doc_name, section_rows, elements, meta,
+              media_count, status, skipped}.
     """
     file_hash = hashlib.sha256(data).hexdigest()
-    doc_name = str(file_path)
+    # I-2 修复：doc_name 入口一次截断，全流程统一
+    doc_name = str(file_path)[:512]
     ext = file_path.suffix
     doc_type = doc_format_for(ext) or "unknown"
 
@@ -62,8 +71,9 @@ def ingest_doc_file(
         if existing is not None:
             logger.debug("skip (idempotent): %s/%s", repo, doc_name)
             return {
-                "doc_name": doc_name, "skipped": True,
-                "sections": 0, "embedded": 0, "media": 0, "status": "COMPLETED",
+                "doc": None, "doc_name": doc_name, "section_rows": [],
+                "elements": [], "meta": None, "media_count": 0,
+                "status": "COMPLETED", "skipped": True,
             }
 
     # ---- 解析 ----
@@ -77,8 +87,9 @@ def ingest_doc_file(
         )
         session.flush()
         return {
-            "doc_name": doc_name, "skipped": False,
-            "sections": 0, "embedded": 0, "media": 0, "status": "FAILED",
+            "doc": None, "doc_name": doc_name, "section_rows": [],
+            "elements": [], "meta": None, "media_count": 0,
+            "status": "FAILED", "skipped": False,
         }
 
     # ---- 分段 ----
@@ -88,12 +99,8 @@ def ingest_doc_file(
     # 图片段：直接从 DocElement 采集 IMAGE 元素
     media_count = sum(1 for el in elements if el.type == "IMAGE")
 
-    # ---- PG 事务：Document upsert + 删旧 + 插新 ----
-    doc = (
-        session.query(Document)
-        .filter_by(repo=repo, doc_name=doc_name)
-        .first()
-    )
+    # ---- PG: Document upsert + 删旧 + 插新 ----
+    doc = session.query(Document).filter_by(repo=repo, doc_name=doc_name).first()
     if doc is not None:
         doc.file_hash = file_hash
         doc.doc_type = doc_type
@@ -103,7 +110,7 @@ def ingest_doc_file(
         session.query(MediaChunk).filter_by(document_id=doc.id).delete()
     else:
         doc = Document(
-            repo=repo, doc_name=doc_name[:512], source_path=str(file_path),
+            repo=repo, doc_name=doc_name, source_path=str(file_path),
             doc_type=doc_type, file_hash=file_hash,
             status=meta.parse_status, parse_meta=_meta_to_dict(meta),
         )
@@ -130,6 +137,29 @@ def ingest_doc_file(
 
     session.flush()
 
+    return {
+        "doc": doc, "doc_name": doc_name, "section_rows": section_rows,
+        "elements": elements, "meta": meta, "media_count": media_count,
+        "status": meta.parse_status, "skipped": False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: External IO（MinIO/embed/Milvus/ES + 短 PG 更新）
+# ---------------------------------------------------------------------------
+
+
+def _run_external_io(
+    session: Session,
+    *,
+    doc: Document,
+    doc_name: str,
+    repo: str,
+    section_rows: list[dict],
+    data: bytes,
+) -> int:
+    """External IO phase. Updates minio_key/embedding_synced via session.
+    Does NOT commit. Returns embedded_count."""
     # ---- MinIO（软失败）----
     try:
         minio_key = upload_original(repo, doc_name, data)
@@ -217,27 +247,69 @@ def ingest_doc_file(
     except Exception:
         logger.warning("ES bulk_index failed for %s/%s, PG only", repo, doc_name)
 
+    return embedded_count
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def ingest_doc_file(
+    session: Session,
+    *,
+    repo: str,
+    file_path: Path,
+    data: bytes,
+    reindex: bool = False,
+) -> dict:
+    """单文件全管道。Tests + single-file use. Does NOT commit.
+
+    保持“不自行 commit”契约——由调用方（conftest fixture / API）控制事务边界。
+    外部 IO 在同一 session 内执行（测试 monkeypatch 全部外部调用，无真实网络 IO）。
+    """
+    pg = _ingest_doc_pg(session, repo=repo, file_path=file_path, data=data, reindex=reindex)
+    if pg.get("skipped"):
+        return {
+            "doc_name": pg["doc_name"], "skipped": True,
+            "sections": 0, "embedded": 0, "media": 0, "status": pg["status"],
+        }
+    if pg["status"] == "FAILED":
+        return {
+            "doc_name": pg["doc_name"], "skipped": False,
+            "sections": 0, "embedded": 0, "media": 0, "status": "FAILED",
+        }
+
+    embedded = _run_external_io(
+        session, doc=pg["doc"], doc_name=pg["doc_name"],
+        repo=repo, section_rows=pg["section_rows"], data=data,
+    )
+
     return {
-        "doc_name": doc_name,
-        "skipped": False,
-        "sections": len(section_rows),
-        "embedded": embedded_count,
-        "media": media_count,
-        "status": meta.parse_status,
+        "doc_name": pg["doc_name"], "skipped": False,
+        "sections": len(pg["section_rows"]), "embedded": embedded,
+        "media": pg["media_count"], "status": pg["status"],
     }
 
 
 def ingest_doc_repo(
-    session: Session,
     *,
     repo: str,
     docs_dir: Path,
     reindex: bool = False,
 ) -> dict:
-    """遍历 docs_dir 下的支持格式文件，逐文件调用 ingest_doc_file。
+    """遍历 docs_dir 下的支持格式文件，逐文件 PG 提交后再跑外部 IO。
 
-    进度日志每 20 文件打一行。不 commit——由调用方控制事务边界。
+    I-1 修复：每文件独立 begin/commit。
+    Phase 1（_ingest_doc_pg）在 engine.begin() 内执行并自动提交，
+    Phase 2（_run_external_io）在 PG 提交之后执行（无行锁）。
+    创建自有 engine——不接收外部 session。
     """
+    from sqlalchemy import create_engine
+
+    from app.core.config import settings
+
+    engine = create_engine(settings.postgres_dsn_sync)
     supported = {".md", ".markdown", ".pdf", ".docx", ".txt"}
     files = sorted(
         f for f in docs_dir.rglob("*")
@@ -257,20 +329,35 @@ def ingest_doc_repo(
             )
         data = f.read_bytes()
         try:
-            res = ingest_doc_file(
-                session, repo=repo,
-                file_path=f.relative_to(docs_dir),
-                data=data, reindex=reindex,
-            )
+            # Phase 1: PG（per-file transaction，自动提交）
+            with engine.begin() as conn:
+                s = Session(bind=conn, expire_on_commit=False)
+                pg = _ingest_doc_pg(
+                    s, repo=repo, file_path=f.relative_to(docs_dir),
+                    data=data, reindex=reindex,
+                )
+            # 事务已提交，行锁释放
+
             stats["total"] += 1
-            if res.get("skipped"):
+            if pg.get("skipped"):
                 stats["skipped"] += 1
-            else:
-                stats["sections"] += res.get("sections", 0)
-                stats["embedded"] += res.get("embedded", 0)
-                stats["media"] += res.get("media", 0)
-                if res.get("status") == "FAILED":
-                    stats["failed"] += 1
+                continue
+            if pg["status"] == "FAILED":
+                stats["failed"] += 1
+                continue
+
+            # Phase 2: External IO（无 PG 行锁）+ 短 PG 更新
+            with engine.begin() as conn:
+                s = Session(bind=conn, expire_on_commit=False)
+                doc = s.query(Document).filter_by(repo=repo, doc_name=pg["doc_name"]).first()
+                embedded = _run_external_io(
+                    s, doc=doc, doc_name=pg["doc_name"],
+                    repo=repo, section_rows=pg["section_rows"], data=data,
+                )
+
+            stats["sections"] += len(pg["section_rows"])
+            stats["embedded"] += embedded
+            stats["media"] += pg["media_count"]
         except Exception:
             logger.exception("Failed to ingest %s", f)
             stats["total"] += 1
@@ -294,7 +381,7 @@ def _upsert_document(
         doc.parse_meta = parse_meta
     else:
         doc = Document(
-            repo=repo, doc_name=doc_name[:512], source_path=source_path,
+            repo=repo, doc_name=doc_name, source_path=source_path,
             doc_type=doc_type, file_hash=file_hash,
             status=status, parse_meta=parse_meta,
         )

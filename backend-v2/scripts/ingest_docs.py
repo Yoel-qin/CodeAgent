@@ -40,7 +40,12 @@ def main() -> None:
     from sqlalchemy.orm import Session
 
     from app.core.config import settings
-    from app.pipeline.ingest_doc import ingest_doc_file, ingest_doc_repo
+    from app.db.models.doc import Document
+    from app.pipeline.ingest_doc import (
+        _ingest_doc_pg,
+        _run_external_io,
+        ingest_doc_repo,
+    )
 
     repo = args.repo or settings.default_repo
     repos_root = Path(settings.repos_root).resolve()
@@ -56,17 +61,11 @@ def main() -> None:
         docs_dir = repos_root / repo / "docs"
         fallback = not docs_dir.is_dir()
 
-    engine = create_engine(settings.postgres_dsn_sync)
-
     if not fallback:
-        # 正常路径：递归扫描所有支持格式
-        with engine.begin() as conn:
-            session = Session(bind=conn, expire_on_commit=False)
-            stats = ingest_doc_repo(
-                session, repo=repo, docs_dir=docs_dir, reindex=args.reindex,
-            )
+        # 正常路径：递归扫描所有支持格式（ingest_doc_repo 自建 engine，每文件事务）
+        stats = ingest_doc_repo(repo=repo, docs_dir=docs_dir, reindex=args.reindex)
     else:
-        # 回退路径：扫 repo 根目录顶层 *.md
+        # 回退路径：扫 repo 根目录顶层 *.md（同样每文件事务）
         repo_root = repos_root / repo
         if not repo_root.is_dir():
             logger.error("仓库目录不存在: %s", repo_root)
@@ -81,35 +80,48 @@ def main() -> None:
         logger.info(
             "回退模式: 扫描 %s 顶层 %d 个 *.md 文件", repo_root, len(md_files),
         )
-        with engine.begin() as conn:
-            session = Session(bind=conn, expire_on_commit=False)
-            stats = {
-                "total": 0, "skipped": 0, "sections": 0,
-                "embedded": 0, "media": 0, "failed": 0,
-            }
-            for i, f in enumerate(md_files):
-                if (i + 1) % 20 == 0:
-                    logger.info("进度: %d/%d", i + 1, len(md_files))
-                data = f.read_bytes()
-                try:
-                    res = ingest_doc_file(
-                        session, repo=repo,
-                        file_path=f.name, data=data,
-                        reindex=args.reindex,
+        engine = create_engine(settings.postgres_dsn_sync)
+        stats = {
+            "total": 0, "skipped": 0, "sections": 0,
+            "embedded": 0, "media": 0, "failed": 0,
+        }
+        for i, f in enumerate(md_files):
+            if (i + 1) % 20 == 0:
+                logger.info("进度: %d/%d", i + 1, len(md_files))
+            data = f.read_bytes()
+            try:
+                # Phase 1: PG（per-file transaction）
+                with engine.begin() as conn:
+                    s = Session(bind=conn, expire_on_commit=False)
+                    pg = _ingest_doc_pg(
+                        s, repo=repo, file_path=f.name,
+                        data=data, reindex=args.reindex,
                     )
-                    stats["total"] += 1
-                    if res.get("skipped"):
-                        stats["skipped"] += 1
-                    else:
-                        stats["sections"] += res.get("sections", 0)
-                        stats["embedded"] += res.get("embedded", 0)
-                        stats["media"] += res.get("media", 0)
-                        if res.get("status") == "FAILED":
-                            stats["failed"] += 1
-                except Exception:
-                    logger.exception("处理失败: %s", f)
-                    stats["total"] += 1
+                stats["total"] += 1
+                if pg.get("skipped"):
+                    stats["skipped"] += 1
+                    continue
+                if pg["status"] == "FAILED":
                     stats["failed"] += 1
+                    continue
+                # Phase 2: External IO + 短 PG 更新
+                with engine.begin() as conn:
+                    s = Session(bind=conn, expire_on_commit=False)
+                    doc = s.query(Document).filter_by(
+                        repo=repo, doc_name=pg["doc_name"],
+                    ).first()
+                    embedded = _run_external_io(
+                        s, doc=doc, doc_name=pg["doc_name"],
+                        repo=repo, section_rows=pg["section_rows"],
+                        data=data,
+                    )
+                stats["sections"] += len(pg["section_rows"])
+                stats["embedded"] += embedded
+                stats["media"] += pg["media_count"]
+            except Exception:
+                logger.exception("处理失败: %s", f)
+                stats["total"] += 1
+                stats["failed"] += 1
 
     # 摘要
     logger.info(

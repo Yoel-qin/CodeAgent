@@ -1,4 +1,4 @@
-"""code-mcp server：4 个只读代码检索工具的 FastMCP 薄包装。
+"""code-mcp server：5 个只读代码检索工具的 FastMCP 薄包装。
 
 - 每工具独立超时（spec §3.3：grep 10s / read 5s），超时返回 error 不抛
 - core 纯函数经 asyncio.to_thread（**位置参数**——to_thread 不支持 kwargs）+ wait_for
@@ -14,6 +14,7 @@ from mcp.server.fastmcp import FastMCP
 
 from app.core.config import settings
 from app.core.fs_guard import PathEscapeError
+from app.core.globber import glob_files as _core_glob_files
 from app.core.grep import grep_code as _core_grep_code
 from app.core.reader import list_directory as _core_list_directory
 from app.core.reader import read_file as _core_read_file
@@ -38,13 +39,25 @@ async def _run(timeout: float, fn, *args) -> dict:
 
 @mcp.tool()
 async def grep_code(pattern: str, file_glob: str = "*.java", case_sensitive: bool = True,
-                    max_results: int = 20, repo: str = "") -> dict:
-    """按正则/关键词搜索源码。file_glob 如 '**/broker/**/*.java'；max_results 上限 100。仅只读。"""
-    return await _run(GREP_TIMEOUT, _grep_code_impl, pattern, file_glob, case_sensitive, min(max_results, 100), repo or settings.default_repo)
+                    max_results: int = 20, repo: str = "", output_mode: str = "content") -> dict:
+    """按正则/关键词搜索源码。file_glob 如 '**/broker/**/*.java'；max_results 上限 100。
+    output_mode：'content'（默认，逐行 matches）/ 'files_with_matches'（文件列表 files）/
+    'count'（每文件计数 counts）。仅只读。"""
+    return await _run(GREP_TIMEOUT, _grep_code_impl, pattern, file_glob, case_sensitive,
+                      min(max_results, 100), repo or settings.default_repo, output_mode)
 
 
-def _grep_code_impl(pattern, file_glob, case_sensitive, max_results, repo):
-    return _core_grep_code(settings.repos_root, repo, pattern, file_glob, case_sensitive, max_results)
+def _grep_code_impl(pattern, file_glob, case_sensitive, max_results, repo, output_mode):
+    return _core_grep_code(settings.repos_root, repo, pattern, file_glob, case_sensitive, max_results, output_mode)
+
+
+@mcp.tool()
+async def glob_files(pattern: str, ignore_globs: list[str] | None = None,
+                     max_results: int = 100, repo: str = "") -> dict:
+    """按 glob 模式列仓库文件，如 '**/*.java'（任意层）、'broker/**/*.java'、'*.md'（根层）。
+    ignore_globs 同语义排除；max_results 上限 200。仅只读。"""
+    return await _run(READ_TIMEOUT, _core_glob_files, settings.repos_root,
+                      repo or settings.default_repo, pattern, ignore_globs, min(max_results, 200))
 
 
 @mcp.tool()

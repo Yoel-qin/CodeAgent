@@ -145,3 +145,93 @@ def test_rg_parsing_forward_slash_prefix(monkeypatch, tmp_path):
     assert res["engine"] == "rg"
     assert res["total_count"] == 1
     assert res["matches"][0]["file"] == "com/X.java"
+
+
+def test_python_files_mode(monkeypatch, tmp_path):
+    """files_with_matches 模式（Python 引擎）：去重文件列表 + 文件数 total_count。"""
+    res = _grep(monkeypatch, tmp_path, pattern="public", file_glob="**/*.java",
+                output_mode="files_with_matches")
+    assert res["engine"] == "python"
+    assert res["files"] == sorted(res["files"])
+    assert any(f.endswith("CommitLog.java") for f in res["files"])
+    assert len(res["files"]) == 5  # fixture 全部 5 个 .java
+    assert all(isinstance(f, str) for f in res["files"])
+    assert res["total_count"] == len(res["files"]) and res["truncated"] is False
+    res2 = _grep(monkeypatch, tmp_path, pattern="public", file_glob="**/*.java",
+                 output_mode="files_with_matches", max_results=1)
+    assert len(res2["files"]) == 1 and res2["truncated"] is True
+
+
+def test_python_count_mode(monkeypatch, tmp_path):
+    """count 模式（Python 引擎）：每文件计数 + 总匹配行数 total_count。"""
+    res = _grep(monkeypatch, tmp_path, pattern="e", file_glob="**/*.java", output_mode="count")
+    assert res["engine"] == "python"
+    assert res["counts"] == sorted(res["counts"], key=lambda c: c["file"])
+    assert res["total_count"] == sum(c["count"] for c in res["counts"])
+    res_line = _grep(monkeypatch, tmp_path, pattern="e", file_glob="**/*.java")
+    assert res_line["total_count"] == res["total_count"]  # count 模式数的是匹配行
+    res2 = _grep(monkeypatch, tmp_path, pattern="e", file_glob="**/*.java",
+                 output_mode="count", max_results=1)
+    assert len(res2["counts"]) == 1 and res2["truncated"] is True
+    assert res2["total_count"] == res["total_count"]  # max_results 只截文件数，不截行数统计
+
+
+def test_grep_files_with_matches_mode():
+    res = grep_code(FIX, "mini_repo", "putMessage", file_glob="**/*.java",
+                    output_mode="files_with_matches")
+    assert any("CommitLog.java" in f for f in res["files"])
+    assert all(isinstance(f, str) for f in res["files"])
+
+
+def test_grep_count_mode_and_invalid():
+    res = grep_code(FIX, "mini_repo", "putMessage", file_glob="**/*.java", output_mode="count")
+    assert any(c["count"] >= 1 for c in res["counts"] if "CommitLog" in c["file"])
+    assert "error" in grep_code(FIX, "mini_repo", "x", output_mode="bogus")
+
+
+def test_rg_files_with_matches_mode(monkeypatch, tmp_path):
+    """rg --files-with-matches 输出解析：绝对路径剥离 + 反斜杠转 posix + max_results 截文件数。"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "f" / "mini").mkdir(parents=True)
+    repo_abs = (tmp_path / "f" / "mini").resolve()
+    monkeypatch.setattr("app.core.grep.resolve_repo_path", lambda *_a, **_k: repo_abs)
+    stdout = "\n".join([
+        f"{repo_abs}\\com\\CommitLog.java",
+        f"{repo_abs}/com/RetryPolicy.java",
+    ])
+    fake = sp.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+    monkeypatch.setattr(shutil, "which", lambda _n: "/fake/rg")
+    monkeypatch.setattr("app.core.grep._run_rg", lambda *a, **k: fake)
+    res = grep_code("f", "mini", "x", output_mode="files_with_matches")
+    assert res["engine"] == "rg"
+    assert res["files"] == ["com/CommitLog.java", "com/RetryPolicy.java"]
+    assert res["total_count"] == 2 and res["truncated"] is False
+    res2 = grep_code("f", "mini", "x", output_mode="files_with_matches", max_results=1)
+    assert res2["files"] == ["com/CommitLog.java"] and res2["truncated"] is True
+
+
+def test_rg_count_mode(monkeypatch, tmp_path):
+    """rg --count 输出 path:count 解析：盘符冒号不干扰（rpartition）、畸形行跳过。"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "f" / "mini").mkdir(parents=True)
+    repo_abs = (tmp_path / "f" / "mini").resolve()
+    monkeypatch.setattr("app.core.grep.resolve_repo_path", lambda *_a, **_k: repo_abs)
+    stdout = "\n".join([
+        f"{repo_abs}\\com\\CommitLog.java:3",
+        f"{repo_abs}/com/RetryPolicy.java:2",
+        "malformed-line-without-colon",
+        f"{repo_abs}\\com\\Bad.java:notanumber",
+    ])
+    fake = sp.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+    monkeypatch.setattr(shutil, "which", lambda _n: "/fake/rg")
+    monkeypatch.setattr("app.core.grep._run_rg", lambda *a, **k: fake)
+    res = grep_code("f", "mini", "x", output_mode="count")
+    assert res["engine"] == "rg"
+    assert res["counts"] == [
+        {"file": "com/CommitLog.java", "count": 3},
+        {"file": "com/RetryPolicy.java", "count": 2},
+    ]
+    assert res["total_count"] == 5 and res["truncated"] is False
+    res2 = grep_code("f", "mini", "x", output_mode="count", max_results=1)
+    assert len(res2["counts"]) == 1 and res2["truncated"] is True
+    assert res2["total_count"] == 5  # 截的是文件数，总行数不变

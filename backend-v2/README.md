@@ -37,5 +37,6 @@ uv run python scripts/smoke_mcp.py
 uv run python scripts/smoke_mcp.py --pattern MAX_RETRY_TIMES --repo mini_repo
 ```
 
-工具：`grep_code` / `read_file` / `list_directory` / `find_symbol`（全部只读，
+工具：`grep_code`（output_mode: content/files_with_matches/count）/ `glob_files` /
+`read_file` / `list_directory` / `find_symbol`（全部只读，
 路径限制在 REPOS_ROOT 内）。stdio 传输（测试/同机）：加 `--stdio`。

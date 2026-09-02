@@ -4,18 +4,28 @@
 """
 from __future__ import annotations
 
+import threading
+
 from sqlalchemy import create_engine, text
 
 from app.core.config import settings
 
-# ── PG 模块级惰性单例（同步） ──────────────────────────────────────────────
+# ── PG 模块级惰性单例（同步，连接池复用） ──────────────────────────────────
 _engine = None
+_lock = threading.Lock()
 
 
 def _get_engine():
     global _engine
     if _engine is None:
-        _engine = create_engine(settings.postgres_dsn_sync)
+        with _lock:
+            if _engine is None:
+                _engine = create_engine(
+                    settings.postgres_dsn_sync,
+                    pool_size=3,
+                    max_overflow=2,
+                    pool_pre_ping=True,
+                )
     return _engine
 
 

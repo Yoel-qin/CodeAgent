@@ -93,7 +93,7 @@ def main() -> None:
     # Stage 2: build + insert call edges
     from sqlalchemy import select
 
-    from app.db.models.code_graph import CodeEntity, CodeMetric
+    from app.db.models.code_graph import CodeEntity
 
     edges = build_call_edges(parsed_files)
     with Session(engine) as session:
@@ -124,26 +124,29 @@ def main() -> None:
         id_map: dict[tuple[str, str], int] = {
             (r.class_name, r.method_name): r.id for r in session.execute(stmt).all()
         }
+        # deduplicate by entity_id (last-wins), then bulk upsert via raw SQL
+        deduped: dict[int, dict] = {}
         for mr in metric_rows:
             eid = id_map.get((mr["class_name"], mr["method_name"]))
             if eid is None:
                 continue
-            existing = session.get(CodeMetric, eid)
-            if existing is None:
-                session.add(CodeMetric(
-                    entity_id=eid,
-                    complexity=mr["complexity"],
-                    fan_in=mr["fan_in"],
-                    fan_out=mr["fan_out"],
-                    loc=mr["loc"],
-                ))
-            else:
-                existing.complexity = mr["complexity"]
-                existing.fan_in = mr["fan_in"]
-                existing.fan_out = mr["fan_out"]
-                existing.loc = mr["loc"]
-        session.commit()
-    logger.info(f"Stage 3 完成: {len(metric_rows)} metric rows computed")
+            deduped[eid] = mr
+
+        if deduped:
+            from sqlalchemy import text as sa_text
+
+            with engine.begin() as conn:
+                for eid, mr in deduped.items():
+                    conn.execute(sa_text("""
+                        INSERT INTO code_metrics (entity_id, complexity, fan_in, fan_out, loc)
+                        VALUES (:eid, :c, :fi, :fo, :l)
+                        ON CONFLICT (entity_id) DO UPDATE SET
+                            complexity = EXCLUDED.complexity,
+                            fan_in = EXCLUDED.fan_in,
+                            fan_out = EXCLUDED.fan_out,
+                            loc = EXCLUDED.loc
+                    """), {"eid": eid, "c": mr["complexity"], "fi": mr["fan_in"], "fo": mr["fan_out"], "l": mr["loc"]})
+    logger.info(f"Stage 3 完成: {len(deduped)} metric rows upserted (from {len(metric_rows)} raw)")
 
 
 def _infer_module(file_path: str) -> str:

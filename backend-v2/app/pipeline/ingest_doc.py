@@ -18,6 +18,7 @@ import hashlib
 import logging
 from pathlib import Path
 
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.clients.embedding_client import embed_texts
@@ -150,6 +151,64 @@ def _ingest_doc_pg(
 # ---------------------------------------------------------------------------
 
 
+def _delete_doc_external(repo: str, doc_name: str) -> None:
+    """外部索引删除（Milvus + ES，谓词 repo+doc_name）——各自独立软失败。
+
+    Plan 2 终审 I-1 删除谓词函数化：ingest 换版前的旧数据清理与 :func:`delete_doc`
+    （Worker D / API 删除入口）共用同一份谓词，避免两处漂移。
+    """
+    # ---- Milvus（Task 4 指针：自包 try/except）----
+    try:
+        get_client().delete(
+            collection_name="v2_doc_chunks",
+            filter=f'repo == "{_esc(repo)}" && doc_name == "{_esc(doc_name)}"',
+        )
+    except Exception:
+        pass
+
+    # ---- ES（Task 4 指针：自包 try/except）----
+    try:
+        get_es().delete_by_query(
+            index="v2_doc_sections",
+            body={"query": {"bool": {"filter": [{"term": {"repo": repo}}, {"term": {"doc_name": doc_name}}]}}},
+            refresh=True,
+        )
+    except Exception:
+        pass
+
+
+def delete_doc(session: Session, *, repo: str, doc_name: str) -> dict:
+    """按 (repo, doc_name) 删除一篇文档：PG 三表 + Milvus/ES 外部索引。
+
+    Worker D（``status=D``）与 API 侧共用的删除入口；谓词与
+    :func:`_delete_doc_external` 同源（Task 13 抽取）。不 commit——调用方控制
+    事务边界（与 ingest_doc_file 同契约）。Milvus/ES 失败软失败：PG 是
+    source of truth，外部索引可重建。
+
+    Returns: ``{"doc_name", "deleted", "sections", "media"}``；
+    PG 无此文档时 ``deleted=False``（外部索引仍清一次，防残留）。
+    """
+    doc_ids = [
+        row.id
+        for row in session.execute(
+            select(Document.id).where(Document.repo == repo, Document.doc_name == doc_name)
+        ).all()
+    ]
+    if not doc_ids:
+        _delete_doc_external(repo, doc_name)
+        return {"doc_name": doc_name, "deleted": False, "sections": 0, "media": 0}
+
+    sections = session.execute(
+        delete(DocSection).where(DocSection.document_id.in_(doc_ids))
+    ).rowcount or 0
+    media = session.execute(
+        delete(MediaChunk).where(MediaChunk.document_id.in_(doc_ids))
+    ).rowcount or 0
+    session.execute(delete(Document).where(Document.id.in_(doc_ids)))
+    _delete_doc_external(repo, doc_name)
+    return {"doc_name": doc_name, "deleted": True, "sections": sections, "media": media}
+
+
 def _run_external_io(
     session: Session,
     *,
@@ -179,17 +238,10 @@ def _run_external_io(
             sec.embedding_synced = True
         embedded_count = len(embeddings)
 
-    # ---- Milvus（Task 4 指针：自包 try/except）----
-    # 删旧（独立 try，不阻塞后续 upsert）
-    try:
-        get_client().delete(
-            collection_name="v2_doc_chunks",
-            filter=f'repo == "{_esc(repo)}" && doc_name == "{_esc(doc_name)}"',
-        )
-    except Exception:
-        pass
+    # ---- 删旧（Milvus + ES，谓词函数化共用，见 _delete_doc_external）----
+    _delete_doc_external(repo, doc_name)
 
-    # 插新
+    # ---- Milvus 插新 ----
     if embeddings and len(embeddings) == len(section_rows):
         try:
             sections = (
@@ -214,18 +266,7 @@ def _run_external_io(
         except Exception:
             logger.warning("Milvus upsert failed for %s/%s, PG only", repo, doc_name)
 
-    # ---- ES（Task 4 指针：自包 try/except）----
-    # 删旧（独立 try）
-    try:
-        get_es().delete_by_query(
-            index="v2_doc_sections",
-            body={"query": {"bool": {"filter": [{"term": {"repo": repo}}, {"term": {"doc_name": doc_name}}]}}},
-            refresh=True,
-        )
-    except Exception:
-        pass
-
-    # 插新
+    # ---- ES 插新 ----
     try:
         sections = (
             session.query(DocSection)

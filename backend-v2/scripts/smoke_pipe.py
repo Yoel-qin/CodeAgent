@@ -29,7 +29,9 @@
 """
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -46,6 +48,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 
 from app.core.config import settings  # noqa: E402
 from app.pipeline.ingest_code import run_full_code_ingest  # noqa: E402
+from app.pipeline.ingest_doc import delete_doc  # noqa: E402
 from app.pipeline.queue import RedisStreamQueue  # noqa: E402
 from app.pipeline.runner import run_worker_once  # noqa: E402
 
@@ -160,7 +163,20 @@ def _clean_redis() -> None:
 
 
 def _clean_pg(engine) -> None:
-    """按 repo 精确清 PG 侧行（先子后父：边→度量→实体→文档三表→账本）。"""
+    """按 repo 精确清 PG 侧行 + 文档外部索引（先子后父：边→度量→实体→文档→账本）。
+
+    文档删除走 :func:`delete_doc`（Worker D / API 同一删除入口）：它一次清 PG 三表
+    **加** Milvus/ES 外部索引——此前手写 SQL 只删 PG，外部索引跨轮残留（Task 14
+    ⚠️2），下一次 smoke 的 doc 检索会被上一轮的残留命中污染。两篇 smoke 文档名在
+    此穷举、不查 PG 再删（首轮 PG 本就无行，外部残留仍须清）；下方 repo 级 SQL
+    对文档三表保留作兜底（防未来 smoke 新增文档名漏枚举，常态 0 行）。MinIO 原件
+    不在 delete_doc 契约内（同 key 覆盖写、不进检索面），不处理。Milvus/ES 各自
+    软失败，不在冒烟环境也不破清理。
+    """
+    with Session(engine) as s:
+        for name in ("docs/指南.md", "docs/新配置.md"):
+            delete_doc(s, repo=REPO, doc_name=name)
+        s.commit()
     with engine.begin() as conn:
         conn.execute(text(
             "DELETE FROM call_edges WHERE caller_id IN "
@@ -172,6 +188,27 @@ def _clean_pg(engine) -> None:
         for table in ("code_entities", "doc_sections", "media_chunks", "documents",
                       "pipeline_events"):
             conn.execute(text(f"DELETE FROM {table} WHERE repo = :r"), {"r": REPO})
+
+
+def _rmtree_force(root: Path) -> bool:
+    """删临时 repo 目录并核验真的不在了（Task 14 ⚠️1）。
+
+    Windows 上 git 把 objects 文件置只读位，朴素 rmtree 报 PermissionError；回调里
+    ``chmod(S_IWRITE)`` 后重试。返回删除是否成功——调用方据此如实打印，不再像
+    ``ignore_errors=True`` 那样静默吞失败还照打「已删」。
+    """
+    def _retry(func, path, _exc):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except OSError:
+            pass  # 仍失败 → 交回 rmtree 继续，最终由 exists() 核验
+
+    if sys.version_info >= (3, 12):  # onerror 自 3.12 弃用（告警会脏了冒烟输出）
+        shutil.rmtree(root, onexc=_retry)
+    else:
+        shutil.rmtree(root, onerror=_retry)
+    return not root.exists()
 
 
 # ── 消费 / 指纹 ─────────────────────────────────────────────────────
@@ -329,8 +366,12 @@ def main() -> int:
         _clean_pg(engine)
         engine.dispose()
         if len(gates) == 3 and all(ok for _, ok in gates):
-            shutil.rmtree(tmp_root, ignore_errors=True)
-            print(f"[{TAG}] 清理完成：Redis 流已 DEL，PG repo={REPO} 行已清，tmp 已删")
+            if _rmtree_force(tmp_root):
+                print(f"[{TAG}] 清理完成：Redis 流已 DEL，PG repo={REPO} 行已清，tmp 已删")
+            else:
+                # 诚实核验：删除失败（只读 objects 仍被占用等）不得谎报成功
+                print(f"[{TAG}] 清理不完整：tmp 目录删除失败（Windows 只读 objects？）"
+                      f"-> {tmp_root}")
         else:
             print(f"[{TAG}] 未全过：tmp 保留供排查 -> {tmp_root}")
 

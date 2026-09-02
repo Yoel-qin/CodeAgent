@@ -18,7 +18,12 @@ server）；rocketmq 源码 + sa-token 文档已 ingest（Plan 2 验收数据）
 - 每 agent_step ``duration_ms`` 的 p50/max——Windows streamable-http MCP transport 开销
   （Plan 2 裁决遗留：Linux 部署验收须复测 e2e p95 并评估 session 复用）；
 - 场景 1 conversation→retrieval 首事件间隔 ≈ query_analysis Router 墙钟（spec §5.1
-  routing 档 <200ms 目标的本机观察值，含 SSE 首包排空抖动，仅记录不设门）。
+  routing 档 <200ms 目标的本机观察值，含 SSE 首包排空抖动，仅记录不设门）；间隔
+  >3s（分类超时阈）时补标注「该轮已超时落规则兜底」——那是超时样本不是慢成功
+  （Task 10 ③），否则墙钟统计会把 3s+ 的规则兜底误读成 routing 档真耗时；
+- 场景 2 若冻结 query 首测未落 doc 路、由带「文档」关键词的同义问法复测通过，
+  打印 ``PASS(via retry)``（Task 10 ②）——门不因此放宽，但汇总里要能区分
+  「冻结 query 一次过」与「复测才过」。
 
 退出码：三场景门全过 → 0，否则 1。
 """
@@ -136,8 +141,10 @@ async def scenario_codenav(client: httpx.AsyncClient, out_steps: list[dict]) -> 
           f"agent_step: {len(steps)} 个; answer {len(answer)} 字")
     _show_citations(events)
     if gap is not None:
+        # >3s = 分类超时阈：该轮 classification 走的是规则兜底，不是 routing 档慢成功
+        timeout_note = "（>3s 超时阈：该轮分类已超时落规则兜底，非慢成功）" if gap > 3000 else ""
         print(f"  [观察] conversation→retrieval 首事件间隔 ≈ Router 墙钟: {gap:.0f}ms "
-              f"(spec §5.1 routing 档 <200ms 目标的本机观察值，仅记录不设门)")
+              f"(spec §5.1 routing 档 <200ms 目标的本机观察值，仅记录不设门){timeout_note}")
     print(f"  answer 前 240 字: {answer[:240]!r}")
     problems = []
     if not code_cites:
@@ -160,6 +167,7 @@ async def scenario_docqa(client: httpx.AsyncClient, out_steps: list[dict]) -> tu
         _post_chat(client, BACKEND_URL, Q_DOCQA, "sa-token"), SCENARIO_TIMEOUT_S)
     print(f"  HTTP {status}, 事件 {len(_names(events))} 个")
     doc_cites = _citations(events, "doc")
+    via_retry = False
     if not doc_cites and status == 200:
         route = next((d.get("mode") for e, d, _ in events
                       if e == "retrieval" and isinstance(d, dict)), "?")
@@ -167,6 +175,7 @@ async def scenario_docqa(client: httpx.AsyncClient, out_steps: list[dict]) -> tu
         print(f"  [观察] 冻结 query 被路由到 {route}（真 LLM 分类器行为，记录不设门），"
               f"answer 前 120 字: {answer[:120]!r}")
         print(f"  [复测] 带文档关键词同义问法: {Q_DOCQA_EXPLICIT}")
+        via_retry = True
         t0 = time.perf_counter()
         events, status = await asyncio.wait_for(
             _post_chat(client, BACKEND_URL, Q_DOCQA_EXPLICIT, "sa-token"), SCENARIO_TIMEOUT_S)
@@ -185,6 +194,9 @@ async def scenario_docqa(client: httpx.AsyncClient, out_steps: list[dict]) -> tu
         # hybrid 空 ≈ sa-token 文档未 ingest（或检索全挂）——按任务书打印提示并计 FAIL
         print(f"  [提示] 未取到任何 doc citation（hybrid 结果空）：{INGEST_HINT}")
         return False, "无 doc citation（sa-token 文档未 ingest？）"
+    if via_retry:
+        # Task 10 ②：复测分支过的要和冻结 query 一次过分区分（门不变，只是诚实标注）
+        print("  PASS(via retry)（冻结 query 首测未落 doc 路，复测通过）")
     return True, ""
 
 

@@ -2,7 +2,10 @@
 
 - **retrieve_node**（``route == "retrieve"``：None/简单事实/web 的兜底）——纯检索路径，
   **无 LLM 也能出片段**：doc 路 ``hybrid_search`` + code 路 query 提取英文标识符逐个
-  ``grep_code``，两路独立 try/except（一路挂另一路照常）；先发 ``retrieval`` 事件
+  ``grep_code``，两路独立 try/except（一路挂另一路照常）；doc 命中后经 ``get_doc_toc``
+  建 ``(doc_name, anchor) → document_id`` 映射、逐条 ``read_doc_section`` 补正文前 500 字
+  （R1 增强——hybrid 冻结结果形状无 content，缺正文则 retrieve 的 doc 命中等于零材料；
+  TOC/read 任一步失败 → 软失败退回标题行，不为增强破坏降级链）；先发 ``retrieval`` 事件
   （冻结形状 ``{mode, intent, confidence, code_hits, doc_hits}``），再逐条发 ``citation``
   （形状与 Task 5 tools_loader 冻结契约一致），最后生成侧二选一——LLM 可用
   （``configured()``）→ context 拼 user 消息 ``astream`` 逐 chunk 发 token；不可用 →
@@ -30,7 +33,7 @@ from loguru import logger
 from app.agent.state import AgentState
 from app.clients.llm import chat_model_for, configured
 from app.core.config import settings
-from app.core.doc_search import hybrid_search
+from app.core.doc_search import get_doc_toc, hybrid_search, read_doc_section
 from app.core.grep import grep_code
 
 __all__ = ["AgentState", "clarify_node", "retrieve_node"]
@@ -46,6 +49,8 @@ _GREP_GLOB = "**/*.java"
 #: LLM context 与无 key 片段各自截取条数
 _SNIPPET_LIMIT = 8
 _CONTEXT_CONTENT_CHARS = 500
+#: doc 正文增强（R1）：最多补 N 条命中的 read_doc_section 正文
+_ENRICH_LIMIT = 5
 #: clarify：extraction 档超时（秒）与追问文本切片长度
 _CLARIFY_TIMEOUT_S = 5.0
 _TOKEN_CHUNK_CHARS = 64
@@ -122,9 +127,9 @@ def _build_context(doc_results: list[dict], code_matches: list[dict]) -> str:
     if doc_results:
         lines = ["### 文档片段"]
         for r in doc_results[:_SNIPPET_LIMIT]:
-            body = (r.get("content") or "")[:_CONTEXT_CONTENT_CHARS].rstrip()
             head = f"[{r.get('doc_name')}#{r.get('title') or ''}]（anchor {r.get('anchor')}）"
-            lines.append(f"- {head}{body}".rstrip())
+            body = (r.get("content") or "")[:_CONTEXT_CONTENT_CHARS].strip()
+            lines.append(f"- {head}\n  {body}" if body else f"- {head}")
         parts.append("\n".join(lines))
     if code_matches:
         lines = ["### 代码片段"]
@@ -143,6 +148,37 @@ def _snippet_text(doc_results: list[dict], code_matches: list[dict]) -> str:
         head = f"[{r.get('doc_name')}#{r.get('title') or ''}]"
         lines.append(f"{head} {_first_line(r.get('content') or '')}".rstrip())
     return "\n".join(lines)
+
+
+async def _enrich_doc_content(repo: str, doc_results: list[dict]) -> None:
+    """给 doc 命中补 PG 正文（前 500 字）——hybrid 冻结结果形状无 content（R1 增强）。
+
+    ``get_doc_toc`` 建 ``(doc_name, anchor) → document_id`` 映射后，前 N 条逐条
+    ``read_doc_section`` 取正文原地写入 ``r["content"]``（覆盖 hybrid 自带同名键）；
+    TOC 挂 → 整体跳过退回标题行、单条 read 失败/未命中 → 跳过该条，均不抛
+    （不为增强破坏降级链）。同步 core 调用经 ``asyncio.to_thread`` **只传位置参数**。
+    """
+    if not doc_results:
+        return
+    try:
+        toc = await asyncio.to_thread(get_doc_toc, repo)
+        rows = (toc or {}).get("toc") or []
+        ids = {(r.get("doc_name"), r.get("anchor")): r.get("document_id") for r in rows}
+    except Exception as e:  # noqa: BLE001 —— TOC 挂 → 退回标题行
+        logger.warning("retrieve_node: doc TOC 失败，正文增强跳过: {}", e)
+        return
+    for r in doc_results[:_ENRICH_LIMIT]:
+        doc_id = ids.get((r.get("doc_name"), r.get("anchor")))
+        if not doc_id:
+            continue
+        try:
+            sec = await asyncio.to_thread(read_doc_section, repo, doc_id, r.get("anchor"))
+            content = ((sec or {}).get("content") or "")[:_CONTEXT_CONTENT_CHARS].strip()
+            if content:
+                r["content"] = content
+        except Exception as e:  # noqa: BLE001 —— 单条失败跳过
+            logger.warning("retrieve_node: read_doc_section {}#{} 失败跳过: {}",
+                           r.get("doc_name"), r.get("anchor"), e)
 
 
 # ── retrieve：检索兜底（无 LLM 也能出片段） ────────────────────────────────
@@ -181,6 +217,7 @@ async def retrieve_node(state: AgentState, config: RunnableConfig | None = None)
         query = state.get("query", "") or ""
         repo = state.get("repo") or settings.default_repo
         doc_results, code_matches = await _recall(state, repo, query)
+        await _enrich_doc_content(repo, doc_results)
         w({"event": "retrieval", "data": {
             "mode": "retrieve",
             "intent": state.get("intent", ""),

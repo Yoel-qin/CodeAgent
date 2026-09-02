@@ -2,8 +2,8 @@
 
 writer 桩 = 收集 list 的可调用（``_W``）；节点内 writer 统一 ``w = _safe_writer()``，
 测试 monkeypatch ``nodes._safe_writer`` 注入收集器。core 函数（``hybrid_search`` /
-``grep_code``）与 LLM（``chat_model_for`` / ``configured``）全 monkeypatch——
-不打真 PG/Milvus/ES/LLM。
+``grep_code`` / ``get_doc_toc`` / ``read_doc_section``）与 LLM（``chat_model_for`` /
+``configured``）全 monkeypatch——不打真 PG/Milvus/ES/LLM。
 """
 from types import SimpleNamespace
 
@@ -22,6 +22,23 @@ def _grep_result(**overrides):
     return base
 
 
+def _stub_doc_io(monkeypatch, toc_rows=None, contents=None):
+    """钉死 doc 正文增强的 core IO（真 get_doc_toc/read_doc_section 会连 PG）。
+
+    toc_rows：get_doc_toc 返回的 toc 列表（None → 空 toc，增强空转）；
+    contents：{anchor: 正文}——anchor 未登记 → read 返回 error 形（未命中跳过）。
+    """
+    monkeypatch.setattr(nodes, "get_doc_toc", lambda *a: {"toc": toc_rows or []})
+    known = contents or {}
+
+    def _read(*a):
+        anchor = a[2]
+        if anchor in known:
+            return {"content": known[anchor]}
+        return {"error": "section not found"}
+    monkeypatch.setattr(nodes, "read_doc_section", _read)
+
+
 # ── brief 逐字测试 ─────────────────────────────────────────────────────────
 
 
@@ -33,6 +50,7 @@ async def test_retrieve_no_key_emits_snippets(monkeypatch):
                                                  "title": "T", "anchor": "x", "module": None,
                                                  "score": 0.9}], "recall": 1})
     monkeypatch.setattr(nodes, "grep_code", lambda *a: _grep_result())
+    _stub_doc_io(monkeypatch)  # 空 toc：增强空转，本测试钉的是无 key 片段分支
 
     def _boom(_t="reasoning"):
         raise AssertionError("无 key 时不得触碰 LLM")
@@ -80,6 +98,7 @@ async def test_retrieve_event_payload_shape(monkeypatch):
                         lambda *a: _grep_result(matches=[{"file": "A.java", "line": 3, "content": "x"},
                                                          {"file": "B.java", "line": 7, "content": "y"}],
                                                 total_count=2))
+    _stub_doc_io(monkeypatch)
     monkeypatch.setattr(nodes, "configured", lambda: False)
     await nodes.retrieve_node({"query": "putMessage 在哪", "repo": "mini",
                                "conversation_id": "c", "history": [],
@@ -103,6 +122,9 @@ async def test_retrieve_llm_streams_tokens_in_order(monkeypatch):
                         lambda *a: {"results": [{"doc_name": "a.md", "title": "T", "anchor": "x",
                                                  "content": "文档正文"}], "recall": 1})
     monkeypatch.setattr(nodes, "grep_code", lambda *a: _grep_result())
+    _stub_doc_io(monkeypatch,
+                 toc_rows=[{"document_id": 7, "doc_name": "a.md", "anchor": "x"}],
+                 contents={"x": "PG 正文内容"})
     monkeypatch.setattr(nodes, "configured", lambda: True)
     seen = {}
 
@@ -125,7 +147,7 @@ async def test_retrieve_llm_streams_tokens_in_order(monkeypatch):
     assert "上一问" in joined and "上一答" in joined  # history 注入
     user = msgs[-1].content
     assert "putMessage 在哪" in user and "A.java:3" in user and "int x" in user  # query + context
-    assert "a.md#T" in user and "文档正文" in user
+    assert "a.md#T" in user and "PG 正文内容" in user  # doc 段落含 read_doc_section 补的正文
 
 
 async def test_retrieve_core_paths_fail_still_completes(monkeypatch):
@@ -137,6 +159,7 @@ async def test_retrieve_core_paths_fail_still_completes(monkeypatch):
         raise RuntimeError("pg down")
     monkeypatch.setattr(nodes, "hybrid_search", _boom)
     monkeypatch.setattr(nodes, "grep_code", _boom)
+    _stub_doc_io(monkeypatch)  # doc 结果为空 → 增强空转（防御真 IO）
     monkeypatch.setattr(nodes, "configured", lambda: False)
     state = {"query": "x", "repo": "r", "conversation_id": "c", "history": [],
              "intent": "other", "confidence": 0.4, "route": "retrieve"}
@@ -157,6 +180,7 @@ async def test_retrieve_outer_guard_emits_failure_token(monkeypatch):
         raise ValueError("config broken")
     monkeypatch.setattr(nodes, "hybrid_search", lambda *a: {"results": [], "recall": 0})
     monkeypatch.setattr(nodes, "grep_code", lambda *a: _grep_result(matches=[]))
+    _stub_doc_io(monkeypatch)  # doc 结果为空 → 增强空转（防御真 IO）
     monkeypatch.setattr(nodes, "configured", _boom)
     state = {"query": "x", "repo": "r", "conversation_id": "c", "history": [],
              "intent": "other", "confidence": 0.4, "route": "retrieve"}
@@ -208,3 +232,117 @@ async def test_clarify_no_key_uses_template_without_llm(monkeypatch):
                               "route": "clarify"}, {"configurable": {}})
     toks = [c["data"]["content"] for c in w if c["event"] == "token"]
     assert "类名" in "".join(toks)
+
+
+# ── doc 正文增强（R1：F-1 修复） ──────────────────────────────────────────
+
+
+def _doc_only_state():
+    return {"query": "刷盘机制", "repo": "mini", "conversation_id": "c", "history": [],
+            "intent": "doc", "confidence": 0.9, "route": "retrieve"}
+
+
+def _doc_hit(**extra):
+    """hybrid 冻结形状的 doc 命中（无 content 字段），extra 覆盖。"""
+    return {"section_id": "s1", "doc_name": "a.md", "title": "T", "anchor": "x",
+            "module": None, "score": 0.9} | extra
+
+
+async def test_retrieve_doc_body_enriched_into_snippet(monkeypatch):
+    """doc 命中经 TOC 映射 read_doc_section 补正文：无 key 片段含正文 + 位置参数 (repo, id, anchor)。"""
+    w = _W()
+    monkeypatch.setattr(nodes, "_safe_writer", lambda: w)
+    monkeypatch.setattr(nodes, "hybrid_search",
+                        lambda *a: {"results": [_doc_hit()], "recall": 1})
+    monkeypatch.setattr(nodes, "grep_code", lambda *a: _grep_result(matches=[]))
+    monkeypatch.setattr(nodes, "configured", lambda: False)
+    seen = {}
+    _stub_doc_io(monkeypatch,
+                 toc_rows=[{"document_id": 7, "doc_name": "a.md", "anchor": "x"}],
+                 contents={"x": "同步刷盘的正文段落"})
+    real_read = nodes.read_doc_section
+
+    def _read(*a):
+        seen["read_args"] = a
+        return real_read(*a)
+    monkeypatch.setattr(nodes, "read_doc_section", _read)
+    await nodes.retrieve_node(_doc_only_state(), {"configurable": {}})
+    assert seen["read_args"] == ("mini", 7, "x")  # to_thread 位置参数铁律
+    text = "".join(c["data"]["content"] for c in w if c["event"] == "token")
+    assert "[a.md#T]" in text and "同步刷盘的正文段落" in text
+
+
+async def test_retrieve_doc_body_enriched_into_llm_context(monkeypatch):
+    """LLM 路：context 的 doc 段 = 标题行 + 正文前 500 字；PG 正文覆盖 hybrid 自带 content。"""
+    w = _W()
+    monkeypatch.setattr(nodes, "_safe_writer", lambda: w)
+    monkeypatch.setattr(nodes, "hybrid_search",
+                        lambda *a: {"results": [_doc_hit(content="hybrid 自带正文")], "recall": 1})
+    monkeypatch.setattr(nodes, "grep_code", lambda *a: _grep_result(matches=[]))
+    monkeypatch.setattr(nodes, "configured", lambda: True)
+    seen = {}
+    body = "PG 正文" * 120  # 600 字 > 500 → 增强层截前 500 字
+    _stub_doc_io(monkeypatch,
+                 toc_rows=[{"document_id": 7, "doc_name": "a.md", "anchor": "x"}],
+                 contents={"x": body})
+
+    class _M:
+        async def astream(self, messages):
+            seen["messages"] = list(messages)
+            yield SimpleNamespace(content="ok")
+
+    monkeypatch.setattr(nodes, "chat_model_for", lambda _t="reasoning": _M())
+    await nodes.retrieve_node(_doc_only_state(), {"configurable": {}})
+    user = seen["messages"][-1].content
+    assert "[a.md#T]" in user
+    assert body[:500] in user and body not in user  # PG 正文截前 500 字（覆盖 hybrid 自带）
+    assert "hybrid 自带正文" not in user
+
+
+async def test_retrieve_toc_failure_keeps_title_line(monkeypatch):
+    """TOC 挂：正文增强跳过、退回标题行，不触发整体降级 token。"""
+    w = _W()
+    monkeypatch.setattr(nodes, "_safe_writer", lambda: w)
+    monkeypatch.setattr(nodes, "hybrid_search",
+                        lambda *a: {"results": [_doc_hit()], "recall": 1})
+    monkeypatch.setattr(nodes, "grep_code", lambda *a: _grep_result(matches=[]))
+    monkeypatch.setattr(nodes, "configured", lambda: False)
+
+    def _toc_boom(*_a):
+        raise RuntimeError("pg down")
+
+    def _read_boom(*_a):
+        raise AssertionError("TOC 挂后不得逐条 read")
+    monkeypatch.setattr(nodes, "get_doc_toc", _toc_boom)
+    monkeypatch.setattr(nodes, "read_doc_section", _read_boom)
+    await nodes.retrieve_node(_doc_only_state(), {"configurable": {}})
+    names = [c["event"] for c in w]
+    assert names[0] == "retrieval" and names[-1] == "token"
+    text = w[-1]["data"]["content"]
+    assert "[a.md#T]" in text and "检索降级失败" not in text  # 降级链未被增强破坏
+
+
+async def test_retrieve_read_failure_or_miss_skips_row(monkeypatch):
+    """单条 read 抛异常 / 返回 error 形：跳过该条，标题行保留，其余照常。"""
+    w = _W()
+    monkeypatch.setattr(nodes, "_safe_writer", lambda: w)
+    monkeypatch.setattr(nodes, "hybrid_search",
+                        lambda *a: {"results": [_doc_hit(), _doc_hit(anchor="y", title="T2")],
+                                   "recall": 2})
+    monkeypatch.setattr(nodes, "grep_code", lambda *a: _grep_result(matches=[]))
+    monkeypatch.setattr(nodes, "configured", lambda: False)
+
+    def _toc(*_a):
+        return {"toc": [{"document_id": 7, "doc_name": "a.md", "anchor": "x"},
+                        {"document_id": 7, "doc_name": "a.md", "anchor": "y"}]}
+
+    def _read(*a):
+        if a[2] == "x":
+            raise RuntimeError("io down")
+        return {"error": "section not found"}
+    monkeypatch.setattr(nodes, "get_doc_toc", _toc)
+    monkeypatch.setattr(nodes, "read_doc_section", _read)
+    await nodes.retrieve_node(_doc_only_state(), {"configurable": {}})
+    text = w[-1]["data"]["content"]
+    assert "[a.md#T]" in text and "[a.md#T2]" in text  # 两条命中都保留标题行
+    assert "检索降级失败" not in text

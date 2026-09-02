@@ -1,9 +1,12 @@
+import asyncio
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.chat_service import (
     add_message,
     get_conversation_detail,
+    list_conversations,
     open_conversation,
 )
 
@@ -57,3 +60,19 @@ async def test_open_existing_conversation(async_session):
         async_session, query="问题二", conversation_id=cid, target_repo="rocketmq"
     )
     assert cid2 == cid
+
+
+async def test_list_conversations_orders_by_recent_activity(async_session):
+    conv_a, cid_a = await open_conversation(
+        async_session, query="问题A", conversation_id=None, target_repo="rocketmq"
+    )
+    await asyncio.sleep(0.01)  # 隔开时钟粒度，保证 B.updated_at 严格小于 A 的新活跃时间
+    _conv_b, cid_b = await open_conversation(
+        async_session, query="问题B", conversation_id=None, target_repo="rocketmq"
+    )
+    assert cid_a != cid_b
+    # 老会话 A 补发消息 → updated_at 反超 B → 列表首位应是 A（最近活跃在前）
+    await add_message(async_session, conv_a, role="user", content="追问")
+    rows = await list_conversations(async_session)
+    assert [c.id for c in rows] == [cid_a, cid_b]
+    assert rows[0].updated_at > rows[0].created_at

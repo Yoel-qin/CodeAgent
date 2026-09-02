@@ -12,7 +12,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.chat import ChatMessage, Conversation
+from app.db.models.chat import ChatMessage, Conversation, _utcnow
 
 TITLE_MAX_CHARS = 50
 
@@ -58,7 +58,13 @@ async def add_message(
     content: str,
     meta: dict | None = None,
 ) -> int:
-    """追加一条消息，flush 取自增 id（不 commit）。"""
+    """追加一条消息，flush 取自增 id（不 commit）。
+
+    顺带把会话 updated_at 推进到当前时刻——`list_conversations` 的
+    「最近活跃在前」排序靠它；模型 onupdate 只在行被 UPDATE 时生效，
+    不主动赋值则老会话补发消息后列表首位不变。
+    """
+    conv.updated_at = _utcnow()
     msg = ChatMessage(conversation_id=conv.id, role=role, content=content, meta=meta)
     session.add(msg)
     await session.flush()

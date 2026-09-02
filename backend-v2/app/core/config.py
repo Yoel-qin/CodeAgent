@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     cost_max_llm_calls: int = 12
     history_turns: int = 6
 
+    # 离线管道（Plan 3 M5）：Redis Stream 队列 + 死信流 + 消费组 + 重试上限
+    pipe_stream: str = "v2:pipe:events"
+    pipe_dead_stream: str = "v2:pipe:dead"
+    pipe_group: str = "v2-workers"
+    pipe_max_attempts: int = 3
+
     # 源码镜像（只读 git 工作树）与 MCP
     repos_root: str = "../data/repo"
     default_repo: str = "rocketmq"

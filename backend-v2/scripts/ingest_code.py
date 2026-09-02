@@ -28,6 +28,7 @@ from app.core.config import settings  # noqa: E402
 from app.pipeline.call_graph import build_call_edges  # noqa: E402
 from app.pipeline.code_metrics import compute_metrics  # noqa: E402
 from app.pipeline.ingest_code import (  # noqa: E402
+    _infer_module,
     entities_from_parsed,
     upsert_entities,
     walk_java_files,
@@ -70,7 +71,7 @@ def main() -> None:
                 rel = fp.relative_to(repo_dir).as_posix()
                 pf = parse_java(src, rel)
                 parsed_files.append(pf)
-                module = pf.module_name or _infer_module(rel)
+                module = _infer_module(rel) or pf.module_name
                 rows = entities_from_parsed(pf, repo=repo_name, module=module)
                 batch_rows.extend(rows)
             except Exception:
@@ -147,11 +148,6 @@ def main() -> None:
                             loc = EXCLUDED.loc
                     """), {"eid": eid, "c": mr["complexity"], "fi": mr["fan_in"], "fo": mr["fan_out"], "l": mr["loc"]})
     logger.info(f"Stage 3 完成: {len(deduped)} metric rows upserted (from {len(metric_rows)} raw)")
-
-
-def _infer_module(file_path: str) -> str:
-    first = file_path.replace("\\", "/").split("/")[0]
-    return first if first else "root"
 
 
 if __name__ == "__main__":

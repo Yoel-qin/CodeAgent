@@ -20,7 +20,7 @@ def upload_original(repo: str, doc_name: str, data: bytes) -> str | None:
         endpoint = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
         access_key = os.environ.get("MINIO_ACCESS_KEY_ID", "minioadmin")
         secret_key = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
-        bucket = os.environ.get("MINIO_BUCKET", "coderag")
+        bucket = os.environ.get("MINIO_BUCKET", "coderag-v2")
 
         client = Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=False)
         if not client.bucket_exists(bucket):

@@ -46,7 +46,7 @@ def _ingest_doc_pg(
     session: Session,
     *,
     repo: str,
-    file_path: Path,
+    file_path: str | Path,
     data: bytes,
     reindex: bool = False,
 ) -> dict:
@@ -55,9 +55,10 @@ def _ingest_doc_pg(
     Returns: {doc, doc_name, section_rows, elements, meta,
               media_count, status, skipped}.
     """
+    file_path = Path(file_path) if isinstance(file_path, str) else file_path
     file_hash = hashlib.sha256(data).hexdigest()
-    # I-2 修复：doc_name 入口一次截断，全流程统一
-    doc_name = str(file_path)[:512]
+    # doc_name: posix 归一化（跨平台一致）
+    doc_name = file_path.as_posix()[:512]
     ext = file_path.suffix
     doc_type = doc_format_for(ext) or "unknown"
 
@@ -183,7 +184,7 @@ def _run_external_io(
     try:
         get_client().delete(
             collection_name="v2_doc_chunks",
-            filter=f'doc_name == "{_esc(doc_name)}"',
+            filter=f'repo == "{_esc(repo)}" && doc_name == "{_esc(doc_name)}"',
         )
     except Exception:
         pass
@@ -218,7 +219,7 @@ def _run_external_io(
     try:
         get_es().delete_by_query(
             index="v2_doc_sections",
-            body={"query": {"term": {"doc_name": doc_name}}},
+            body={"query": {"bool": {"filter": [{"term": {"repo": repo}}, {"term": {"doc_name": doc_name}}]}}},
             refresh=True,
         )
     except Exception:

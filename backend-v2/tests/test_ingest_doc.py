@@ -64,7 +64,7 @@ def test_ingest_different_hash_replaces(tmp_path, session, monkeypatch):
     # PG: sections replaced, not accumulated
     from app.db.models.doc import DocSection, Document  # noqa: E402
 
-    expected_name = str(Path("d/a.md"))[:512]  # Windows: backslash
+    expected_name = Path("d/a.md").as_posix()[:512]  # always forward slash
     doc = session.query(Document).filter_by(repo="mini", doc_name=expected_name).first()
     assert doc is not None
     count = session.query(DocSection).filter_by(document_id=doc.id).count()
@@ -76,8 +76,17 @@ def test_ingest_different_hash_replaces(tmp_path, session, monkeypatch):
     assert "Content2" in contents
     assert "Content1" not in contents
 
-    # Milvus delete called (at least once for the re-ingest)
+    # Milvus delete called with repo filter (I-1)
     assert mock_mc.delete.call_count >= 1
+    delete_call = mock_mc.delete.call_args_list[-1]
+    assert 'repo == "mini"' in delete_call.kwargs.get('filter', '')
+
+    # ES delete_by_query called with repo filter (I-1)
+    assert mock_es.delete_by_query.call_count >= 1
+    es_call = mock_es.delete_by_query.call_args_list[-1]
+    assert es_call.kwargs.get('index') == 'v2_doc_sections'
+    es_body = es_call.kwargs.get('body', {})
+    assert 'repo' in str(es_body)
 
     # Milvus upsert called for both ingests
     assert len(upserted) == n1 + res2["sections"]

@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_model: str = "deepseek-chat"
+    # 三档端点路由（M44 移植）：字段级覆盖 llm_*，空 = 三档全默认零行为变更
+    model_routes: str = ""
+    llm_model_routing: str = ""
+    llm_model_extraction: str = ""
+    llm_model_reasoning: str = ""
+
+    # Agent 层（Plan 3 M4）：工具轮上限 / 成本预算 / 跨轮记忆
+    agent_rounds_code: int = 8
+    agent_rounds_doc: int = 3
+    cost_max_tokens: int = 80000
+    cost_max_llm_calls: int = 12
+    history_turns: int = 6
 
     # 源码镜像（只读 git 工作树）与 MCP
     repos_root: str = "../data/repo"

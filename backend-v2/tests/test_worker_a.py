@@ -50,3 +50,29 @@ def test_expand_push_explicit_files():
     out = expand_push({"repo": "r", "commit_hash": "abc",
                        "files": [{"path": "x.md", "status": "D"}]})
     assert out == [("file", {"repo": "r", "commit_hash": "abc", "path": "x.md", "status": "D"})]
+
+
+def test_expand_push_chinese_filename(tmp_path, monkeypatch):
+    """Task 12 评审 ⚠️-1：中文文件名不被 git C-quote（-c core.quotepath=false）。"""
+    repo = tmp_path / "cn"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "docs").mkdir()
+    target = repo / "docs" / "架构指南.md"
+    target.write_text("# v1\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "v1")
+    v1 = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                        capture_output=True, text=True, check=True).stdout.strip()
+    target.write_text("# v2\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "v2")
+    v2 = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                        capture_output=True, text=True, check=True).stdout.strip()
+
+    monkeypatch.setattr("app.core.config.settings.repos_root", str(tmp_path))
+    out = expand_push({"repo": "cn", "before": v1, "after": v2})
+    paths = [p["path"] for k, p in out if k == "file"]
+    assert paths == ["docs/架构指南.md"], f"应产出真实中文名，而非 C-quote 串: {paths}"

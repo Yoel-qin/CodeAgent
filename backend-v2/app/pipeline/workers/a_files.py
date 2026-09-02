@@ -71,6 +71,10 @@ def _git_diff_files(repo: str, before: Any, after: Any) -> list[dict[str, str]]:
                 "git",
                 "-C",
                 str(repo_dir),
+                # Task 12 评审 ⚠️-1：core.quotepath 默认 true 会把非 ASCII 路径
+                # C-quote 成 "docs/\346\226\207..." —— 中文文件名解析全错，关掉
+                "-c",
+                "core.quotepath=false",
                 "diff",
                 "--name-status",
                 str(before),

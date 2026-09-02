@@ -274,3 +274,91 @@ def test_done_ids_match_persisted_rows(monkeypatch):
     meta = msgs[1][3]
     assert {"citations", "agent_steps", "intent", "route", "cost"} <= set(meta)
     assert meta["route"] == "clarify" and set(meta["cost"]) >= {"spent_tokens", "llm_calls", "estimated"}
+
+
+# ── R1（评审 F-A）：history 载入先于本测 user 落行，当前轮不得泄入 history ───────
+
+
+def test_history_excludes_current_turn_query(monkeypatch):
+    """两轮会话：第二轮节点收到的 history == [user:第一问, assistant:回复] 恰 2 条。
+
+    评审实证的缺陷序（先 add_message(user) 再 load_history）会把当前 query 泄入
+    history，retrieve/react_base 的 seed 再追加一次 → 连续两条相同 HumanMessage。
+    钉住正确序：第二轮 state["history"] 恰含上一轮一问一答、不含当前 query。
+    """
+    from langchain_core.runnables import RunnableLambda
+
+    from app.agent import docqa, nodes, query_analysis, react_base, tools_loader
+    from app.agent.query_analysis import RouteDecision
+    from app.main import app
+
+    async def _noop_load():
+        return None
+    monkeypatch.setattr(tools_loader, "load_tools", _noop_load)  # 两处都钉，理由见 test_chat_sse_contract
+    monkeypatch.setattr("app.main.load_tools", _noop_load)
+
+    # 第一轮：无 key 规则路 → clarify 模板回复（落 user + assistant 两行）
+    monkeypatch.setattr(query_analysis, "configured", lambda: False)
+    monkeypatch.setattr(nodes, "configured", lambda: False)
+    with TestClient(app) as client:
+        with client.stream("POST", "/v1/chat/completions",
+                           json={"query": "第一问问的是什么"}) as resp:
+            turn1 = _read_sse(resp)
+        cid = turn1[0][1]["conversation_id"]
+
+        # 第二轮：LLM 路 → docqa → 工具挂 → react_base 转retrieve_node（捕获 state）
+        monkeypatch.setattr(query_analysis, "configured", lambda: True)
+
+        class _StubRoutingModel:
+            def with_structured_output(self, _schema):
+                return RunnableLambda(lambda _msgs: RouteDecision(intent="doc", confidence=0.85))
+        monkeypatch.setattr(query_analysis, "chat_model_for", lambda _t="routing": _StubRoutingModel())
+        monkeypatch.setattr(docqa, "get_doc_tools", lambda: [])
+        captured = {}
+
+        async def _capture_retrieve(state, config):
+            captured["history"] = list(state.get("history") or [])
+        monkeypatch.setattr(react_base, "retrieve_node", _capture_retrieve)
+
+        with client.stream("POST", "/v1/chat/completions",
+                           json={"query": "第二问问的是什么", "conversation_id": cid}) as resp:
+            assert resp.status_code == 200
+            _read_sse(resp)
+
+    history = captured["history"]
+    assert [m["role"] for m in history] == ["user", "assistant"]
+    assert history[0]["content"] == "第一问问的是什么"
+    assert history[1]["content"]  # 上一轮确有 assistant 回复（clarify 模板）
+    assert all("第二问" not in m["content"] for m in history)  # 当前轮不得泄入
+
+
+def test_load_history_keeps_complete_pairs():
+    """load_history 窗口只收完整 user/assistant 对：截断切开一对 → 丢弃开头孤儿 assistant。"""
+    import asyncio
+
+    from sqlalchemy import text
+
+    from app.db.base import SessionLocal
+    from app.services.chat_service import add_message, load_history, open_conversation
+
+    async def main():
+        async with SessionLocal() as session:
+            conv, cid = await open_conversation(session, query="u1", conversation_id=None,
+                                                target_repo="r")
+            try:
+                for role, content in (("user", "u1"), ("assistant", "a1"),
+                                      ("user", "u2"), ("assistant", "a2"),
+                                      ("user", "u3")):  # 末轮无回复
+                    await add_message(session, conv, role=role, content=content)
+                # 窗口 = 最近 4 条 [a1,u2,a2,u3]：切开了 (u1,a1) → 丢弃开头的孤儿 a1
+                history = await load_history(session, cid, 2)
+            finally:
+                await session.execute(
+                    text("delete from conversations where id = :i"), {"i": cid})
+                await session.commit()
+        return history
+
+    history = asyncio.run(main())
+    assert history == [{"role": "user", "content": "u2"},
+                       {"role": "assistant", "content": "a2"},
+                       {"role": "user", "content": "u3"}]

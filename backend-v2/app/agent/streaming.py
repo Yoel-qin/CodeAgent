@@ -1,7 +1,9 @@
 """streaming 适配层（Plan 3 Task 9）：主图事件流 → SSE ``(event, data)`` 对。
 
-六步（brief 冻结）：① ``open_conversation`` + user 落行 → ``conversation`` 事件
-② 取 ``chat_messages`` 最近 ``settings.history_turns`` 轮 ③ 组装 per-request config
+六步（brief 冻结，①② 为 R1 评审 F-A 修正后的顺序）：① ``open_conversation`` →
+② 取 ``chat_messages`` 最近 ``settings.history_turns`` 轮（**先于**本测 user 落行，
+否则同事务 flush 即读会把当前 query 泄入 history）→ user 落行 + ``conversation`` 事件
+③ 组装 per-request config
 （session/cost/top_k 走 ``configurable``，**不进图状态**；``recursion_limit`` 60）
 ④ ``GRAPH.astream(..., stream_mode="custom")`` 逐 chunk 转发 + 顺序无关累积
 tokens/citations/agent_steps ⑤ 流尽聚合 answer → assistant 落行 + commit → ``done``
@@ -49,11 +51,14 @@ async def stream_chat(
     try:
         conv, cid = await open_conversation(
             session, query=query, conversation_id=conversation_id, target_repo=repo)
+        # R1（评审 F-A）：history 必须**先于**本测 user 落行读取——同事务 flush 即可读，
+        # 后读会把当前 query 泄入 history，retrieve/react_base 的 seed 再追加一次 →
+        # 连续两条相同 HumanMessage（每轮多烧一份 token 且干扰生成）。
+        history = await load_history(session, cid, settings.history_turns)
         user_msg_id = await add_message(session, conv, role="user", content=query)
         yield ("conversation", {"conversation_id": cid, "title": conv.title,
                                 "message_id": user_msg_id})
 
-        history = await load_history(session, cid, settings.history_turns)
         config = {"configurable": {"session": session, "cost": cost, "top_k": top_k},
                   "recursion_limit": 60}
         state = {"query": query, "repo": repo, "conversation_id": cid, "history": history}

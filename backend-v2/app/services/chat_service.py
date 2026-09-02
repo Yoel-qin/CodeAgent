@@ -76,11 +76,12 @@ async def load_history(
     conversation_id: str | None,
     limit: int,
 ) -> list[dict]:
-    """跨轮记忆：最近 ``limit`` 轮（user/assistant 成对），正序 ``[{"role","content"}]``。
+    """跨轮记忆：最近 ``limit`` 轮（user/assistant **完整成对**），正序 ``[{"role","content"}]``。
 
     一条 SQL 倒序取末 ``limit*2`` 条 user/assistant 消息再反转（Task 9 streaming 层
     注入 ``state["history"]``，经 ``nodes._history_messages`` 转 langchain 消息）。
-    无会话 / ``limit <= 0`` → 空表。
+    R1（评审 F-A 顺手项）：截断时若把一对切开会留下开头的孤儿 assistant（其 user 已
+    落窗外）——丢弃该条，窗口只收完整对。无会话 / ``limit <= 0`` → 空表。
     """
     if not conversation_id or limit <= 0:
         return []
@@ -91,8 +92,11 @@ async def load_history(
         .order_by(ChatMessage.id.desc())
         .limit(limit * 2)
     )
-    return [{"role": m.role, "content": m.content}
-            for m in reversed(list(rows.scalars().all()))]
+    history = [{"role": m.role, "content": m.content}
+               for m in reversed(list(rows.scalars().all()))]
+    if history and history[0]["role"] == "assistant":
+        history = history[1:]
+    return history
 
 
 async def list_conversations(

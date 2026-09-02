@@ -33,12 +33,17 @@ from app.core.config import settings
 
 @dataclass
 class PipeEvent:
-    """一条管道事件。event_id 即 redis stream id（如 ``"1690000000000-0"``）。"""
+    """一条管道事件。event_id 即 redis stream id（如 ``"1690000000000-0"``）。
+
+    ``raw`` 是毒消息旁路留证：payload JSON 解码失败时存原始串（解码成功为 None），
+    dead_letter 时原样落死信流的 ``payload_raw`` 字段，便于查案。
+    """
 
     event_id: str
     kind: str  # push | file | graph_rebuild
     payload: dict[str, Any]
     attempts: int = 0
+    raw: str | None = None
 
 
 class PipeQueue(ABC):
@@ -50,7 +55,7 @@ class PipeQueue(ABC):
 
     @abstractmethod
     def consume(self, *, count: int = 10, block_ms: int = 2000) -> list[PipeEvent]:
-        """拉取至多 count 条（Redis 实现 block_ms 内无消息返回 []，不抛错）。"""
+        """拉取至多 count 条；``block_ms<=0`` 表示非阻塞（无消息立即返回 []，不抛错）。"""
 
     @abstractmethod
     def ack(self, *events: PipeEvent) -> int:
@@ -104,10 +109,12 @@ class RedisStreamQueue(PipeQueue):
     @staticmethod
     def _decode_event(event_id: str, fields: dict[str, Any]) -> PipeEvent:
         raw_payload = fields.get("payload") or "{}"
+        raw: str | None = None
         try:
             payload = json.loads(raw_payload)
         except (TypeError, ValueError):
-            payload = {}
+            payload = {}  # 毒消息：消费不崩，原文留证到 raw（dead_letter 落 payload_raw）
+            raw = raw_payload if isinstance(raw_payload, str) else str(raw_payload)
         try:
             attempts = int(fields.get("attempts") or 0)
         except (TypeError, ValueError):
@@ -117,18 +124,23 @@ class RedisStreamQueue(PipeQueue):
             kind=str(fields.get("kind") or ""),
             payload=payload,
             attempts=attempts,
+            raw=raw,
         )
 
     @staticmethod
     def _iter_response(resp: Any) -> list[tuple[str, dict[str, Any]]]:
         """归一 XREADGROUP 返回（redis-py 实际回 list 形状；dict 形状也兼容）：
-        [[stream, [(id, {field: value}), ...]], ...] / {stream: [(id, fields), ...]}。
+        外层 ``[[stream, [(id, {field: value}), ...]], ...]`` / ``{stream: [...]}``；
+        内层 ``(id, fields)`` 列表 / ``{id: fields}``（RESP3 + 部分解析器组合的形状）
+        两种都吃。
         """
         pairs: list[tuple[str, dict[str, Any]]] = []
         if not resp:
             return pairs
         entries = resp.items() if isinstance(resp, dict) else resp
         for _stream_name, stream_entries in entries:
+            if isinstance(stream_entries, dict):  # 内层 dict 形状：{id: {field: value}}
+                stream_entries = list(stream_entries.items())
             for event_id, fields in stream_entries or []:
                 pairs.append((str(event_id), dict(fields or {})))
         return pairs
@@ -151,12 +163,14 @@ class RedisStreamQueue(PipeQueue):
     def consume(self, *, count: int = 10, block_ms: int = 2000) -> list[PipeEvent]:
         self._ensure_group()  # 流被 DEL 会连带删组，这里懒式重建（见模块 docstring）
         # XREADGROUP GROUP g c COUNT n BLOCK ms STREAMS s >（">" = 只取未投递过的）
+        # block_ms<=0 → 不传 BLOCK（非阻塞轮询）。注意 Redis 的 BLOCK 0 语义是
+        # 「无限阻塞」，绝非立即返回——省略参数才是非阻塞。
         resp = self.r.xreadgroup(
             self.group,
             self.consumer,
             streams={self.stream: ">"},
             count=count,
-            block=block_ms,
+            block=block_ms if block_ms > 0 else None,
         )
         return [self._decode_event(eid, fields) for eid, fields in self._iter_response(resp)]
 
@@ -168,18 +182,18 @@ class RedisStreamQueue(PipeQueue):
         return int(self.r.xack(self.stream, self.group, *ids))
 
     def dead_letter(self, event: PipeEvent, error: str) -> str:
-        # XADD dead * kind/payload/attempts/error——原样留证，外加错误信息
-        return str(
-            self.r.xadd(
-                self.dead,
-                {
-                    "kind": event.kind,
-                    "payload": self._encode(event.payload),
-                    "attempts": str(event.attempts),
-                    "error": error,
-                },
-            )
-        )
+        # XADD dead * kind/payload/attempts/error——原样留证，外加错误信息；
+        # 毒消息（payload 解码失败）再补 payload_raw：重编码的 payload 是空 dict，
+        # 查案得看原始串
+        fields: dict[str, str] = {
+            "kind": event.kind,
+            "payload": self._encode(event.payload),
+            "attempts": str(event.attempts),
+            "error": error,
+        }
+        if event.raw:
+            fields["payload_raw"] = event.raw
+        return str(self.r.xadd(self.dead, fields))
 
     def depths(self) -> dict[str, int]:
         pending = 0

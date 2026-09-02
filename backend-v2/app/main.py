@@ -7,6 +7,7 @@ from loguru import logger
 from app.agent import tools_loader
 from app.api.chat import router as chat_router
 from app.api.health import router as health_router
+from app.api.sync import router as sync_router
 from app.core.logging import setup_logging
 
 
@@ -25,3 +26,4 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="CodeRAG-v2", lifespan=lifespan)
 app.include_router(health_router)
 app.include_router(chat_router)
+app.include_router(sync_router)

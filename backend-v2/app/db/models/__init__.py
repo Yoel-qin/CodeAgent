@@ -1,6 +1,7 @@
 from app.db.models.chat import ChatMessage, Conversation, Feedback
 from app.db.models.code_graph import CallEdge, CodeEntity, CodeMetric
 from app.db.models.doc import DocSection, Document, MediaChunk
+from app.db.models.pipeline import PipelineEvent
 
 __all__ = [
     "CodeEntity",
@@ -12,4 +13,5 @@ __all__ = [
     "Conversation",
     "ChatMessage",
     "Feedback",
+    "PipelineEvent",
 ]

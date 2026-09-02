@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     mcp_code_port: int = 8110
     mcp_doc_port: int = 8111
     mcp_graph_port: int = 8112
+    mcp_common_port: int = 8113
 
     @property
     def postgres_dsn(self) -> str:

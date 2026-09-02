@@ -80,6 +80,30 @@ async def test_react_no_key_degrades_to_retrieve(monkeypatch):
     assert called.get("yes") is True
 
 
+async def test_react_no_key_with_tools_degrades_without_react(monkeypatch):
+    """分支③（Task 8 评审遗留补测）：工具非空但无 key —— 不进 ReAct，直接 retrieve 兜底。
+
+    现有 ``test_react_no_key_degrades_to_retrieve`` stub 的是空工具列表，实际走的是
+    「工具服务不可用」分支②；本测试钉住「无 key 短路在 ReAct 构造之前」：create_react_agent
+    一旦被触达即炸。
+    """
+    called = {}
+    monkeypatch.setattr(react_base, "configured", lambda: False)
+
+    async def _fake_retrieve(state, config):
+        called["yes"] = True
+    monkeypatch.setattr(react_base, "retrieve_node", _fake_retrieve)
+
+    def _boom(**_kw):
+        raise AssertionError("无 key 时不得构造 ReAct agent")
+    monkeypatch.setattr(react_base, "create_react_agent", _boom)
+    monkeypatch.setattr(codenav, "get_code_tools", lambda: [_tool("grep_code", GREP_RESULT)])
+    await codenav.codenav_node({"query": "q", "repo": "r", "conversation_id": "c",
+                                "history": [], "intent": "code", "confidence": 0.9,
+                                "route": "codenav"}, {"configurable": {}})
+    assert called.get("yes") is True
+
+
 async def test_react_recursion_overflow_degrades(monkeypatch):
     """fake 模型永远发 tool_calls → recursion_limit 触发 GraphRecursionError → retrieve 降级。"""
     model = _FakeToolModel(messages=iter(

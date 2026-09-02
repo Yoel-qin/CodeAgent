@@ -75,9 +75,10 @@ def _drain_tracker(writer, tracker: ToolCallTracker) -> None:
         _emit(writer, "agent_step", {"tool": s["tool"], "args": s["args"],
                                      "n": s["n"], "duration_ms": s["duration_ms"]})
     for i, name in enumerate(tracker.looped):
-        # 循环检测拦截的调用不产生 steps 条目（Task 5 交底）——这里显式落事件，否则循环不可见
+        # 循环检测拦截的调用不产生 steps 条目（Task 5 交底）——这里显式落事件，否则循环不可见。
+        # duration_ms 恒 None（调用被拦截未执行，无耗时）；键保留 = 冻结事件形状不随路径漂移
         _emit(writer, "agent_step", {"tool": name, "args": {"loop_detected": True},
-                                     "n": len(tracker.steps) + i + 1})
+                                     "n": len(tracker.steps) + i + 1, "duration_ms": None})
     for c in tracker.citations:
         _emit(writer, "citation", c)
 

@@ -20,8 +20,10 @@
 （事件即数据，agent 不写图 state；旧库 adapter 同构）。Task 8 的 ReAct 降级链与
 Task 9 的图装配都消费 retrieve_node。
 """
-from __future__ import annotations
-
+# 注意：本模块**不**加 ``from __future__ import annotations``——langgraph 按运行时注解
+# 对象识别节点可注入的 ``config`` 形参，字符串化的 ``"RunnableConfig | None"`` 不在其
+# 白名单 → config 被静默丢弃（configurable 里的 session/cost/top_k 全落空）+ UserWarning；
+# 真注解对象 ``RunnableConfig | None == Optional[RunnableConfig]`` 才匹配（Task 9 实测）。
 import asyncio
 import re
 

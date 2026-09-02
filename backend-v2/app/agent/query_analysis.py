@@ -25,8 +25,10 @@ brief 适配（有据偏差，须带入评审）：plan 文字给规则命中 co
 simple_fact 门），无 key 降级才能真正路由而非全部追问；关键词清单与正则
 ``([A-Z][a-z0-9]+){2,}`` 仍逐字照 brief。
 """
-from __future__ import annotations
-
+# 注意：本模块**不**加 ``from __future__ import annotations``——langgraph 按运行时注解
+# 对象识别节点可注入的 ``config`` 形参，字符串化的 ``"RunnableConfig | None"`` 不在其
+# 白名单 → config 被静默丢弃（configurable 里的 session/cost/top_k 全落空）+ UserWarning；
+# 真注解对象 ``RunnableConfig | None == Optional[RunnableConfig]`` 才匹配（Task 9 实测）。
 import asyncio
 import re
 from typing import Literal

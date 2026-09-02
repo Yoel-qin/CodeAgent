@@ -8,8 +8,10 @@ LLM 空手作答（模型无视了检索要求 / 文档库确实没料）时，�
 而 prompt 侧的「无依据明确拒答」（``DOCQA_SYSTEM``）是同一约束的模型侧防线。
 降级路径（工具挂/无 key/异常转 retrieve）不追加——retrieve 自产自己的 citation。
 """
-from __future__ import annotations
-
+# 注意：本模块**不**加 ``from __future__ import annotations``——langgraph 按运行时注解
+# 对象识别节点可注入的 ``config`` 形参，字符串化的 ``"RunnableConfig | None"`` 不在其
+# 白名单 → config 被静默丢弃（configurable 里的 session/cost/top_k 全落空）+ UserWarning；
+# 真注解对象 ``RunnableConfig | None == Optional[RunnableConfig]`` 才匹配（Task 9 实测）。
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 

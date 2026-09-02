@@ -4,8 +4,10 @@
 预算、检索降级链全在骨架），本模块只提供 工具集（code-mcp 5 + graph-mcp 4）、
 系统提示词、轮数上限与降级文案。测试 monkeypatch 面 = 本模块的 ``get_code_tools``。
 """
-from __future__ import annotations
-
+# 注意：本模块**不**加 ``from __future__ import annotations``——langgraph 按运行时注解
+# 对象识别节点可注入的 ``config`` 形参，字符串化的 ``"RunnableConfig | None"`` 不在其
+# 白名单 → config 被静默丢弃（configurable 里的 session/cost/top_k 全落空）+ UserWarning；
+# 真注解对象 ``RunnableConfig | None == Optional[RunnableConfig]`` 才匹配（Task 9 实测）。
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.prompts import CODENAV_SYSTEM

@@ -71,6 +71,30 @@ async def add_message(
     return msg.id
 
 
+async def load_history(
+    session: AsyncSession,
+    conversation_id: str | None,
+    limit: int,
+) -> list[dict]:
+    """跨轮记忆：最近 ``limit`` 轮（user/assistant 成对），正序 ``[{"role","content"}]``。
+
+    一条 SQL 倒序取末 ``limit*2`` 条 user/assistant 消息再反转（Task 9 streaming 层
+    注入 ``state["history"]``，经 ``nodes._history_messages`` 转 langchain 消息）。
+    无会话 / ``limit <= 0`` → 空表。
+    """
+    if not conversation_id or limit <= 0:
+        return []
+    rows = await session.execute(
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conversation_id,
+               ChatMessage.role.in_(("user", "assistant")))
+        .order_by(ChatMessage.id.desc())
+        .limit(limit * 2)
+    )
+    return [{"role": m.role, "content": m.content}
+            for m in reversed(list(rows.scalars().all()))]
+
+
 async def list_conversations(
     session: AsyncSession,
     *,

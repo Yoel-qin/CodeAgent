@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from langchain_core.tools import StructuredTool
+from pydantic import BaseModel
 
 from app.agent.tools_loader import (
     ToolCallTracker,
@@ -94,6 +95,56 @@ async def test_wrap_mcp_content_blocks_normalized():
     tool = wrap_tool(src, tracker)
     out = await tool.ainvoke({"pattern": "x"})
     assert "B.java" in out and tracker.citations[0]["file_path"] == "a/B.java"
+
+
+# ── default_repo 机械注入（终审 Task 10 ④） ────────────────────────────────
+
+
+class _RepoArgs(BaseModel):
+    """声明了 repo 参数的工具 schema——``repo: str = ""`` 与真 MCP 工具声明同形。
+
+    注意不能用「无默认」造桩：外层 ``StructuredTool`` 的 ``_parse_input`` 会把可选
+    默认填进 wrapped 的 kwargs（LLM 漏传到手已是 ``""``），这正是注入要拦的形状。
+    """
+
+    pattern: str = ""
+    repo: str = ""
+
+
+def _repo_tool(seen: dict) -> StructuredTool:
+    async def _fn(**kwargs):
+        seen.update(kwargs)
+        return json.dumps({"matches": []})
+
+    return StructuredTool(name="grep_code", description="t", args_schema=_RepoArgs, coroutine=_fn)
+
+
+async def test_wrap_default_repo_injected_when_llm_omits():
+    """LLM 漏传 repo（pydantic 填默认后为空串）：wrap 层补会话 repo——不依赖系统提示词"劝"。"""
+    seen: dict = {}
+    tracker = ToolCallTracker()
+    tool = wrap_tool(_repo_tool(seen), tracker, default_repo="mini")
+    await tool.ainvoke({"pattern": "putMessage"})
+    assert seen["repo"] == "mini"
+    assert tracker.steps[0]["args"]["repo"] == "mini"  # step/循环检测看到的是注入后形状
+
+
+async def test_wrap_default_repo_keeps_explicit_value():
+    """LLM 显式传非空 repo：不覆盖（空值才算缺省）。"""
+    seen: dict = {}
+    tracker = ToolCallTracker()
+    tool = wrap_tool(_repo_tool(seen), tracker, default_repo="mini")
+    await tool.ainvoke({"pattern": "x", "repo": "other"})
+    assert seen["repo"] == "other"
+
+
+async def test_wrap_default_repo_skipped_for_tool_without_repo_param():
+    """工具未声明 repo 参数（args 无 repo 键）：不注入（避免给不该有的参数塞值）。"""
+    tracker = ToolCallTracker()
+    tool = wrap_tool(_fake_tool("read_file", {"content": "x", "total_lines": 1}), tracker,
+                     default_repo="mini")
+    await tool.ainvoke({"file_path": "a/X.java"})
+    assert "repo" not in tracker.steps[0]["args"]
 
 
 # ── _extract_citations 分派表 ─────────────────────────────────────────────

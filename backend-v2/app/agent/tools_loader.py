@@ -208,14 +208,27 @@ def _result_text(result: object) -> str:
     return "" if result is None else str(result)
 
 
-def wrap_tool(tool: BaseTool, tracker: ToolCallTracker) -> BaseTool:
+def wrap_tool(tool: BaseTool, tracker: ToolCallTracker,
+              default_repo: str | None = None) -> BaseTool:
     """给工具套上 计步/循环检测/citation 提取，返回新 ``StructuredTool``（原工具不动）。
 
     name/description/args_schema 同原（Task 8 的 ReAct 骨架按这三个字段向 LLM 注册）；
-    wrapped 顺序：① 循环检测（第 3 次同 (name, args) → 返回 LOOP_MESSAGE，不执行）
+    wrapped 顺序：⓪ repo 机械注入（``default_repo`` 有值且工具声明了 ``repo`` 参数 →
+    缺省时补会话 repo，LLM 显式传值不覆盖——Task 10 ④：会话 repo 只在图 state 里、
+    工具入参由 LLM 产出，漏传即落到 MCP 侧自己的 default_repo 造成跨库检索），
+
+    判「缺省」须把空值一并算上：外层 ``StructuredTool`` 的 ``_parse_input`` 会先把
+    schema 可选默认填进 kwargs（MCP 工具声明形如 ``repo: str = ""``，LLM 漏传到
+    wrapped 手里已是 ``""`` 而非缺键），纯 ``setdefault`` 拦不住；空 repo 永远不是
+    合法目标，填回默认语义等价。
+
+    ① 循环检测（第 3 次同 (name, args) → 返回 LOOP_MESSAGE，不执行）
     ② 计时执行 ③ 从结果 JSON 提取 citation ④ 追加 step ⑤ 原样返回结果字符串。
     """
     async def _wrapped(**kwargs):
+        if (default_repo and isinstance(kwargs, dict) and "repo" in (tool.args or {})
+                and not kwargs.get("repo")):
+            kwargs["repo"] = default_repo
         key = (tool.name, json.dumps(kwargs, sort_keys=True, ensure_ascii=False, default=str))
         n_hits = tracker._counts.get(key, 0) + 1
         tracker._counts[key] = n_hits

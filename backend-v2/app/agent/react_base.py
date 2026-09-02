@@ -93,7 +93,9 @@ async def run_react_agent(state: AgentState, config: RunnableConfig | None, *, a
     ``tracker.reacted = True``（降级路径不置位）——节点层据此区分「走了 ReAct」与「被降级接管」。
     """
     tracker = tracker if tracker is not None else ToolCallTracker()
-    tools = [wrap_tool(t, tracker) for t in tools]
+    # 会话 repo 机械注入带 repo 参数的工具（Task 10 ④）：系统提示词只"劝" LLM 传 repo，
+    # 这里在 wrap 层兜底补缺（LLM 显式传值不被覆盖）——比提示词约束可靠
+    tools = [wrap_tool(t, tracker, default_repo=state.get("repo")) for t in tools]
     writer = _safe_writer()
 
     if not tools:

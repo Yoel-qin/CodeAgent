@@ -13,6 +13,7 @@ PROCS: list[tuple[str, list[str]]] = [
     ("backend", [sys.executable, "-m", "uvicorn", "app.main:app", "--port", "8010"]),
     ("code-mcp", [sys.executable, "-m", "app.mcp_servers.code_server"]),
     ("doc-mcp", [sys.executable, "-m", "app.mcp_servers.doc_server"]),
+    ("graph-mcp", [sys.executable, "-m", "app.mcp_servers.graph_server"]),
 ]
 
 
@@ -22,7 +23,7 @@ def main() -> None:
         for name, cmd in PROCS:
             print(f"[dev_up] 启动 {name}: {' '.join(cmd)}")
             children.append(subprocess.Popen(cmd))
-        print("[dev_up] 全部启动。Ctrl-C 退出。  health: http://localhost:8010/health  mcp: http://localhost:8110/mcp  doc-mcp: http://localhost:8111/mcp")
+        print("[dev_up] 全部启动。Ctrl-C 退出。  health: http://localhost:8010/health  mcp: http://localhost:8110/mcp  doc-mcp: http://localhost:8111/mcp  graph-mcp: http://localhost:8112/mcp")
         for child in children:
             child.wait()
     except KeyboardInterrupt:

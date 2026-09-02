@@ -1,6 +1,34 @@
+from pathlib import Path
+
+import pytest
+from sqlalchemy.orm import Session
+
 from app.core.symbols import find_symbol
+from app.pipeline.call_graph import build_call_edges
+from app.pipeline.ingest_code import entities_from_parsed, upsert_entities
+from app.pipeline.ingest_edges import replace_edges
+from app.pipeline.parsing.code_parser import parse_java
 
 FIX = "tests/fixtures"
+FIX_PATH = Path(__file__).parent / "fixtures" / "mini_repo"
+SYM_REPO = "sym_sql_tmp"
+
+
+@pytest.fixture(scope="module")
+def seeded_symbols(pg_engine):
+    """mini fixture 实体+边入 PG（独立 repo 名，用后清理）。"""
+    pfs = [parse_java(p.read_text(encoding="utf-8"), str(p.relative_to(FIX_PATH)))
+           for p in sorted(FIX_PATH.rglob("*.java"))]
+    with pg_engine.begin() as conn:
+        conn.exec_driver_sql(f"DELETE FROM code_entities WHERE repo = '{SYM_REPO}'")
+    with Session(pg_engine) as s:
+        for pf in pfs:
+            upsert_entities(s, entities_from_parsed(pf, repo=SYM_REPO, module="com"))
+        replace_edges(s, repo=SYM_REPO, edges=build_call_edges(pfs))
+        s.commit()
+    yield SYM_REPO
+    with pg_engine.begin() as conn:
+        conn.exec_driver_sql(f"DELETE FROM code_entities WHERE repo = '{SYM_REPO}'")
 
 
 def test_find_type_def():
@@ -52,3 +80,16 @@ def test_def_truncation_uses_total_count(monkeypatch):
     assert res["total_count"] == 120  # 60 + 60 (type + method)
     assert res["truncated"] is True
     assert len(res["locations"]) == 50
+
+
+def test_find_type_def_via_sql(seeded_symbols):
+    """SQL 路径命中已入库的 CommitLog 类型实体。"""
+    res = find_symbol(FIX, seeded_symbols, "CommitLog")
+    types = [loc for loc in res["locations"] if loc["kind"] == "type"]
+    assert any("CommitLog.java" in loc["file"] for loc in types)
+
+
+def test_find_symbol_sql_falls_back_when_empty():
+    """code_entity 空 repo → 回落正则路径（接口零变）。"""
+    res = find_symbol(FIX, "mini_repo", "CommitLog")
+    assert any(loc["kind"] == "type" for loc in res["locations"])

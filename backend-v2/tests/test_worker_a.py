@@ -43,6 +43,8 @@ def test_expand_push_git_diff(monkeypatch, git_repo):
     assert ("file", "B.java", "A") in kinds
     assert ("file", "old.md", "A") in kinds
     assert ("graph_rebuild", None, None) in kinds or any(k == "graph_rebuild" for k, _, _ in kinds)
+    # Task 13 评审跟进：保序——graph_rebuild 殿后，file 事件按 diff 顺序在前
+    assert out[-1][0] == "graph_rebuild"
     assert all(p["commit_hash"] == v2 for k, p in out if k == "file")
 
 

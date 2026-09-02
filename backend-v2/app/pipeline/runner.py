@@ -172,11 +172,17 @@ def _fail(queue: PipeQueue, engine, event: PipeEvent, exc: Exception, stats: dic
         return
 
     # 超限：回滚本次半途写入 → 账本记 DEAD（record_event 幂等，PENDING 行可能已在）
+    # Task 13 评审跟进：账本落档本身再兜一道护栏——PG 此刻故障时只记 warning，
+    # 照常完成 dead_letter/ack（与 --loop 下 Redis 断连不退的承诺对称，进程不崩）。
     if event.kind in ("file", "graph_rebuild"):
-        with Session(engine) as session:
-            if record_event(session, event_kind=event.kind, **_ledger_key(event)):
-                mark_dead(session, error=str(exc)[:_ERROR_MAX], **_ledger_key(event))
-            session.commit()
+        try:
+            with Session(engine) as session:
+                if record_event(session, event_kind=event.kind, **_ledger_key(event)):
+                    mark_dead(session, error=str(exc)[:_ERROR_MAX], **_ledger_key(event))
+                session.commit()
+        except Exception as ledger_exc:  # noqa: BLE001 —— 死信流程不因账本故障中断
+            logger.warning("runner: 死信账本落档失败（dead_letter/ack 照常执行）: {}",
+                           ledger_exc)
     queue.dead_letter(event, str(exc))
     queue.ack(event)
     stats["dead"] += 1

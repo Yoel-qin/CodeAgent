@@ -38,6 +38,7 @@ from langchain_core.runnables import RunnableConfig
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from app.agent.callbacks import CostCallbackHandler
 from app.agent.state import AgentState
 from app.clients.llm import chat_model_for, configured
 
@@ -131,7 +132,17 @@ def _messages(query: str) -> list:
     return [SystemMessage(content=_SYSTEM_PROMPT), HumanMessage(content=query)]
 
 
-async def _llm_classify(query: str) -> RouteDecision | None:
+def _cost_callbacks(config: RunnableConfig | None) -> dict:
+    """LLM 调用挂账：``configurable["cost"]`` 有 → 回调 dict；缺席 → ``{}``（零行为变）。
+
+    与 :func:`app.agent.nodes._cost_callbacks` 同构（Task 10 评审遗留的同名 helper）；
+    Router 分类此前漏挂——图里唯一没进预算账本的 LLM 调用就是它（终审 I-1）。
+    """
+    cost = (config or {}).get("configurable", {}).get("cost")
+    return {"callbacks": [CostCallbackHandler(cost)]} if cost is not None else {}
+
+
+async def _llm_classify(query: str, config: RunnableConfig | None = None) -> RouteDecision | None:
     """routing 档结构化分类；超时/异常返回 ``None``（调用点转规则），永不抛。
 
     ``method="json_mode"``（M4 验收实测修正）：DeepSeek 对 ``json_schema`` 一律
@@ -141,7 +152,8 @@ async def _llm_classify(query: str) -> RouteDecision | None:
     """
     try:
         model = chat_model_for("routing").with_structured_output(RouteDecision, method="json_mode")
-        return await asyncio.wait_for(model.ainvoke(_messages(query)), _LLM_TIMEOUT_S)
+        return await asyncio.wait_for(
+            model.ainvoke(_messages(query), config=_cost_callbacks(config)), _LLM_TIMEOUT_S)
     except Exception as e:  # noqa: BLE001 —— 分类失败转规则兜底，请求不破
         logger.warning("query_analysis: routing 档分类失败，转规则兜底: {}", e)
         return None
@@ -154,12 +166,13 @@ async def query_analysis_node(state: AgentState, config: RunnableConfig | None =
     """图入口节点：意图分类 + 路由决策，返回部分更新写回 AgentState。
 
     ``configured()`` 真 → 先试 LLM 路（失败/超时转规则），假 → 直接规则；
-    返回 ``{**decision 字段, "route": decide_route(decision)}``。
+    返回 ``{**decision 字段, "route": decide_route(decision)}``。LLM 分类经
+    ``_cost_callbacks`` 挂进 ``configurable["cost"]`` 预算账本（终审 I-1）。
     """
     query = state.get("query", "") or ""
     decision: RouteDecision | None = None
     if configured():
-        decision = await _llm_classify(query)
+        decision = await _llm_classify(query, config)
     if decision is None:
         decision = rule_classify(query)
     route = decide_route(decision)

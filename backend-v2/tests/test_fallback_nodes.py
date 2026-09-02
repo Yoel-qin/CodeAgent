@@ -374,3 +374,34 @@ async def test_retrieve_cost_callback_records_llm_call(monkeypatch):
              "history": [], "intent": "code", "confidence": 0.9, "route": "retrieve"}
     await nodes.retrieve_node(state, {"configurable": {"cost": cost}})
     assert cost.llm_calls == 1
+
+
+async def test_clarify_cost_callback_records_llm_call(monkeypatch):
+    """clarify 的 extraction 档调用同样挂账（I-1 同轮 nit：retrieve 有断言、clarify 漏）。"""
+    from langchain_core.language_models.chat_models import BaseChatModel
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
+
+    from app.agent.cost import CostController
+
+    class _FakeChatModel(BaseChatModel):
+        """plain-class stub 不走回调管理器，须真 BaseChatModel 才能验到 record_call。"""
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # noqa: ARG002
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="请补充类名"))])
+
+        @property
+        def _llm_type(self) -> str:
+            return "fake-clarify"
+
+    w = _W()
+    monkeypatch.setattr(nodes, "_safe_writer", lambda: w)
+    monkeypatch.setattr(nodes, "configured", lambda: True)
+    monkeypatch.setattr(nodes, "chat_model_for", lambda _t="extraction": _FakeChatModel())
+    cost = CostController(max_tokens=1000, max_llm_calls=5)
+    await nodes.clarify_node({"query": "模糊问题", "repo": "r", "conversation_id": "c",
+                              "history": [], "intent": "other", "confidence": 0.3,
+                              "route": "clarify"}, {"configurable": {"cost": cost}})
+    assert cost.llm_calls == 1
+    assert "请补充类名" in "".join(
+        c["data"]["content"] for c in w if c["event"] == "token")

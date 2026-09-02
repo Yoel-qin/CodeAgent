@@ -95,3 +95,35 @@ async def test_node_no_cost_config_still_classifies(monkeypatch):
     state = await qa.query_analysis_node({"query": "CommitLog 在哪", "repo": "r",
                                           "conversation_id": "c", "history": []}, None)
     assert state["route"] == "codenav"
+
+
+# ── 终审 I-2：json_mode 回归锁 ────────────────────────────────────────────
+
+
+async def test_llm_classify_pins_json_mode(monkeypatch):
+    """回归锁：with_structured_output 必须 method="json_mode"，且系统提示词含小写 json。
+
+    两半缺一 DeepSeek 都 400：json_schema（thinking 档还禁 function_calling）一律
+    ``400 This response_format type is unavailable now``；json_mode 又要求提示词
+    含小写 ``json``（大小写敏感）。谁改回默认 method 或改写提示词，此测试即红。
+    """
+    from app.agent import query_analysis as qa
+
+    captured: dict = {}
+
+    class _Cap:
+        def with_structured_output(self, _schema, method=None):
+            captured["method"] = method
+
+            async def _inv(_m, config=None):
+                return RouteDecision(intent="code", confidence=0.9)
+
+            class _R:
+                ainvoke = staticmethod(_inv)
+            return _R()
+
+    monkeypatch.setattr(qa, "chat_model_for", lambda _t="routing": _Cap())
+    d = await qa._llm_classify("DefaultMQProducer 在哪")
+    assert d is not None and d.intent == "code"
+    assert captured["method"] == "json_mode"
+    assert "json" in qa._SYSTEM_PROMPT  # 区分大小写：必须是小写字面 json

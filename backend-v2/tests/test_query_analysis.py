@@ -30,7 +30,7 @@ async def test_node_llm_timeout_falls_back(monkeypatch):
     from app.agent import query_analysis as qa
 
     class SlowModel:
-        def with_structured_output(self, _):
+        def with_structured_output(self, _, method=None):
             async def _inv(_m):
                 await asyncio.sleep(10)
             class R:

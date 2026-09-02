@@ -32,6 +32,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from loguru import logger
 
+from app.agent.callbacks import CostCallbackHandler
 from app.agent.state import AgentState
 from app.clients.llm import chat_model_for, configured
 from app.core.config import settings
@@ -67,6 +68,16 @@ _CLARIFY_FALLBACK = (
     "以及期望的答案形式（代码位置/调用链/文档章节）？"
 )
 _NO_KEY_HEADER = "[未配置 LLM Key，以下为检索片段]"
+
+
+def _cost_callbacks(config: RunnableConfig | None) -> dict:
+    """LLM 调用挂账：``configurable["cost"]`` 有 → 回调 dict；缺席 → ``{}``（零行为变）。
+
+    ReAct 路由 react_base 统一挂 CostCallbackHandler；retrieve/clarify 的直连 LLM
+    调用此前漏挂——不挂则这两路的调用不进预算账本（Task 10 评审遗留）。
+    """
+    cost = (config or {}).get("configurable", {}).get("cost")
+    return {"callbacks": [CostCallbackHandler(cost)]} if cost is not None else {}
 
 
 def _safe_writer():
@@ -241,7 +252,7 @@ async def retrieve_node(state: AgentState, config: RunnableConfig | None = None)
                 *_history_messages(state.get("history")),
                 HumanMessage(content=f"{query}\n\n【检索材料】\n{context}" if context else query),
             ]
-            async for chunk in chat_model_for("reasoning").astream(messages):
+            async for chunk in chat_model_for("reasoning").astream(messages, config=_cost_callbacks(config)):
                 w({"event": "token", "data": {"content": chunk.content}})
         else:
             w({"event": "token", "data": {"content": _snippet_text(doc_results, code_matches)}})
@@ -277,7 +288,8 @@ async def clarify_node(state: AgentState, config: RunnableConfig | None = None) 
                 HumanMessage(content=state.get("query", "") or ""),
             ]
             resp = await asyncio.wait_for(
-                asyncio.to_thread(model.invoke, messages), _CLARIFY_TIMEOUT_S
+                asyncio.to_thread(model.invoke, messages, _cost_callbacks(config)),
+                _CLARIFY_TIMEOUT_S,
             )
             text = (getattr(resp, "content", "") or "").strip() or None
         except Exception as e:  # noqa: BLE001 —— 无 key/超时/异常一律模板

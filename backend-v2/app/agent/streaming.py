@@ -10,6 +10,12 @@ tokens/citations/agent_steps ⑤ 流尽聚合 answer → assistant 落行 + comm
 ⑥ 整体 try/except 兜底的兜底：任何逃逸异常发 ``[内部错误: {类型名}]`` + done，
 **HTTP 200 不断流**。
 
+中途异常 / 客户端断连交底：``GeneratorExit``/``CancelledError`` 是 ``BaseException``，
+不被本层 ``except Exception`` 捕获 → 生成器直接终止，未 commit 的会话 + user 消息随
+``SessionLocal`` 上下文回滚；客户端此时已收到 ``conversation`` 事件，异常路收到的
+done ``message_id=null``（assistant 未持久化）、断连路则再无任何事件。HTTP 200
+不断流契约不受影响。
+
 spec §5.1 偏差（本模块与 :mod:`app.agent.graph` 共同兑现）：spec 的独立
 ``post_process → END`` 节点折入本适配层——图内节点只发事件（事件即数据，节点返回
 ``{}``/``{"answer": None}`` 不写图状态），answer/citations/agent_steps 的聚合、

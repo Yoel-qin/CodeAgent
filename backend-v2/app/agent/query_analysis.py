@@ -110,7 +110,7 @@ def rule_classify(query: str) -> RouteDecision:
 
 # ── LLM 路 ────────────────────────────────────────────────────────────────
 
-_SYSTEM_PROMPT = """你是代码知识库（CodeRAG）的意图分类器。根据用户问题只输出 JSON 对象，字段：
+_SYSTEM_PROMPT = """你是代码知识库（CodeRAG）的意图分类器。根据用户问题只输出 json 对象，字段：
 - intent："code"（问代码位置/实现/调用链）| "doc"（问文档/手册/教程/配置说明）| "web"（需联网的时效信息）| "other"（闲聊等）
 - confidence：0 到 1 之间的把握
 - simple_fact：是否为与知识库无关、无需检索即可回答的简单事实
@@ -132,9 +132,15 @@ def _messages(query: str) -> list:
 
 
 async def _llm_classify(query: str) -> RouteDecision | None:
-    """routing 档结构化分类；超时/异常返回 ``None``（调用点转规则），永不抛。"""
+    """routing 档结构化分类；超时/异常返回 ``None``（调用点转规则），永不抛。
+
+    ``method="json_mode"``（M4 验收实测修正）：DeepSeek 对 ``json_schema`` 一律
+    ``400 This response_format type is unavailable now``，thinking 档（v4-flash）还禁
+    ``tool_choice``（function_calling 亦 400）——唯一双模型可用的是 ``json_mode``，
+    且要求提示词含小写 ``json``（大小写敏感，系统提示词已改写满足）。
+    """
     try:
-        model = chat_model_for("routing").with_structured_output(RouteDecision)
+        model = chat_model_for("routing").with_structured_output(RouteDecision, method="json_mode")
         return await asyncio.wait_for(model.ainvoke(_messages(query)), _LLM_TIMEOUT_S)
     except Exception as e:  # noqa: BLE001 —— 分类失败转规则兜底，请求不破
         logger.warning("query_analysis: routing 档分类失败，转规则兜底: {}", e)

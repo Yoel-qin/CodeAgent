@@ -73,6 +73,7 @@ async def test_list_conversations_orders_by_recent_activity(async_session):
     assert cid_a != cid_b
     # 老会话 A 补发消息 → updated_at 反超 B → 列表首位应是 A（最近活跃在前）
     await add_message(async_session, conv_a, role="user", content="追问")
-    rows = await list_conversations(async_session)
+    # 全表过滤到本测创建的两条：list_conversations 是全表查询，不得假设库里只有本测的行
+    rows = [c for c in await list_conversations(async_session) if c.id in (cid_a, cid_b)]
     assert [c.id for c in rows] == [cid_a, cid_b]
     assert rows[0].updated_at > rows[0].created_at

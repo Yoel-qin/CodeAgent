@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from loguru import logger
 
-from app.agent.tools_loader import load_tools, reset_tools
+from app.agent import tools_loader
 from app.api.chat import router as chat_router
 from app.api.health import router as health_router
 from app.core.logging import setup_logging
@@ -14,11 +14,12 @@ from app.core.logging import setup_logging
 async def lifespan(app: FastAPI):
     setup_logging()
     try:
-        await load_tools()  # 三 server 独立降级；整体再兜一层：加载失败不阻断启动
+        # 模块属性调用：测试只需钉 tools_loader.load_tools 一处（直引符号需双钉，Task 10 评审遗留）
+        await tools_loader.load_tools()  # 三 server 独立降级；整体再兜一层：加载失败不阻断启动
     except Exception as e:  # noqa: BLE001 —— MCP 全挂时 agent 仍可启动（运行期再降级）
         logger.error("lifespan: tools 加载失败（agent 工具侧降级）: {}", e)
     yield
-    reset_tools()
+    tools_loader.reset_tools()
 
 
 app = FastAPI(title="CodeRAG-v2", lifespan=lifespan)

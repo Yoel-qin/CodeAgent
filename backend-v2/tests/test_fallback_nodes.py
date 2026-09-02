@@ -129,7 +129,7 @@ async def test_retrieve_llm_streams_tokens_in_order(monkeypatch):
     seen = {}
 
     class _M:
-        async def astream(self, messages):
+        async def astream(self, messages, config=None):
             seen["messages"] = list(messages)
             for c in ("第一段", "第二段"):
                 yield SimpleNamespace(content=c)
@@ -202,7 +202,7 @@ async def test_clarify_llm_success_streams_question(monkeypatch):
     monkeypatch.setattr(nodes, "configured", lambda: True)
 
     class _M:
-        def invoke(self, messages):
+        def invoke(self, messages, config=None):
             assert messages[0].__class__.__name__ == "SystemMessage"
             assert messages[-1].content == "模糊问题"
             return SimpleNamespace(content=question)
@@ -248,6 +248,9 @@ def _doc_hit(**extra):
             "module": None, "score": 0.9} | extra
 
 
+# ── doc 正文增强（R1：F-1 修复） ──────────────────────────────────────────
+
+
 async def test_retrieve_doc_body_enriched_into_snippet(monkeypatch):
     """doc 命中经 TOC 映射 read_doc_section 补正文：无 key 片段含正文 + 位置参数 (repo, id, anchor)。"""
     w = _W()
@@ -287,7 +290,7 @@ async def test_retrieve_doc_body_enriched_into_llm_context(monkeypatch):
                  contents={"x": body})
 
     class _M:
-        async def astream(self, messages):
+        async def astream(self, messages, config=None):
             seen["messages"] = list(messages)
             yield SimpleNamespace(content="ok")
 
@@ -346,3 +349,28 @@ async def test_retrieve_read_failure_or_miss_skips_row(monkeypatch):
     text = w[-1]["data"]["content"]
     assert "[a.md#T]" in text and "[a.md#T2]" in text  # 两条命中都保留标题行
     assert "检索降级失败" not in text
+
+
+# ── cost 挂账（Task 10 评审遗留 ①） ───────────────────────────────────────
+
+
+async def test_retrieve_cost_callback_records_llm_call(monkeypatch):
+    """configurable 里的 cost 经 CostCallbackHandler 挂账：retrieve 的 LLM 调用计 1 次。"""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+
+    from app.agent.cost import CostController
+    w = _W()
+    monkeypatch.setattr(nodes, "_safe_writer", lambda: w)
+    monkeypatch.setattr(nodes, "hybrid_search", lambda *a: {"results": [], "recall": 0})
+    monkeypatch.setattr(nodes, "grep_code", lambda *a: _grep_result(matches=[]))
+    _stub_doc_io(monkeypatch)
+    monkeypatch.setattr(nodes, "configured", lambda: True)
+    monkeypatch.setattr(nodes, "chat_model_for",
+                        lambda _t="reasoning": GenericFakeChatModel(
+                            messages=iter([AIMessage(content="答案")])))
+    cost = CostController(max_tokens=1000, max_llm_calls=5)
+    state = {"query": "putMessage 在哪", "repo": "mini", "conversation_id": "c",
+             "history": [], "intent": "code", "confidence": 0.9, "route": "retrieve"}
+    await nodes.retrieve_node(state, {"configurable": {"cost": cost}})
+    assert cost.llm_calls == 1

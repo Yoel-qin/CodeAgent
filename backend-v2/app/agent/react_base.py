@@ -130,8 +130,14 @@ async def run_react_agent(state: AgentState, config: RunnableConfig | None, *, a
             # langgraph-prebuilt 的 create_react_agent 在 v1 标记弃用（迁 langchain.agents），
             # 功能完整，抑制告警保持日志干净（旧库同款处理）。
             warnings.simplefilter("ignore")
-            agent = create_react_agent(model=chat_model_for("reasoning"), tools=tools,
-                                       prompt=system_prompt)
+            # repo 直达工具参数：conversation 的 repo 只在图 state 里、工具入参由 LLM 产出，
+            # MCP 工具 repo 缺省回落 default_repo（M4 验收实测：sa-token 会话里 docqa 检索
+            # 的是 rocketmq 的空文档库 → 恒 0 命中）——把当前仓库追加进系统提示词强制透传
+            repo = state.get("repo") or settings.default_repo
+            agent = create_react_agent(
+                model=chat_model_for("reasoning"), tools=tools,
+                prompt=(f"{system_prompt}\n\n当前仓库 repo={repo}，"
+                        "调用工具时 repo 参数一律传这个值。"))
         seed = [*(state.get("history") or []), {"role": "user", "content": state["query"]}]
         async for stream, chunk in agent.astream({"messages": seed}, config=cfg,
                                                  stream_mode=["custom", "updates"]):

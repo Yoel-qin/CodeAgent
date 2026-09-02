@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
 from app.agent.streaming import stream_chat
@@ -37,8 +37,11 @@ async def completions(req: ChatRequest):
 
 
 @router.get("/conversations")
-async def list_conversations(limit: int = 50, offset: int = 0) -> list[dict]:
-    """会话列表（updated_at 倒序，最近活跃在前）。"""
+async def list_conversations(
+    limit: int = Query(default=50, ge=0),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict]:
+    """会话列表（updated_at 倒序，最近活跃在前）；limit/offset 负值 → 422（防 PG 报错 500）。"""
     async with SessionLocal() as session:
         rows = await chat_service.list_conversations(session, limit=limit, offset=offset)
     return [{"id": c.id, "title": c.title, "target_repo": c.target_repo,

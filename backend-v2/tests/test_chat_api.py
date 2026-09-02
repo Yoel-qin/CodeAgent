@@ -15,10 +15,9 @@ doc IO 全 monkeypatch 为本地 fake——不打真 MCP/LLM。
    ② TestClient 每个上下文起**独立事件循环**，app 共享 engine 的池化 asyncpg 连接绑在旧
    循环上，跨测试复用会在 pre-ping 处炸（本地实测复现）——每测后 ``engine.dispose()``
    清池，下个测试新建连接。
-3. brief 只钉 ``tools_loader.load_tools``，但 ``app/main.py`` 是
-   ``from app.agent.tools_loader import load_tools`` **直引符号**——不钉 ``app.main.load_tools``
-   则 lifespan 照样真连 MCP（本地 graph-mcp 活着 → 真工具 → 真 DeepSeek ReAct，单测 80s+）。
-   两处都钉才真正阻断。
+3. brief 只钉 ``tools_loader.load_tools``；v2 起初 ``app/main.py`` 是 ``from …import load_tools``
+   直引符号、须两处都钉，Task 10 评审遗留把 main.py 改成 ``tools_loader.load_tools()``
+   模块属性调用后，钉一处即真正阻断（本文件的双钉行已随之移除）。
 """
 import asyncio
 import json
@@ -92,10 +91,8 @@ def test_chat_sse_contract(monkeypatch):
 
     async def _noop_load():
         return None
-    # main.py 是 ``from app.agent.tools_loader import load_tools`` 直引符号——只钉
-    # tools_loader.load_tools 阻断不了 lifespan 真连 MCP（brief 靶点偏差），两处都钉
+    # main.py 已改模块属性调用 tools_loader.load_tools——钉此处即阻断 lifespan 真连 MCP
     monkeypatch.setattr(tools_loader, "load_tools", _noop_load)
-    monkeypatch.setattr("app.main.load_tools", _noop_load)  # 阻断 lifespan 真连 MCP
     monkeypatch.setattr(query_analysis, "configured", lambda: False)
     # 规则分类把 "CommitLog putMessage" 判 code → codenav → 无 key 降级 retrieve；此处给检索路 canned 结果保证 citation ≥1
     monkeypatch.setattr(nodes, "grep_code",
@@ -125,14 +122,22 @@ def test_chat_empty_query_400():
         assert client.post("/v1/chat/completions", json={"query": "  "}).status_code == 400
 
 
+def test_conversations_list_rejects_negative_limit_offset():
+    """limit/offset 负值 → 422（Query(ge=0)，防负 offset 打到 PG 报错 500，Task 10 评审遗留 ⑤）。"""
+    from app.main import app
+    with TestClient(app) as client:
+        assert client.get("/v1/chat/conversations", params={"limit": -1}).status_code == 422
+        assert client.get("/v1/chat/conversations", params={"offset": -5}).status_code == 422
+        assert client.get("/v1/chat/conversations").status_code == 200
+
+
 def test_conversations_listed_after_chat(monkeypatch):
     from app.agent import nodes, query_analysis, tools_loader
     from app.main import app
 
     async def _noop_load():
         return None
-    monkeypatch.setattr(tools_loader, "load_tools", _noop_load)  # 两处都钉，理由见 test_chat_sse_contract
-    monkeypatch.setattr("app.main.load_tools", _noop_load)
+    monkeypatch.setattr(tools_loader, "load_tools", _noop_load)  # main.py 走模块属性调用，钉此处即阻断
     monkeypatch.setattr(query_analysis, "configured", lambda: False)
     monkeypatch.setattr(nodes, "configured", lambda: False)  # 见模块 docstring 第 1 点
     monkeypatch.setattr(nodes, "grep_code",
@@ -173,12 +178,11 @@ def test_chat_llm_routes_to_docqa_and_streams(monkeypatch):
 
     async def _noop_load():
         return None
-    monkeypatch.setattr(tools_loader, "load_tools", _noop_load)  # 两处都钉，理由见 test_chat_sse_contract
-    monkeypatch.setattr("app.main.load_tools", _noop_load)
+    monkeypatch.setattr(tools_loader, "load_tools", _noop_load)  # main.py 走模块属性调用，钉此处即阻断
     monkeypatch.setattr(query_analysis, "configured", lambda: True)
 
     class _StubRoutingModel:
-        def with_structured_output(self, _schema):
+        def with_structured_output(self, _schema, method=None):
             return RunnableLambda(lambda _msgs: RouteDecision(intent="doc", confidence=0.85))
 
     monkeypatch.setattr(query_analysis, "chat_model_for", lambda _t="routing": _StubRoutingModel())
@@ -226,8 +230,7 @@ def test_chat_invalid_conversation_id_422(monkeypatch):
 
     async def _noop_load():
         return None
-    monkeypatch.setattr(tools_loader, "load_tools", _noop_load)  # 两处都钉，理由见 test_chat_sse_contract
-    monkeypatch.setattr("app.main.load_tools", _noop_load)
+    monkeypatch.setattr(tools_loader, "load_tools", _noop_load)  # main.py 走模块属性调用，钉此处即阻断
     with TestClient(app) as client:
         resp = client.post("/v1/chat/completions",
                            json={"query": "q", "conversation_id": "not-a-hex-id"})
@@ -243,8 +246,7 @@ def test_done_ids_match_persisted_rows(monkeypatch):
 
     async def _noop_load():
         return None
-    monkeypatch.setattr(tools_loader, "load_tools", _noop_load)  # 两处都钉，理由见 test_chat_sse_contract
-    monkeypatch.setattr("app.main.load_tools", _noop_load)
+    monkeypatch.setattr(tools_loader, "load_tools", _noop_load)  # main.py 走模块属性调用，钉此处即阻断
     monkeypatch.setattr(query_analysis, "configured", lambda: False)
     monkeypatch.setattr(nodes, "configured", lambda: False)  # clarify 走模板，不触 LLM
 
@@ -294,8 +296,7 @@ def test_history_excludes_current_turn_query(monkeypatch):
 
     async def _noop_load():
         return None
-    monkeypatch.setattr(tools_loader, "load_tools", _noop_load)  # 两处都钉，理由见 test_chat_sse_contract
-    monkeypatch.setattr("app.main.load_tools", _noop_load)
+    monkeypatch.setattr(tools_loader, "load_tools", _noop_load)  # main.py 走模块属性调用，钉此处即阻断
 
     # 第一轮：无 key 规则路 → clarify 模板回复（落 user + assistant 两行）
     monkeypatch.setattr(query_analysis, "configured", lambda: False)
@@ -310,7 +311,7 @@ def test_history_excludes_current_turn_query(monkeypatch):
         monkeypatch.setattr(query_analysis, "configured", lambda: True)
 
         class _StubRoutingModel:
-            def with_structured_output(self, _schema):
+            def with_structured_output(self, _schema, method=None):
                 return RunnableLambda(lambda _msgs: RouteDecision(intent="doc", confidence=0.85))
         monkeypatch.setattr(query_analysis, "chat_model_for", lambda _t="routing": _StubRoutingModel())
         monkeypatch.setattr(docqa, "get_doc_tools", lambda: [])

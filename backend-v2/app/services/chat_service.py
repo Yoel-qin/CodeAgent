@@ -105,8 +105,10 @@ async def list_conversations(
     limit: int = 50,
     offset: int = 0,
 ) -> list[Conversation]:
-    """会话列表，updated_at 倒序。"""
-    stmt = select(Conversation).order_by(Conversation.updated_at.desc()).limit(limit).offset(offset)
+    """会话列表，updated_at 倒序（同刻 updated_at 以 id 升序 tie-break，排序确定）。"""
+    stmt = (select(Conversation)
+            .order_by(Conversation.updated_at.desc(), Conversation.id)
+            .limit(limit).offset(offset))
     rows = await session.execute(stmt)
     return list(rows.scalars().all())
 

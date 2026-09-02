@@ -7,6 +7,8 @@ pattern → 正则的映射（fullmatch 相对 posix 路径）：
 - 其余字符 ``re.escape``
 
 因此 ``*.md`` 只命中根层、``broker/**/*.java`` 命中 broker 下任意深度。
+注意：``**`` 仅在带斜杠时特殊（如 ``**/x`` 前缀），裸 ``**`` 与尾部 ``**``
+（如 ``**/broker/**`` 的尾段）只匹配**单段**，不递归子目录。
 不引 fast-glob 等依赖：1059 文件量级 os.walk 足够。隐藏条目（dot-files /
 dot-dirs）不进结果 —— 与 grep 的 Python 引擎同语义。错误契约：返回
 ``{"error": str}``，永不抛。

@@ -55,6 +55,7 @@ def _grep_code_impl(pattern, file_glob, case_sensitive, max_results, repo, outpu
 async def glob_files(pattern: str, ignore_globs: list[str] | None = None,
                      max_results: int = 100, repo: str = "") -> dict:
     """按 glob 模式列仓库文件，如 '**/*.java'（任意层）、'broker/**/*.java'、'*.md'（根层）。
+    注意 '**' 仅在带斜杠时特殊（'**/x' 前缀），裸 '**' 与尾部 '**' 只匹配单段、不递归子目录。
     ignore_globs 同语义排除；max_results 上限 200。仅只读。"""
     return await _run(READ_TIMEOUT, _core_glob_files, settings.repos_root,
                       repo or settings.default_repo, pattern, ignore_globs, min(max_results, 200))

@@ -182,7 +182,18 @@ def test_docqa_chat_writes_trace_row(monkeypatch):
     finally:
         eng.dispose()
     assert row is not None, "trace_spans 必须随 assistant 消息落库"
-    kinds = {s["kind"] for s in row[0]}
+    spans = row[0]
+    kinds = {s["kind"] for s in spans}
     assert {"request", "route", "agent", "tool", "llm"} <= kinds
+    # 修复轮：parent_id 自动嵌套（采集器按 open 栈缺省父）——request 为根，
+    # route/agent 挂 request，tool/llm 挂 agent（按 span_id 解析，不按位序）
+    req_span = next(s for s in spans if s["kind"] == "request")
+    route_span = next(s for s in spans if s["kind"] == "route")
+    agent_span = next(s for s in spans if s["kind"] == "agent")
+    assert req_span["parent_id"] is None
+    assert route_span["parent_id"] == req_span["span_id"]
+    assert agent_span["parent_id"] == req_span["span_id"]
+    assert all(s["parent_id"] == agent_span["span_id"]
+               for s in spans if s["kind"] in ("tool", "llm"))
     assert row[1] == "docqa" and row[2] >= 0
     assert set(row[3]) >= {"spent_tokens", "llm_calls"}

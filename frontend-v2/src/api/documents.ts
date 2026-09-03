@@ -28,10 +28,13 @@ export const listDocuments = (params?: { repo?: string; limit?: number; offset?:
     .get<{ total: number; items: DocumentItem[] }>("/v1/documents", { params })
     .then((r) => r.data);
 
-// 详情的 document 不带 section_count（仅列表带）；此处类型沿用 DocumentItem，页面不读该字段。
+// 详情的 document 不带 section_count（仅列表带，见 document_service.get_document_with_sections）
+// ——显式收窄，避免声明必填却恒缺的陷阱字段。
+export type DocumentDetail = Omit<DocumentItem, "section_count"> & { section_count?: number };
+
 export const getDocumentSections = (id: number) =>
   api
-    .get<{ document: DocumentItem; sections: DocSectionItem[] }>(
+    .get<{ document: DocumentDetail; sections: DocSectionItem[] }>(
       `/v1/documents/${id}/sections`,
     )
     .then((r) => r.data);

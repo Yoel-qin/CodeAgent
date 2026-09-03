@@ -1,14 +1,12 @@
 /**
- * 同步管理页（Phase 8.4）：同步状态 + 任务列表（含回滚高亮 + 详情抽屉）
- * + 回滚记录 + 触发同步。对齐后端 /v1/sync/* 6 个接口。
+ * 同步管道页（M6 v2）：pipeline_events 账本只读（状态卡 + 事件表 + 状态过滤 + 20s 轮询）
+ * + 「模拟 Push」Modal（手动 POST /v1/sync/webhook 入队，仅供联调管道）。
  */
 import { useCallback, useEffect, useState } from "react";
 import {
   Button,
   Card,
   Col,
-  Descriptions,
-  Drawer,
   Form,
   Input,
   Modal,
@@ -17,7 +15,6 @@ import {
   Space,
   Statistic,
   Table,
-  Tabs,
   Tag,
   Tooltip,
   Typography,
@@ -25,195 +22,78 @@ import {
 } from "antd";
 import { ReloadOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
-import {
-  getSyncStatus,
-  getSyncTask,
-  listRollbacks,
-  listSyncTasks,
-  triggerSync,
-  type ChangeDetailItem,
-  type RollbackItem,
-  type SyncStatusResponse,
-  type SyncTaskDetailResponse,
-  type SyncTaskItem,
-  type SyncType,
-} from "../api/sync";
+import { listRepos } from "../api/repos";
+import { listSyncEvents, sendWebhook, type PipelineEventItem } from "../api/sync";
 
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 
 const short = (h: string | null | undefined, n = 8) => (h ? h.slice(0, n) : "—");
 const fmtTime = (s: string | null | undefined) =>
   s ? new Date(s).toLocaleString("zh-CN", { hour12: false }) : "—";
-const fmtMs = (ms: number | null | undefined) =>
-  ms == null ? "—" : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
 
-const STATUS_COLOR: Record<string, string> = {
-  COMPLETED: "success",
-  FAILED: "error",
-  RUNNING: "processing",
-  PENDING: "default",
-};
-const TYPE_COLOR: Record<string, string> = { FULL: "blue", INCREMENTAL: "cyan" };
-const CHANGE_COLOR: Record<string, string> = {
-  ADDED: "green",
-  MODIFIED: "blue",
-  DELETED: "red",
-  RESTORED: "gold",
-  ROLLBACK: "purple",
-};
-const CHANGE_LABEL: Record<string, string> = {
-  ADDED: "新增",
-  MODIFIED: "修改",
-  DELETED: "删除",
-  RESTORED: "恢复",
-  ROLLBACK: "回滚",
-};
+const KIND_LABEL: Record<string, string> = { file: "文件", graph_rebuild: "重建图" };
+const STATUS_COLOR: Record<string, string> = { DONE: "success", DEAD: "error", PENDING: "default" };
+const STATUS_OPTS = [
+  { value: "PENDING", label: "PENDING" },
+  { value: "DONE", label: "DONE" },
+  { value: "DEAD", label: "DEAD" },
+];
 
-function ChangeTags({ c }: { c: { added: number; modified: number; deleted: number } }) {
-  return (
-    <Space size={4}>
-      {c.added > 0 && <Text type="success">+{c.added}</Text>}
-      {c.modified > 0 && <Text type="warning">~{c.modified}</Text>}
-      {c.deleted > 0 && <Text type="danger">-{c.deleted}</Text>}
-      {c.added + c.modified + c.deleted === 0 && <Text type="secondary">0</Text>}
-    </Space>
-  );
+/** 状态卡计数（reduce 自最近 200 条，超长仓库仅作趋势参考）。 */
+interface Stats {
+  total: number;
+  PENDING: number;
+  DONE: number;
+  DEAD: number;
 }
 
-const taskColumns = (onDetail: (id: number) => void): ColumnsType<SyncTaskItem> => [
-  { title: "#", dataIndex: "task_id", width: 56 },
-  {
-    title: "类型",
-    dataIndex: "type",
-    width: 110,
-    render: (t: string) => <Tag color={TYPE_COLOR[t] || "default"}>{t}</Tag>,
-  },
-  {
-    title: "提交",
-    dataIndex: "commit",
-    width: 110,
-    render: (h: string) => <Tooltip title={h}>{short(h)}</Tooltip>,
-  },
-  {
-    title: "状态",
-    dataIndex: "status",
-    width: 110,
-    render: (s: string) => <Tag color={STATUS_COLOR[s] || "default"}>{s}</Tag>,
-  },
-  {
-    title: "变更",
-    width: 120,
-    render: (_, r) => <ChangeTags c={r.changes} />,
-  },
-  {
-    title: "回滚",
-    width: 80,
-    render: (_, r) =>
-      r.source_commit || r.rollback_detail ? (
-        <Tooltip title={r.source_commit ? `回退自 ${short(r.source_commit)}` : ""}>
-          <Tag color="purple">回滚</Tag>
-        </Tooltip>
-      ) : (
-        <Text type="secondary">—</Text>
-      ),
-  },
-  { title: "耗时", dataIndex: "duration_ms", width: 90, render: fmtMs },
-  { title: "开始时间", dataIndex: "started_at", width: 180, render: fmtTime },
-  { title: "触发", dataIndex: "triggered_by", width: 90 },
-  {
-    title: "操作",
-    width: 80,
-    fixed: "right",
-    render: (_, r) => (
-      <Button type="link" size="small" onClick={() => onDetail(r.task_id)}>
-        详情
-      </Button>
-    ),
-  },
-];
-
-const changeColumns: ColumnsType<ChangeDetailItem> = [
-  {
-    title: "chunk_id",
-    dataIndex: "chunk_id",
-    render: (c: string) => <Text code style={{ fontSize: 12 }}>{c}</Text>,
-  },
-  { title: "文件", dataIndex: "file", render: (f: string | null) => f || "—" },
-  {
-    title: "类型",
-    dataIndex: "change_type",
-    width: 90,
-    render: (t: string) => <Tag color={CHANGE_COLOR[t] || "default"}>{CHANGE_LABEL[t] || t}</Tag>,
-  },
-  {
-    title: "回滚来源",
-    dataIndex: "rollback_source_commit",
-    width: 120,
-    render: (h: string | null) =>
-      h ? (
-        <Tooltip title={h}>
-          <Tag color="purple">{short(h)}</Tag>
-        </Tooltip>
-      ) : (
-        <Text type="secondary">—</Text>
-      ),
-  },
-];
-
-const rollbackColumns: ColumnsType<RollbackItem> = [
-  { title: "#", dataIndex: "rollback_id", width: 56 },
-  {
-    title: "回滚提交",
-    dataIndex: "rollback_commit",
-    width: 110,
-    render: (h: string) => <Tooltip title={h}>{short(h)}</Tooltip>,
-  },
-  {
-    title: "源提交",
-    dataIndex: "source_commit",
-    width: 110,
-    render: (h: string) => <Tooltip title={h}>{short(h)}</Tooltip>,
-  },
-  { title: "回退", dataIndex: "chunks_rolled_back", width: 70 },
-  { title: "恢复", dataIndex: "chunks_restored", width: 70 },
-  { title: "删除", dataIndex: "chunks_deleted", width: 70 },
-  { title: "关系", dataIndex: "relations_restored", width: 70 },
-  { title: "锚点", dataIndex: "anchors_restored", width: 70 },
-  { title: "文档PR", dataIndex: "doc_pr_closed", width: 120, render: (v: string | null) => v || "—" },
-  { title: "触发", dataIndex: "triggered_by", width: 90 },
-  {
-    title: "状态",
-    dataIndex: "status",
-    width: 100,
-    render: (s: string) => <Tag color={STATUS_COLOR[s] || "default"}>{s}</Tag>,
-  },
-  { title: "时间", dataIndex: "created_at", width: 180, render: fmtTime },
-];
+/** 每行 `path status`（如 `a/B.java M`）→ [{path, status}]；格式错返回 null 并提示。 */
+const parseFiles = (raw: string): { path: string; status: string }[] | null => {
+  const files: { path: string; status: string }[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split(/\s+/);
+    if (parts.length !== 2) {
+      message.error(`格式错误：「${trimmed}」（每行应为「路径 状态」，如 a/B.java M）`);
+      return null;
+    }
+    files.push({ path: parts[0], status: parts[1] });
+  }
+  if (files.length === 0) {
+    message.error("请至少填写一行「路径 状态」");
+    return null;
+  }
+  return files;
+};
 
 export default function SyncPage() {
-  const [status, setStatus] = useState<SyncStatusResponse | null>(null);
-  const [tasks, setTasks] = useState<SyncTaskItem[]>([]);
-  const [rollbacks, setRollbacks] = useState<RollbackItem[]>([]);
+  const [events, setEvents] = useState<PipelineEventItem[]>([]);
+  const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(false);
-  const [detail, setDetail] = useState<SyncTaskDetailResponse | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [triggerOpen, setTriggerOpen] = useState(false);
-  const [triggering, setTriggering] = useState(false);
-  const [form] = Form.useForm<{ type: SyncType; target_commit?: string }>();
+  const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
+  const [repos, setRepos] = useState<string[]>([]);
+  const [pushOpen, setPushOpen] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [form] = Form.useForm<{ repo: string; commit_hash: string; files: string }>();
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, t, r] = await Promise.all([getSyncStatus(), listSyncTasks({ page_size: 50 }), listRollbacks({ page_size: 50 })]);
-      setStatus(s);
-      setTasks(t.items);
-      setRollbacks(r.items);
+      const all = await listSyncEvents({ limit: 200 });
+      setStats({
+        total: all.total,
+        PENDING: all.items.filter((e) => e.status === "PENDING").length,
+        DONE: all.items.filter((e) => e.status === "DONE").length,
+        DEAD: all.items.filter((e) => e.status === "DEAD").length,
+      });
+      setEvents(statusFilter ? (await listSyncEvents({ status: statusFilter, limit: 200 })).items : all.items);
     } catch (e) {
-      message.error((e as Error).message || "加载同步数据失败");
+      message.error((e as Error).message || "加载管道事件失败");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [statusFilter]);
 
   useEffect(() => {
     refresh();
@@ -221,80 +101,111 @@ export default function SyncPage() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  const openDetail = async (id: number) => {
-    setDetailLoading(true);
-    try {
-      setDetail(await getSyncTask(id));
-    } catch (e) {
-      message.error((e as Error).message || "加载任务详情失败");
-    } finally {
-      setDetailLoading(false);
-    }
-  };
+  useEffect(() => {
+    listRepos().then((r) => setRepos(r.items)).catch(() => setRepos([]));
+  }, []);
 
-  const onTrigger = async () => {
-    const values = await form.validateFields();
-    setTriggering(true);
+  const onPush = async () => {
+    let values: { repo: string; commit_hash: string; files: string };
     try {
-      const res = await triggerSync({
-        type: values.type,
-        target_commit: values.target_commit?.trim() || undefined,
+      values = await form.validateFields();
+    } catch {
+      return; // 校验失败：antd 已在表单项上标红，无需提示
+    }
+    const files = parseFiles(values.files);
+    if (!files) return;
+    setPushing(true);
+    try {
+      const res = await sendWebhook({
+        repo: values.repo,
+        commit_hash: values.commit_hash.trim(),
+        files,
       });
-      if (res.status === "COMPLETED") message.success(res.message);
-      else message.warning(res.message);
-      setTriggerOpen(false);
+      message.success(`已入队推送事件（event_id=${res.event_id}），等待 worker 消费`);
+      setPushOpen(false);
       form.resetFields();
       refresh();
     } catch (e) {
-      message.error((e as Error).message || "触发同步失败");
+      message.error((e as Error).message || "推送失败");
     } finally {
-      setTriggering(false);
+      setPushing(false);
     }
   };
 
-  const stats = status?.stats;
-  const st = status?.status;
-  const ok = st === "HEALTHY";
+  const columns: ColumnsType<PipelineEventItem> = [
+    { title: "#", dataIndex: "id", width: 64 },
+    { title: "仓库", dataIndex: "repo", width: 110 },
+    {
+      title: "类型",
+      dataIndex: "event_kind",
+      width: 90,
+      render: (k: string) => <Tag color={k === "graph_rebuild" ? "purple" : "blue"}>{KIND_LABEL[k] || k}</Tag>,
+    },
+    {
+      title: "提交",
+      dataIndex: "commit_hash",
+      width: 100,
+      render: (h: string) => (h ? <Tooltip title={h}>{short(h)}</Tooltip> : "—"),
+    },
+    {
+      title: "路径",
+      dataIndex: "path",
+      render: (p: string) => (
+        <Tooltip title={p}>
+          <Text code style={{ fontSize: 12 }}>{p}</Text>
+        </Tooltip>
+      ),
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      width: 100,
+      render: (s: string) => <Tag color={STATUS_COLOR[s] || "default"}>{s}</Tag>,
+    },
+    { title: "次数", dataIndex: "attempts", width: 70 },
+    {
+      title: "最近错误",
+      dataIndex: "last_error",
+      width: 140,
+      render: (err: string | null) =>
+        err ? (
+          <Tooltip title={err}>
+            <Text type="danger" ellipsis style={{ maxWidth: 120 }}>{err}</Text>
+          </Tooltip>
+        ) : (
+          <Text type="secondary">—</Text>
+        ),
+    },
+    { title: "更新时间", dataIndex: "updated_at", width: 170, render: fmtTime },
+  ];
 
   return (
     <div style={{ padding: 20, height: "100%", overflow: "auto" }}>
-      <Card
-        size="small"
-        styles={{ body: { padding: "12px 20px" } }}
-        style={{ marginBottom: 16 }}
-      >
+      <Card size="small" styles={{ body: { padding: "12px 20px" } }} style={{ marginBottom: 16 }}>
         <Row gutter={24} align="middle">
           <Col>
-            <Statistic title="代码 chunk" value={stats?.code_chunks ?? 0} />
+            <Statistic title="事件总数" value={stats?.total ?? 0} />
           </Col>
           <Col>
-            <Statistic title="文档 chunk" value={stats?.doc_chunks ?? 0} />
+            <Statistic title="PENDING" value={stats?.PENDING ?? 0}
+              valueStyle={stats?.PENDING ? { color: "#faad14" } : undefined} />
           </Col>
           <Col>
-            <Statistic title="过期文档" value={stats?.stale_docs ?? 0} valueStyle={stats?.stale_docs ? { color: "#fa8c16" } : undefined} />
+            <Statistic title="DONE" value={stats?.DONE ?? 0} />
           </Col>
           <Col>
-            <Statistic title="关联关系" value={stats?.total_relations ?? 0} />
-          </Col>
-          <Col>
-            <Statistic title="锚点" value={stats?.total_anchors ?? 0} />
+            <Statistic title="DEAD" value={stats?.DEAD ?? 0}
+              valueStyle={stats?.DEAD ? { color: "#cf1322" } : undefined} />
           </Col>
           <Col flex="auto" />
           <Col>
-            <Space direction="vertical" size={0} align="end">
-              <Tag color={ok ? "success" : "warning"}>{ok ? "● 索引正常" : "● 待关注"}</Tag>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                最近同步：{fmtTime(status?.last_sync_at)}　{status?.last_commit ? `@${short(status.last_commit)}` : ""}
-              </Text>
-            </Space>
+            <Text type="secondary" style={{ fontSize: 12 }}>计数基于最近 200 条</Text>
           </Col>
           <Col>
             <Space>
-              <Button icon={<ReloadOutlined />} onClick={refresh} loading={loading}>
-                刷新
-              </Button>
-              <Button type="primary" icon={<ThunderboltOutlined />} onClick={() => setTriggerOpen(true)}>
-                触发同步
+              <Button icon={<ReloadOutlined />} onClick={refresh} loading={loading}>刷新</Button>
+              <Button type="primary" icon={<ThunderboltOutlined />} onClick={() => setPushOpen(true)}>
+                模拟 Push
               </Button>
             </Space>
           </Col>
@@ -302,134 +213,65 @@ export default function SyncPage() {
       </Card>
 
       <Card size="small">
-        <Tabs
-          defaultActiveKey="tasks"
-          items={[
-            {
-              key: "tasks",
-              label: `同步任务 (${tasks.length})`,
-              children: (
-                <Table<SyncTaskItem>
-                  rowKey="task_id"
-                  size="small"
-                  loading={loading}
-                  dataSource={tasks}
-                  columns={taskColumns(openDetail)}
-                  pagination={{ pageSize: 10, showSizeChanger: false }}
-                  scroll={{ x: 980 }}
-                  rowClassName={(r) => (r.source_commit || r.rollback_detail ? "coderag-rollback-row" : "")}
-                />
-              ),
-            },
-            {
-              key: "rollbacks",
-              label: `回滚记录 (${rollbacks.length})`,
-              children: (
-                <Table<RollbackItem>
-                  rowKey="rollback_id"
-                  size="small"
-                  loading={loading}
-                  dataSource={rollbacks}
-                  columns={rollbackColumns}
-                  pagination={{ pageSize: 10, showSizeChanger: false }}
-                  scroll={{ x: 1080 }}
-                />
-              ),
-            },
-          ]}
+        <Row gutter={12} align="middle" style={{ marginBottom: 12 }}>
+          <Col>
+            <Space>
+              <Text type="secondary" style={{ fontSize: 12 }}>状态</Text>
+              <Select
+                allowClear
+                placeholder="全部状态"
+                style={{ width: 140 }}
+                value={statusFilter}
+                onChange={(v) => setStatusFilter(v)}
+                options={STATUS_OPTS}
+              />
+            </Space>
+          </Col>
+          <Col flex="auto" />
+          <Col>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              显示 {events.length} 条 / 20s 自动轮询
+            </Text>
+          </Col>
+        </Row>
+        <Table<PipelineEventItem>
+          rowKey="id"
+          size="small"
+          loading={loading}
+          dataSource={events}
+          columns={columns}
+          pagination={{ pageSize: 10, showSizeChanger: false }}
+          scroll={{ x: 1000 }}
+          locale={{ emptyText: "暂无管道事件——推送 webhook 或跑 scripts/ingest_*.py 触发" }}
         />
       </Card>
 
-      <Drawer
-        title={`同步任务 #${detail?.task_id ?? ""} 详情`}
-        open={!!detail}
-        onClose={() => setDetail(null)}
-        width={680}
-        loading={detailLoading}
-        destroyOnClose
-      >
-        {detail && (
-          <>
-            <Descriptions size="small" column={2} bordered style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="类型">
-                <Tag color={TYPE_COLOR[detail.type] || "default"}>{detail.type}</Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="状态">
-                <Tag color={STATUS_COLOR[detail.status] || "default"}>{detail.status}</Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="提交" span={2}>
-                <Text code>{detail.commit}</Text>
-              </Descriptions.Item>
-              <Descriptions.Item label="开始">{fmtTime(detail.started_at)}</Descriptions.Item>
-              <Descriptions.Item label="完成">{fmtTime(detail.finished_at)}</Descriptions.Item>
-              <Descriptions.Item label="耗时">{fmtMs(detail.duration_ms)}</Descriptions.Item>
-              <Descriptions.Item label="触发">{detail.triggered_by || "—"}</Descriptions.Item>
-              {detail.source_commit && (
-                <Descriptions.Item label="回滚源" span={2}>
-                  <Tag color="purple">{detail.source_commit}</Tag>
-                </Descriptions.Item>
-              )}
-              {detail.rollback_detail && (
-                <Descriptions.Item label="回滚明细" span={2}>
-                  <Space size={12} wrap>
-                    <Text>回退 {detail.rollback_detail.chunks_rolled_back}</Text>
-                    <Text type="success">恢复 {detail.rollback_detail.chunks_restored}</Text>
-                    <Text>关系 {detail.rollback_detail.relations_restored}</Text>
-                    <Text>锚点 {detail.rollback_detail.anchors_restored}</Text>
-                  </Space>
-                </Descriptions.Item>
-              )}
-            </Descriptions>
-
-            <Typography.Title level={5}>变更明细 ({detail.change_details.length})</Typography.Title>
-            <Table<ChangeDetailItem>
-              rowKey={(r) => `${r.chunk_id}-${r.change_type}`}
-              size="small"
-              dataSource={detail.change_details}
-              columns={changeColumns}
-              pagination={{ pageSize: 8, showSizeChanger: false }}
-              scroll={{ x: 520 }}
-              style={{ marginBottom: 16 }}
-            />
-
-            {detail.errors?.length > 0 && (
-              <>
-                <Typography.Title level={5}>错误 ({detail.errors.length})</Typography.Title>
-                {detail.errors.map((e, i) => (
-                  <Paragraph key={i} type="danger" style={{ fontSize: 12, marginBottom: 4 }}>
-                    {e.file ? `[${e.file}] ` : ""}
-                    {e.error}
-                  </Paragraph>
-                ))}
-              </>
-            )}
-          </>
-        )}
-      </Drawer>
-
       <Modal
-        title="触发同步"
-        open={triggerOpen}
-        onOk={onTrigger}
-        onCancel={() => setTriggerOpen(false)}
-        confirmLoading={triggering}
-        okText="开始同步"
+        title="模拟 Push"
+        open={pushOpen}
+        onOk={onPush}
+        onCancel={() => setPushOpen(false)}
+        confirmLoading={pushing}
+        okText="入队"
         destroyOnClose
       >
-        <Form form={form} layout="vertical" initialValues={{ type: "INCREMENTAL" }} preserve={false}>
-          <Form.Item name="type" label="同步类型" rules={[{ required: true }]}>
-            <Select
-              options={[
-                { value: "INCREMENTAL", label: "INCREMENTAL（增量：git diff → 仅变更文件）" },
-                { value: "FULL", label: "FULL（全量：重新解析整个仓库 + 重建关联/调用图）" },
-              ]}
-            />
+        <Form form={form} layout="vertical" preserve={false}>
+          <Form.Item name="repo" label="仓库" rules={[{ required: true, message: "请选择仓库" }]}>
+            <Select placeholder="选择 repos_root 下的仓库" options={repos.map((r) => ({ value: r, label: r }))} />
           </Form.Item>
-          <Form.Item name="target_commit" label="目标提交（可选，缺省取 HEAD）" tooltip="同步到该 git 提交；留空则取当前 HEAD">
-            <Input placeholder="如 1cb9fe90 或分支/tag" />
+          <Form.Item name="commit_hash" label="提交 hash" rules={[{ required: true, message: "请输入 commit hash" }]}>
+            <Input placeholder="如 1cb9fe908d" />
+          </Form.Item>
+          <Form.Item
+            name="files"
+            label="变更文件（每行「路径 状态」，如 a/B.java M）"
+            rules={[{ required: true, message: "请至少填写一行" }]}
+            tooltip="状态取 git 的 A/M/D/R 等；逐行解析为 [{path, status}] 后入队"
+          >
+            <Input.TextArea rows={5} placeholder={"src/main/java/a/B.java M\nsrc/main/java/a/C.java A"} />
           </Form.Item>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            增量同步在无已完成游标时会自动回退为全量。同步为阻塞执行，完成后自动刷新。
+            仅入队 Redis Stream（commit_hash+files 形态）；记账与重试由 worker 完成，入队后自动刷新。
           </Text>
         </Form>
       </Modal>

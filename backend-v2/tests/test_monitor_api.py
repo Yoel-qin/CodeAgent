@@ -85,6 +85,40 @@ async def test_list_and_get_trace(seeded_trace):
     assert await get_trace(seeded_trace, 999999) is None
 
 
+async def test_overview_window_scopes_sample_segment(seeded_trace):
+    """评审修复轮 1①：overview Python 样本段与 SQL 段同窗——早于「today」截断的
+    行不得进 routes/codenav_hit_rate/avg_tokens（all 窗仍全量可见）。"""
+    from datetime import UTC, datetime, timedelta
+
+    import pytest as _pytest
+
+    from app.services.monitor_service import overview
+
+    old_ts = datetime.now(UTC) - timedelta(days=2)  # 窗外于 today、窗内于 7d/all
+    m = await seeded_trace.execute(text(
+        "insert into chat_messages (conversation_id, role, content, meta)"
+        " values ('c1', 'assistant', 'a', cast(:meta as jsonb)) returning id"),
+        {"meta": json.dumps({"citations": [{"kind": "code"}]})})
+    old_mid = m.first()[0]
+    await seeded_trace.execute(text(
+        "insert into trace_spans (message_id, conversation_id, query, route, spans,"
+        " duration_ms, token_usage, created_at)"
+        " values (:m, 'c1', 'q_old', 'codenav', '[]'::jsonb, 500,"
+        " cast(:t as jsonb), cast(:ts as timestamptz))"),
+        {"m": old_mid, "t": json.dumps({"spent_tokens": 999, "llm_calls": 9}), "ts": old_ts})
+
+    all_win = await overview(seeded_trace, window="all")
+    assert all_win["requests"] == 4 and all_win["routes"]["codenav"] == 3
+    assert all_win["codenav_hit_rate"] == _pytest.approx(2 / 3)  # 3 codenav 中 2 条 code 引用
+
+    today = await overview(seeded_trace, window="today")
+    assert today["requests"] == 3
+    assert today["routes"] == {"codenav": 2, "docqa": 1}  # 旧 codenav 行不进样本段
+    assert today["codenav_hit_rate"] == 0.5
+    assert today["avg_tokens"] == 100.0  # 旧行 spent_tokens=999 不进均值
+    assert today["avg_tool_calls"] == 1.0
+
+
 def test_api_contracts(monkeypatch):
     from fastapi.testclient import TestClient
 

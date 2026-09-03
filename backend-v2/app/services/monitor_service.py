@@ -7,10 +7,11 @@
   API 层再兜一层整端点 try/except（返回全 null 骨架），双保险。
 - 只读：全部 select；session 由调用方注入（生产 = ``app.db.base.SessionLocal``，
   测试 = 连接级事务回滚会话），函数自身不 commit。
-- ``overview`` 双段口径（brief 契约）：SQL 段单查询 COUNT/AVG/p50/p95 按 ``window``
-  过滤；Python 段取**最近 ≤500 行**样本（route/spans/message_id/token_usage，不过滤
-  时间窗）算 avg_tool_calls / routes / avg_tokens / codenav_hit_rate——codenav 命中率
-  的分母只数 codenav 行，meta 经一条 ``IN`` 查询取回。
+- ``overview`` 双段口径（评审修复轮 1 起**同窗**）：SQL 段单查询 COUNT/AVG/p50/p95 按
+  ``window`` 过滤；Python 段取**窗内最近 ≤500 行**样本（route/spans/message_id/
+  token_usage，同一 ``cutoff`` 过滤，all → 无条件）算 avg_tool_calls / routes /
+  avg_tokens / codenav_hit_rate——codenav 命中率的分母只数 codenav 行，meta 经一条
+  ``IN`` 查询取回。
 - Redis 段同步直调（``_redis_stream_stats``：XLEN/XINFO GROUPS 两次小 IO，不值得
   to_thread；独立成模块函数便于测试钉）。
 """
@@ -88,11 +89,13 @@ async def overview(session: AsyncSession, *, window: str) -> dict:
     except Exception as e:  # noqa: BLE001 —— 监控面独立降级，绝不 500
         logger.warning("monitor.overview: SQL 段降级: {}", e)
 
-    # ── Python 段（最近 ≤500 行样本，不过滤时间窗——brief 契约）──
+    # ── Python 段（窗内最近 ≤500 行样本，cutoff 与 SQL 段同源——评审修复轮 1）──
     try:
-        rows = (await session.execute(
-            select(TraceSpan.route, TraceSpan.spans, TraceSpan.message_id, TraceSpan.token_usage)
-            .order_by(TraceSpan.id.desc()).limit(SAMPLE_LIMIT))).all()
+        sample = select(TraceSpan.route, TraceSpan.spans, TraceSpan.message_id,
+                        TraceSpan.token_usage).order_by(TraceSpan.id.desc()).limit(SAMPLE_LIMIT)
+        if cutoff is not None:
+            sample = sample.where(TraceSpan.created_at >= cutoff)
+        rows = (await session.execute(sample)).all()
         if rows:
             out["avg_tool_calls"] = fmean(_n_tool_calls(spans) for _r, spans, _m, _t in rows)
             out["routes"] = dict(Counter(route for route, _s, _m, _t in rows))
@@ -159,9 +162,11 @@ async def get_trace(session: AsyncSession, message_id: int) -> dict | None:
 def _redis_stream_stats() -> dict:
     """Redis 段：主流（XLEN + XINFO GROUPS 首组的 pending/lag）与死信流各自独立
     try/except——任一异常（Redis 挂 / 流或组不存在）只把对应段降级 None。
-    同步直调（monitor 低频读，两次小 IO 不值得 to_thread）。"""
+    同步直调（monitor 低频读，两次小 IO 不值得 to_thread）；socket 双超时 2s
+    （评审修复轮 1）：黑洞连接（防火墙 DROP / 容器挂起）不再无限阻塞事件循环。"""
     out = {"stream": None, "dead": None}
-    r = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
+    r = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True,
+                                 socket_connect_timeout=2, socket_timeout=2)
     try:
         try:
             groups = r.xinfo_groups(settings.pipe_stream) or []

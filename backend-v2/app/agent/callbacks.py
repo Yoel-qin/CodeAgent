@@ -7,7 +7,8 @@
   故 ``on_llm_end`` 按次结算——该次调用一个 token 都没见过 → 整段文本一次性补发单个 token 事件，
   避免非流式模型静默无输出。中间工具决策轮 content 为空，天然不触发。
 - :class:`CostCallbackHandler`：把 LLM 调用次数/usage 记入 :class:`~app.agent.cost.CostController`
-  （只记不抛——langchain 吞回调异常）。usage 取 ``usage_metadata``（prompt/completion 真值）；
+  （只记不抛——langchain 吞回调异常）。usage 取 ``usage_metadata``（``input_tokens``/
+  ``output_tokens`` 真值优先，旧 ``prompt_tokens``/``completion_tokens`` 键回退）；
   缺失 → 按文本 ``chars//4`` 估算（completion 记账、prompt 记 0）并标 ``estimated=True``。
   拦截不在回调里做：由 react_base 的 astream chunk 循环轮询 ``cost.exceeded``。
   M7 起可选 ``trace=SpanCollector``：每次 LLM 调用一个 ``llm`` span（start 记
@@ -106,12 +107,35 @@ class CostCallbackHandler(BaseCallbackHandler):
         except Exception:  # noqa: BLE001
             pass
 
+    def on_llm_error(self, error: BaseException, *, run_id=None, **kwargs) -> None:  # noqa: ARG002
+        """LLM 异常 → 关闭 open llm span（终审修复 rider，结构镜像 on_llm_end）。
+
+        不闭合则 ``SpanCollector.to_dict`` 丢弃整段 span（未关闭不落 spans）——LLM 报错
+        的请求会凭空丢 llm 段。error 截 200 字符沿 tool span 口径；记账侧不动（调用失败
+        无 usage 可结）。``_span_by_run`` 条目必弹（防同 run_id 复用漏旧 span）。
+        """
+        try:
+            if self.trace is not None:
+                sid = self._span_by_run.pop(run_id, None)
+                if sid is not None:
+                    self.trace.end(sid, status="error", error=str(error)[:200])
+        except Exception:  # noqa: BLE001
+            pass
+
     @staticmethod
     def _usage_from_response(response) -> tuple[int, int] | None:
-        """``generations[0][0].message.usage_metadata`` 的 (prompt, completion)；缺失 → None。"""
+        """``generations[0][0].message.usage_metadata`` 的 (prompt, completion)；缺失 → None。
+
+        双键读取（终审修复）：langchain-core 1.6.1 的 ``UsageMetadata`` 是
+        ``input_tokens``/``output_tokens``/``total_tokens``——现代键**优先**（修复前只认
+        ``prompt_tokens``/``completion_tokens``，生产恒 miss → 全部落 chars/4 估算路径）；
+        旧 provider 键作回退（防御两代键形状并存）。返回契约不变：(prompt, completion)。
+        """
         try:
             msg = response.generations[0][0].message
             meta = getattr(msg, "usage_metadata", None) or {}
+            if "input_tokens" in meta or "output_tokens" in meta:
+                return int(meta.get("input_tokens") or 0), int(meta.get("output_tokens") or 0)
             if "prompt_tokens" in meta or "completion_tokens" in meta:
                 return int(meta.get("prompt_tokens") or 0), int(meta.get("completion_tokens") or 0)
         except Exception:  # noqa: BLE001

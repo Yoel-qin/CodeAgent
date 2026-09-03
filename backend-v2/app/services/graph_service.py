@@ -207,6 +207,9 @@ async def search_entities(
                 "type": "method" if r["method_name"] else "class",
                 "module": r["module"],
                 "class_name": r["class_name"],
+                # 终审修复：搜索项必须带 method_name（前端 pickCenter 依它区分方法/类中心，
+                # 缺席则选方法也退化成类中心图）——与 node 形状对齐，SELECT 本就返回该列。
+                "method_name": r["method_name"],
                 "file_path": r["file_path"],
             }
             for r in rows

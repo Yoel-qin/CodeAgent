@@ -108,11 +108,55 @@ def test_cost_callback_records_llm_span():
     h = CostCallbackHandler(cost, trace=trace)
     h.on_chat_model_start({}, [], run_id="r1")
     msg = AIMessage(content="hello")
-    msg.usage_metadata = {"prompt_tokens": 3, "completion_tokens": 2}
+    # 真 UsageMetadata 键（langchain-core 1.6.1：input/output/total_tokens）——终审修复：
+    # 旧夹具手赋虚构的 prompt_tokens/completion_tokens，测试靠 bug 才通过
+    msg.usage_metadata = {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
     # LLMResult（嵌套 generations）= langchain 回调机制实际传给 on_llm_end 的容器（见模块 docstring 第 4 点）
     h.on_llm_end(LLMResult(generations=[[ChatGeneration(message=msg)]]), run_id="r1")
     s = trace.to_dict()[0]
     assert s["kind"] == "llm" and s["tokens"] == {"prompt": 3, "completion": 2, "estimated": False}
+    assert cost.spent_tokens == 5 and cost.estimated is False   # 真值入账，不落估算路径
+
+
+def test_cost_callback_usage_dual_keys():
+    """终审修复回归：usage 双键读取——现代 UsageMetadata 键（input/output_tokens）
+    优先（修复前只认 prompt/completion_tokens → 生产恒 miss、恒走 chars/4 估算），
+    旧 provider 键回退仍真值入账。"""
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    from app.agent.callbacks import CostCallbackHandler
+    from app.agent.cost import CostController
+
+    def _spent(meta: dict) -> tuple[int, bool]:
+        cost = CostController(max_tokens=1000, max_llm_calls=5)
+        h = CostCallbackHandler(cost)
+        h.on_chat_model_start({}, [], run_id="rx")
+        msg = AIMessage(content="hi")
+        msg.usage_metadata = meta
+        h.on_llm_end(LLMResult(generations=[[ChatGeneration(message=msg)]]), run_id="rx")
+        return cost.spent_tokens, cost.estimated
+
+    assert _spent({"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}) == (10, False)
+    assert _spent({"prompt_tokens": 5, "completion_tokens": 4}) == (9, False)
+
+
+def test_cost_callback_on_llm_error_closes_span():
+    """终审修复 rider：LLM 异常必须关闭 llm span（error 截 200 字符，沿 tool span 口径）
+    ——不闭合则 SpanCollector.to_dict 丢弃整段 span（未关闭不落 spans）。"""
+    from app.agent.callbacks import CostCallbackHandler
+    from app.agent.cost import CostController
+
+    cost = CostController(max_tokens=1000, max_llm_calls=5)
+    trace = SpanCollector()
+    h = CostCallbackHandler(cost, trace=trace)
+    h.on_chat_model_start({}, [], run_id="r9")
+    boom = RuntimeError("x" * 300)
+    h.on_llm_error(boom, run_id="r9")
+    spans = trace.to_dict()
+    assert len(spans) == 1 and spans[0]["kind"] == "llm"
+    assert spans[0]["status"] == "error" and spans[0]["error"] == str(boom)[:200]
+    assert spans[0]["duration_ms"] is not None and spans[0]["tokens"] is None
+    assert h._span_by_run == {}   # run 条目已弹出（不复用漏旧 span）
 
 
 def test_docqa_chat_writes_trace_row(monkeypatch):

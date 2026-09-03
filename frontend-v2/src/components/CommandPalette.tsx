@@ -21,6 +21,7 @@ const NAV_COMMANDS: Cmd[] = [
   { key: "/documents", label: "文档管理" },
   { key: "/graph", label: "调用图" },
   { key: "/sync", label: "同步管道" },
+  { key: "/monitor", label: "系统监控" },
 ];
 
 export default function CommandPalette() {

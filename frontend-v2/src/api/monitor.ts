@@ -1,144 +1,33 @@
-/** 系统监控 REST 客户端（对齐后端 Phase 8.4 / schemas/monitor.py）。 */
+/** v2 监控 REST 客户端（/v1/monitor/*）。 */
 import { api } from "./client";
 
 export type MonitorWindow = "today" | "7d" | "all";
 
-// ---- GET /monitor/retrieval-perf ----
-
-export interface LatencyMs {
-  avg_total: number | null;
-  p50_total: number | null;
-  p95_total: number | null;
-  avg_recall: number | null;
-  avg_rerank: number | null;
-}
-
-export interface RetrievalFunnel {
-  avg_pool: number | null; // RRF 融合池均值
-  avg_final: number | null; // 精排后候选均值
-}
-
-export interface FeedbackCounts {
-  helpful: number;
-  not_helpful: number;
-}
-
-export interface RetrievalPerf {
+export interface Overview {
   window: string;
-  queries: number;
-  latency_ms: LatencyMs;
-  funnel: RetrievalFunnel;
-  rerank_rate: number | null; // 启用精排占比（0~1）
-  feedback: FeedbackCounts;
+  requests: number;
+  avg_duration_ms: number | null;
+  p50_ms: number | null;
+  p95_ms: number | null;
+  avg_tool_calls: number | null;
+  avg_tokens: number | null;
+  codenav_hit_rate: number | null;
+  routes: Record<string, number>;
 }
-
-// ---- GET /monitor/resources ----
-
-export interface ComponentInfo {
-  up: boolean | null;
-  detail?: string | null;
-  db_size_bytes?: number | null; // postgres
-  used_memory_bytes?: number | null; // redis
-  keys?: number | null; // redis
-  collections?: number | null; // milvus
-  rows?: number | null; // milvus
-  doc_count?: number | null; // elasticsearch
-  size_bytes?: number | null; // elasticsearch store
-  asset_bytes?: number | null; // minio
-}
-
-export interface Resources {
-  status: "healthy" | "degraded";
-  components: Record<string, ComponentInfo>;
-}
-
-// ---- GET /monitor/api-usage ----
-
-export interface ApiUsage {
-  window: string;
-  llm_calls: number;
-  embedding_query_calls: number;
-  rerank_calls: number;
-  generated_tokens_est: number;
-  indexed_tokens: number;
-  note: string;
-}
-
-// ---- GET /monitor/index-stats ----
-
-export interface MilvusCollectionStat {
-  name: string;
-  dim: number | null;
-  rows: number | null;
-}
-
-export interface PostgresIndexStats {
-  code_chunks: number;
-  code_chunks_active: number;
-  code_chunks_synced_pct: number | null;
-  doc_chunks: number;
-  doc_chunks_active: number;
-  doc_chunks_synced_pct: number | null;
-  chunk_relations: number;
-  chunk_relations_stale: number;
-  call_graph: number;
-  call_graph_active: number;
-  code_files: number;
-  doc_files: number;
-  doc_resources: number;
-  retrieval_logs: number;
-  conversations: number;
-  chat_messages: number;
-}
-
-export interface MilvusIndexStats {
-  strategy: string;
-  collections: MilvusCollectionStat[];
-}
-
-export interface EsIndexStats {
-  index: string;
-  doc_count: number | null;
-  by_kind: Record<string, number | null>;
-}
-
-export interface IndexStats {
-  postgres: PostgresIndexStats;
-  milvus: MilvusIndexStats;
-  elasticsearch: EsIndexStats;
-}
-
-// ---- 调用 ----
-
-export const getRetrievalPerf = (win: MonitorWindow = "today") =>
-  api.get<RetrievalPerf>("/v1/monitor/retrieval-perf", { params: { window: win } }).then((r) => r.data);
-
-export const getApiUsage = (win: MonitorWindow = "today") =>
-  api.get<ApiUsage>("/v1/monitor/api-usage", { params: { window: win } }).then((r) => r.data);
-
-export const getIndexStats = () =>
-  api.get<IndexStats>("/v1/monitor/index-stats").then((r) => r.data);
-
-export const getResources = () =>
-  api.get<Resources>("/v1/monitor/resources").then((r) => r.data);
-
-// ---- GET /monitor/traces（M41 全链路追溯）----
 
 export interface TraceTokens {
-  prompt: number;
-  completion: number;
-  n_llm_calls: number;
-  estimated: boolean;
+  spent_tokens: number | null;
+  llm_calls: number | null;
+  estimated: boolean | null;
 }
 
 export interface TraceListItem {
-  log_id: number;
+  message_id: number;
   query: string;
-  mode: string | null;
-  agent: string | null;
+  route: string;
   total_ms: number | null;
   tokens: TraceTokens | null;
-  has_trace: boolean;
+  n_tool_calls: number;
   created_at: string | null;
 }
 
@@ -162,19 +51,31 @@ export interface TraceSpan {
 }
 
 export interface TraceDetail {
-  log_id: number;
+  message_id: number;
+  conversation_id: string;
   query: string;
-  mode: string | null;
+  route: string;
   legacy: boolean;
   spans: TraceSpan[];
   summary: { total_ms: number; tokens?: TraceTokens; n_spans: number } | null;
   created_at: string | null;
 }
 
-export const listTraces = (win: MonitorWindow = "today", limit = 50) =>
-  api
-    .get<TraceList>("/v1/monitor/traces", { params: { window: win, limit } })
-    .then((r) => r.data);
+export interface PipelineStats {
+  stream: { length: number; pending: number; lag: number | null; group: string } | null;
+  dead: { length: number } | null;
+  events: Record<string, number> | null;
+  last_event_at: string | null;
+}
 
-export const getTrace = (logId: number) =>
-  api.get<TraceDetail>(`/v1/monitor/traces/${logId}`).then((r) => r.data);
+export const getOverview = (win: MonitorWindow = "7d") =>
+  api.get<Overview>("/v1/monitor/overview", { params: { window: win } }).then((r) => r.data);
+
+export const listTraces = (win: MonitorWindow = "7d", limit = 50) =>
+  api.get<TraceList>("/v1/monitor/traces", { params: { window: win, limit } }).then((r) => r.data);
+
+export const getTrace = (messageId: number) =>
+  api.get<TraceDetail>(`/v1/monitor/traces/${messageId}`).then((r) => r.data);
+
+export const getPipelineStats = () =>
+  api.get<PipelineStats>("/v1/monitor/pipeline").then((r) => r.data);

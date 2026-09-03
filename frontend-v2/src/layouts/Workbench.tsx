@@ -7,6 +7,7 @@ import {
   SyncOutlined,
   SearchOutlined,
   RobotOutlined,
+  DashboardOutlined,
 } from "@ant-design/icons";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "../stores/app";
@@ -32,7 +33,10 @@ const navItems = [
     key: "admin",
     label: "管理",
     type: "group" as const,
-    children: [{ key: "/sync", label: "同步管道", icon: <SyncOutlined /> }],
+    children: [
+      { key: "/sync", label: "同步管道", icon: <SyncOutlined /> },
+      { key: "/monitor", label: "系统监控", icon: <DashboardOutlined /> },
+    ],
   },
 ];
 

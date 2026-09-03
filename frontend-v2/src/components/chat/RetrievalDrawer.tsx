@@ -1,14 +1,5 @@
-import { useEffect, useState } from "react";
-import { Drawer, Tag, Typography, Spin, Empty, theme } from "antd";
-import { CodeOutlined, FileTextOutlined } from "@ant-design/icons";
-import { getRetrieval, type RetrievalDetail } from "../../api/conversations";
-
-const CHANNEL_LABEL: Record<string, string> = {
-  vector: "向量语义",
-  bm25: "BM25 词法",
-  graph_traverse: "图遍历",
-  graph_vector: "图向量",
-};
+import { Drawer, Tag, Typography, Empty, theme } from "antd";
+import type { AgentStep, RetrievalInfo } from "../../hooks/types";
 
 /** 紧凑展示工具入参：key=value（字符串原样、其余 JSON 化），避免长串撑爆抽屉。 */
 const fmtArgs = (args: Record<string, unknown>) =>
@@ -16,173 +7,89 @@ const fmtArgs = (args: Record<string, unknown>) =>
     .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
     .join(", ");
 
-/** 检索详情抽屉：展开某条 assistant 消息的三阶段召回漏斗与精排候选。 */
+/** Agent 轨迹抽屉（props 驱动，不 fetch）：steps 来自消息 state / 历史 meta.agent_steps。 */
 export default function RetrievalDrawer({
-  messageId,
   open,
   onClose,
+  steps,
+  retrieval,
 }: {
-  messageId: string | null;
   open: boolean;
   onClose: () => void;
+  steps: AgentStep[] | null;
+  retrieval: RetrievalInfo | null;
 }) {
   const { token } = theme.useToken();
-  const [data, setData] = useState<RetrievalDetail | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!open || !messageId) return;
-    setLoading(true);
-    setData(null);
-    getRetrieval(messageId)
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  }, [open, messageId]);
-
-  const Pill = (label: string, n: number | null | undefined, color: string) => (
-    <Tag color={color} style={{ marginRight: 6 }}>
-      {label} {n ?? 0}
-    </Tag>
-  );
 
   return (
-    <Drawer title="检索详情" open={open} onClose={onClose} width={460}>
-      <Spin spinning={loading}>
-        {!data ? (
-          !loading && <Empty description="无检索详情" />
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-            {/* Stage 1 */}
+    <Drawer title="Agent 轨迹" open={open} onClose={onClose} width={460}>
+      {!steps?.length && !retrieval ? (
+        <Empty description="无检索详情" />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* 检索摘要（retrieval 事件 / meta.route 派生） */}
+          {retrieval && (
             <section>
-              <Typography.Title level={5} style={{ marginBottom: 8 }}>
-                Stage 1 · 召回 + RRF 融合
-                {data.stage1.latency_ms != null && (
-                  <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 400, marginLeft: 8 }}>
-                    {data.stage1.latency_ms} ms
-                  </Typography.Text>
+              <Typography.Title level={5} style={{ marginBottom: 8 }}>检索摘要</Typography.Title>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                <Tag color="geekblue" style={{ margin: 0 }}>mode: {retrieval.mode}</Tag>
+                {retrieval.intent && <Tag color="purple" style={{ margin: 0 }}>intent: {retrieval.intent}</Tag>}
+                {retrieval.confidence != null && (
+                  <Tag color="cyan" style={{ margin: 0 }}>置信度 {retrieval.confidence.toFixed(2)}</Tag>
                 )}
-              </Typography.Title>
-              <div style={{ marginBottom: 6 }}>
-                {data.stage1.channels.map((ch) => Pill(CHANNEL_LABEL[ch.name] ?? ch.name, ch.count, "blue"))}
+                <Tag color="blue" style={{ margin: 0 }}>代码命中 {retrieval.code_hits ?? 0}</Tag>
+                <Tag color="gold" style={{ margin: 0 }}>文档命中 {retrieval.doc_hits ?? 0}</Tag>
               </div>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                RRF 融合去重：{data.stage1.merged_count} 条
-                {data.stage1.terms?.length ? ` · 检索词：${data.stage1.terms.join(", ")}` : ""}
-              </Typography.Text>
-            </section>
-
-            {/* Stage 2 */}
-            <section>
-              <Typography.Title level={5} style={{ marginBottom: 8 }}>Stage 2 · 粗排</Typography.Title>
-              {data.stage2.model ? (
-                <Typography.Text style={{ fontSize: 13 }}>
-                  {data.stage2.model} → <b>{data.stage2.output_count ?? 0}</b> 条
-                </Typography.Text>
-              ) : (
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  未启用（单阶段精排）
+              {!!retrieval.tools?.length && (
+                <Typography.Text type="secondary" style={{ display: "block", marginTop: 8, fontSize: 12 }}>
+                  工具：{retrieval.tools.join(", ")}
                 </Typography.Text>
               )}
             </section>
+          )}
 
-            {/* Stage 3 */}
+          {/* Agent 工具调用轨迹 */}
+          {!!steps?.length && (
             <section>
               <Typography.Title level={5} style={{ marginBottom: 8 }}>
-                Stage 3 · 精排
-                {data.stage3.latency_ms != null && (
-                  <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 400, marginLeft: 8 }}>
-                    {data.stage3.latency_ms} ms
-                  </Typography.Text>
-                )}
+                工具调用轨迹
+                <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 400, marginLeft: 8 }}>
+                  {steps.length} 步
+                </Typography.Text>
               </Typography.Title>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {data.stage3.model} · {data.stage3.rerank_on ? "精排生效" : "未启用（RRF 排序）"} · 最终 {data.stage3.output_count} 条
-              </Typography.Text>
-              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-                {data.stage3.results.map((r, i) => {
-                  const isCode = r.type === "code";
-                  return (
-                    <div
-                      key={r.chunk_id + i}
-                      style={{
-                        padding: "8px 10px",
-                        borderRadius: 6,
-                        background: token.colorFillQuaternary,
-                        border: `1px solid ${token.colorBorderSecondary}`,
-                      }}
-                    >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <Tag color={isCode ? "blue" : "gold"} icon={isCode ? <CodeOutlined /> : <FileTextOutlined />} style={{ margin: 0 }}>
-                          {isCode ? "代码" : "文档"}
-                        </Tag>
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                          {r.score != null ? r.score.toFixed(3) : ""}
-                        </Typography.Text>
-                      </div>
-                      <Typography.Text ellipsis style={{ display: "block", marginTop: 4, fontSize: 12 }} className="code-font">
-                        {r.label ?? (isCode ? `${r.class}.${r.method}` : (r.path ?? []).join(" > "))}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {steps.map((s, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      background: token.colorFillQuaternary,
+                      border: `1px solid ${token.colorBorderSecondary}`,
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <Tag color="purple" style={{ margin: 0 }}>{s.tool}</Tag>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {s.duration_ms != null ? `${s.duration_ms} ms` : `命中 ${s.n} 条`}
                       </Typography.Text>
                     </div>
-                  );
-                })}
+                    {Object.keys(s.args).length > 0 && (
+                      <Typography.Text
+                        ellipsis
+                        className="code-font"
+                        style={{ display: "block", marginTop: 4, fontSize: 12 }}
+                      >
+                        {fmtArgs(s.args)}
+                      </Typography.Text>
+                    )}
+                  </div>
+                ))}
               </div>
             </section>
-
-            {/* Agent 推理轨迹（仅 langgraph 场景 Agent 消息；M5 可观测性） */}
-            {data.agent && (
-              <section>
-                <Typography.Title level={5} style={{ marginBottom: 8 }}>
-                  Agent 推理轨迹
-                  <Typography.Text
-                    type="secondary"
-                    style={{ fontSize: 12, fontWeight: 400, marginLeft: 8 }}
-                  >
-                    {data.agent.type} · {data.agent.steps.length} 步
-                  </Typography.Text>
-                </Typography.Title>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {data.agent.steps.map((s, i) => (
-                    <div
-                      key={i}
-                      style={{
-                        padding: "8px 10px",
-                        borderRadius: 6,
-                        background: token.colorFillQuaternary,
-                        border: `1px solid ${token.colorBorderSecondary}`,
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                        }}
-                      >
-                        <Tag color="purple" style={{ margin: 0 }}>
-                          {s.tool}
-                        </Tag>
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                          命中 {s.n} 条
-                        </Typography.Text>
-                      </div>
-                      {Object.keys(s.args).length > 0 && (
-                        <Typography.Text
-                          ellipsis
-                          className="code-font"
-                          style={{ display: "block", marginTop: 4, fontSize: 12 }}
-                        >
-                          {fmtArgs(s.args)}
-                        </Typography.Text>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-          </div>
-        )}
-      </Spin>
+          )}
+        </div>
+      )}
     </Drawer>
   );
 }

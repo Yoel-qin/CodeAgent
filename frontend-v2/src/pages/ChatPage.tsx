@@ -1,13 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Input,
   Button,
+  Select,
   Space,
   Typography,
   Empty,
   Tooltip,
-  Modal,
-  Checkbox,
   theme,
 } from "antd";
 import {
@@ -22,8 +21,10 @@ import {
 } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useChat, type ChatMessage, type RetrievalInfo, type AgentStep, type Feedback } from "../hooks/useChat";
-import { postFeedback, FEEDBACK_CATEGORIES } from "../api/conversations";
+import { useChat } from "../hooks/useChat";
+import type { AgentStep, ChatMessage, RetrievalInfo } from "../hooks/types";
+import { listRepos } from "../api/repos";
+import { postFeedback } from "../api/conversations";
 import CitationCard from "../components/chat/CitationCard";
 import ConversationList from "../components/chat/ConversationList";
 import RetrievalDrawer from "../components/chat/RetrievalDrawer";
@@ -31,33 +32,30 @@ import RetrievalDrawer from "../components/chat/RetrievalDrawer";
 const { TextArea } = Input;
 const { Text } = Typography;
 
-// 前端不再手动选择 Agent，统一走后端意图识别路由；此映射仅用于历史消息 agent_type 的标签回显。
-const AGENT_LABELS: Record<string, string> = {
-  CODE_UNDERSTAND: "代码理解",
-  DOC_ANSWER: "文档问答",
-  CHANGE_IMPACT: "变更影响",
-  BUG_DIAGNOSIS: "缺陷诊断",
-  CODE_REVIEW: "代码审查", // M11：主动评估代码质量/改进建议
-  TEST_GENERATION: "测试生成", // M12：为方法生成 JUnit 单元测试
-  DOC_MAINTAIN: "文档维护", // HITL（M10）：人在回路审批
+type Rating = "HELPFUL" | "NOT_HELPFUL";
+
+// 前端不选 Agent：route 由后端意图路由产出（retrieval 事件 mode / 历史 meta.route），此映射仅作标签回显。
+const ROUTE_LABELS: Record<string, string> = {
+  codenav: "代码导航",
+  docqa: "文档问答",
+  retrieve: "检索",
+  clarify: "澄清",
 };
 
 export default function ChatPage() {
   const { token } = theme.useToken();
   const {
-    messages, streaming, send, resume, stop, clear,
-    conversationId, conversationTitle, loadConversation, newConversation, setFeedback,
-  } = useChat();
+    messages, streaming, send, stop, clear,
+    conversationId, conversationTitle, conversationRepo, setConversationRepo,
+    loadConversation, newConversation, setFeedback,
+  } = useChat("");
   const [value, setValue] = useState("");
-  const [drawerMsgId, setDrawerMsgId] = useState<string | null>(null);
-  const [hitlComment, setHitlComment] = useState("");
-  const [dislikeMsgId, setDislikeMsgId] = useState<string | null>(null);
-  const [dislikeCats, setDislikeCats] = useState<string[]>([]);
-  const [dislikeCorrection, setDislikeCorrection] = useState("");
-  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [drawerMsg, setDrawerMsg] = useState<ChatMessage | null>(null);
+  const [repos, setRepos] = useState<string[]>([]);
 
-  // HITL（M10）：当前等待人工确认的消息（至多一条）
-  const awaiting = messages.find((m) => m.interrupt?.awaiting) ?? null;
+  useEffect(() => {
+    listRepos().then((r) => setRepos(r.items)).catch(() => setRepos([]));
+  }, []);
 
   const submit = (q?: string) => {
     const text = (q ?? value).trim();
@@ -74,45 +72,15 @@ export default function ChatPage() {
     return null;
   }, [messages]);
 
-  const handleFeedback = async (m: ChatMessage, rating: Feedback) => {
+  // 反馈简单二态（v2 无六分类/纠错）：NOT_HELPFUL 也直接发送，无弹窗
+  const handleFeedback = async (m: ChatMessage, rating: Rating) => {
     if (!m.messageId) return;
-    if (rating === "NOT_HELPFUL") {
-      // 打开分类/纠错弹窗
-      setDislikeMsgId(m.messageId);
-      setDislikeCats([]);
-      setDislikeCorrection("");
-      return;
-    }
     try {
       await postFeedback(m.messageId, rating);
       setFeedback(m.messageId, rating);
     } catch {
       /* 反馈失败静默 */
     }
-  };
-
-  const submitDislike = async () => {
-    if (!dislikeMsgId) return;
-    setFeedbackSubmitting(true);
-    try {
-      await postFeedback(dislikeMsgId, "NOT_HELPFUL", dislikeCats.length > 0 ? dislikeCats : undefined, dislikeCorrection || undefined);
-      setFeedback(dislikeMsgId, "NOT_HELPFUL");
-    } catch {
-      /* 反馈失败静默 */
-    }
-    setDislikeMsgId(null);
-    setFeedbackSubmitting(false);
-  };
-
-  const skipDislike = async () => {
-    if (!dislikeMsgId) return;
-    try {
-      await postFeedback(dislikeMsgId, "NOT_HELPFUL");
-      setFeedback(dislikeMsgId, "NOT_HELPFUL");
-    } catch {
-      /* 反馈失败静默 */
-    }
-    setDislikeMsgId(null);
   };
 
   return (
@@ -146,11 +114,10 @@ export default function ChatPage() {
                 m={m}
                 token={token}
                 isLastAssistant={lastAssistant?.id === m.id}
-                conversationId={conversationId}
+                repo={conversationRepo}
                 streaming={streaming}
-                onOpenRetrieval={(id) => setDrawerMsgId(id)}
+                onOpenRetrieval={setDrawerMsg}
                 onFeedback={handleFeedback}
-                onPickSuggestion={(t) => submit(t)}
               />
             ))
           )}
@@ -164,6 +131,13 @@ export default function ChatPage() {
             padding: 12,
           }}
         >
+          <Select
+            value={conversationRepo || undefined}
+            onChange={(v) => setConversationRepo(v ?? "")}
+            options={repos.map((r) => ({ value: r, label: r }))}
+            placeholder="默认仓库"
+            style={{ width: 160, marginBottom: 8 }}
+          />
           <Space.Compact style={{ width: "100%" }}>
             <TextArea
               value={value}
@@ -194,98 +168,34 @@ export default function ChatPage() {
               <Button size="small" icon={<DeleteOutlined />} onClick={clear} disabled={streaming || !messages.length} />
             </Tooltip>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              CodeRAG · 意图识别自动路由 · RRF + 精排检索增强生成
+              CodeRAG · 意图路由 · 混合检索增强生成
               {conversationTitle ? ` · ${conversationTitle}` : ""}
             </Text>
           </Space>
         </div>
       </div>
 
-      {/* 检索详情抽屉 */}
+      {/* Agent 轨迹抽屉（props 驱动：数据来自消息 state / 历史 meta） */}
       <RetrievalDrawer
-        messageId={drawerMsgId}
-        open={!!drawerMsgId}
-        onClose={() => setDrawerMsgId(null)}
+        open={!!drawerMsg}
+        onClose={() => setDrawerMsg(null)}
+        steps={drawerMsg?.agentSteps ?? null}
+        retrieval={drawerMsg?.retrieval ?? null}
       />
-
-      {/* HITL（M10）审批框：图暂停待人工确认 */}
-      <Modal
-        title="人工确认 · 文档维护"
-        open={!!awaiting}
-        onOk={() => {
-          void resume(true, hitlComment || undefined);
-          setHitlComment("");
-        }}
-        onCancel={() => {
-          void resume(false);
-          setHitlComment("");
-        }}
-        okText="批准并应用"
-        cancelText="拒绝"
-        confirmLoading={streaming}
-        cancelButtonProps={{ disabled: streaming }}
-        maskClosable={false}
-        keyboard={false}
-      >
-        <Text type="secondary">系统提议执行以下写动作（标记锚点过时），需人工确认后才会应用：</Text>
-        <div
-          style={{
-            margin: "12px 0",
-            padding: 12,
-            background: token.colorFillQuaternary,
-            borderRadius: 8,
-            whiteSpace: "pre-wrap",
-          }}
-        >
-          {awaiting?.interrupt?.proposal}
-        </div>
-        <TextArea
-          value={hitlComment}
-          onChange={(e) => setHitlComment(e.target.value)}
-          placeholder="备注（可选，将作为 stale_reason 记录）"
-          autoSize={{ minRows: 1, maxRows: 3 }}
-        />
-      </Modal>
-
-      {/* M43：负反馈分类/纠错弹窗 */}
-      <Modal
-        title="这条回答哪里有问题？（可选）"
-        open={!!dislikeMsgId}
-        onOk={submitDislike}
-        onCancel={skipDislike}
-        okText="提交"
-        cancelText="跳过直接反馈"
-        confirmLoading={feedbackSubmitting}
-      >
-        <Checkbox.Group
-          options={FEEDBACK_CATEGORIES.map((c) => ({ label: c, value: c }))}
-          value={dislikeCats}
-          onChange={(v) => setDislikeCats(v as string[])}
-        />
-        <Input.TextArea
-          rows={3}
-          maxLength={2000}
-          placeholder="纠错（可选）：正确答案或应引用的代码位置"
-          value={dislikeCorrection}
-          onChange={(e) => setDislikeCorrection(e.target.value)}
-          style={{ marginTop: 12 }}
-        />
-      </Modal>
     </div>
   );
 }
 
 function MessageRow({
-  m, token, isLastAssistant, conversationId, streaming, onOpenRetrieval, onFeedback, onPickSuggestion,
+  m, token, isLastAssistant, repo, streaming, onOpenRetrieval, onFeedback,
 }: {
   m: ChatMessage;
   token: ReturnType<typeof theme.useToken>["token"];
   isLastAssistant: boolean;
-  conversationId: string | null;
+  repo: string;
   streaming: boolean;
-  onOpenRetrieval: (messageId: string) => void;
-  onFeedback: (m: ChatMessage, rating: Feedback) => void;
-  onPickSuggestion: (text: string) => void;
+  onOpenRetrieval: (m: ChatMessage) => void;
+  onFeedback: (m: ChatMessage, rating: Rating) => void;
 }) {
   const isUser = m.role === "user";
   const bubbleBg = isUser ? token.colorPrimaryBg : token.colorBgContainer;
@@ -298,7 +208,7 @@ function MessageRow({
           </>
         ) : (
           <>
-            <RobotOutlined /> {m.agent ? AGENT_LABELS[m.agent] ?? "助手" : "助手"}
+            <RobotOutlined /> {m.route ? ROUTE_LABELS[m.route] ?? "助手" : "助手"}
           </>
         )}
         {m.streaming && " · 生成中…"}
@@ -310,7 +220,7 @@ function MessageRow({
           padding: "10px 14px",
           borderRadius: 10,
           background: bubbleBg,
-          border: `1px solid ${token.colorBorderSecondary}`,
+          border: `1px solid ${m.error ? token.colorError : token.colorBorderSecondary}`,
           wordBreak: "break-word",
         }}
       >
@@ -321,32 +231,32 @@ function MessageRow({
           </div>
         ) : m.streaming ? (
           <Text type="secondary">正在检索与生成…</Text>
-        ) : m.interrupt?.awaiting ? (
-          <Text type="warning">⏳ 已暂停，等待人工确认…</Text>
         ) : null}
       </div>
 
       {/* 引用 + 检索信息 + 反馈 */}
-      {!isUser && (m.citations.length > 0 || m.retrieval) && (
+      {!isUser && (m.citations.length > 0 || m.retrieval || m.agentSteps?.length) && (
         <div style={{ maxWidth: "86%", marginTop: 6 }}>
-          {m.retrieval && <RetrievalSummary r={m.retrieval} steps={m.agentSteps} token={token} />}
+          {(m.retrieval || m.agentSteps?.length) && (
+            <RetrievalSummary r={m.retrieval} steps={m.agentSteps} token={token} />
+          )}
           {m.citations.length > 0 && (
             <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap" }}>
               {m.citations.map((c, i) => (
-                <CitationCard key={`${c.chunk_id}_${i}`} c={c} index={i} />
+                <CitationCard key={`${c.kind}_${c.label}_${i}`} c={c} index={i} repo={repo} />
               ))}
             </div>
           )}
 
-          {/* 操作行：检索详情 + 反馈 */}
+          {/* 操作行：Agent 轨迹 + 反馈 */}
           {m.messageId && (
             <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 4 }}>
-              <Tooltip title="查看三阶段检索漏斗与候选">
+              <Tooltip title="查看检索摘要与工具调用轨迹">
                 <Button
                   size="small"
                   type="text"
                   icon={<FundProjectionScreenOutlined />}
-                  onClick={() => onOpenRetrieval(m.messageId!)}
+                  onClick={() => onOpenRetrieval(m)}
                 >
                   检索详情
                 </Button>
@@ -371,8 +281,6 @@ function MessageRow({
               </Tooltip>
             </div>
           )}
-
-          {/* 追问建议已随 v2 裁剪（v2 无 POST /v1/chat/suggestions，Suggestions.tsx 删除） */}
         </div>
       )}
     </div>
@@ -384,63 +292,10 @@ function RetrievalSummary({
   steps,
   token,
 }: {
-  r: RetrievalInfo;
+  r?: RetrievalInfo;
   steps?: AgentStep[];
   token: ReturnType<typeof theme.useToken>["token"];
 }) {
-  // 场景 Agent 消息（mode:agent）：recall 漏斗全零，改渲染工具调用轨迹（实时进度，M5 可观测性）
-  if (steps?.length) {
-    return (
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: 6,
-          color: token.colorTextTertiary,
-          fontSize: 11,
-        }}
-      >
-        <span>🔧 {steps.length} 步</span>
-        {steps.map((s, i) => (
-          <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-            {i > 0 && <span>→</span>}
-            <span
-              style={{
-                padding: "0 6px",
-                borderRadius: 8,
-                background: token.colorPrimaryBg,
-                lineHeight: "18px",
-              }}
-            >
-              {s.tool}
-              {s.n ? ` ·${s.n}` : ""}
-            </span>
-          </span>
-        ))}
-      </div>
-    );
-  }
-
-  const recall = r.recall;
-  const vec = recall?.vector ?? r.vector ?? 0;
-  const lex = recall?.lexical ?? r.lexical ?? 0;
-  const grh = recall?.graph ?? r.graph ?? 0;
-
-  const pill = (label: string, n: number, color: string) => (
-    <span
-      style={{
-        padding: "0 6px",
-        borderRadius: 8,
-        background: color,
-        fontSize: 11,
-        lineHeight: "18px",
-      }}
-    >
-      {label} {n}
-    </span>
-  );
-
   return (
     <div
       style={{
@@ -452,22 +307,35 @@ function RetrievalSummary({
         fontSize: 11,
       }}
     >
-      {pill("向量", vec, token.colorPrimaryBg)}
-      {pill("词法", lex, token.colorFillTertiary)}
-      {pill("图遍历", grh, token.colorSuccessBg)}
-      <span>→</span>
-      {pill("RRF", r.rrf_pool ?? r.merged ?? 0, token.colorInfoBg)}
-      {r.rerank_on ? (
-        <>
-          <span>→</span>
-          {pill("粗排", r.coarse ?? 0, token.colorWarningBg)}
-          <span>→</span>
-          {pill("精排", r.fine ?? 0, token.colorErrorBg)}
-        </>
-      ) : (
-        <span style={{ fontSize: 11 }}>（未启用精排，按 RRF 排序）</span>
+      {r && (
+        <span>
+          {r.mode}
+          {r.intent ? ` · ${r.intent}` : ""}
+          {r.confidence != null ? ` · ${Math.round(r.confidence * 100)}%` : ""}
+        </span>
       )}
-      {r.terms?.length ? <span>· 词：{r.terms.slice(0, 8).join(", ")}</span> : null}
+      {!!steps?.length && (
+        <>
+          {r && <span>→</span>}
+          <span>🔧 {steps.length} 步</span>
+          {steps.map((s, i) => (
+            <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              {i > 0 && <span>→</span>}
+              <span
+                style={{
+                  padding: "0 6px",
+                  borderRadius: 8,
+                  background: token.colorPrimaryBg,
+                  lineHeight: "18px",
+                }}
+              >
+                {s.tool}
+                {s.n ? ` ·${s.n}` : ""}
+              </span>
+            </span>
+          ))}
+        </>
+      )}
     </div>
   );
 }

@@ -1,106 +1,53 @@
-/**
- * 右侧常驻上下文面板（Phase 4）：展示当前聚焦引用 chunk 的调用方/被调用方/关联文档。
- * 聚焦 chunk 由 CitationCard 点击写入 Zustand（useAppStore.focused）；复用 /v1/graph/* 接口。
- */
 import { useEffect, useState } from "react";
 import { Empty, Spin, Tag, Typography, theme } from "antd";
 import { CodeOutlined, FileTextOutlined } from "@ant-design/icons";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useAppStore } from "../stores/app";
-import {
-  getCallGraph,
-  getCodeDocRelations,
-  type GraphNode,
-  type GraphResponse,
-} from "../api/graph";
+import { readCode, readDocSection } from "../api/preview";
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
-interface PanelData {
-  callers: GraphNode[];
-  callees: GraphNode[];
-  docs: GraphNode[];
-}
-
-function derive(centerId: string, call: GraphResponse, rel: GraphResponse): PanelData {
-  // 调用图：center 是被调用方 → 入边 source = 调用方；出边 target = 被调用方
-  const callers = new Map<string, GraphNode>();
-  const callees = new Map<string, GraphNode>();
-  const nodeMap = new Map(call.nodes.map((n) => [n.id, n]));
-  for (const e of call.edges) {
-    if (e.target === centerId && nodeMap.has(e.source)) callers.set(e.source, nodeMap.get(e.source)!);
-    if (e.source === centerId && nodeMap.has(e.target)) callees.set(e.target, nodeMap.get(e.target)!);
-  }
-  // 关联图：除 center 外的 doc 节点
-  const docs = rel.nodes.filter((n) => n.type === "doc" && n.id !== centerId);
-  return { callers: [...callers.values()], callees: [...callees.values()], docs };
-}
-
-function NodeLine({ n, stale }: { n: GraphNode; stale?: boolean }) {
-  const { token } = theme.useToken();
-  return (
-    <div
-      style={{
-        padding: "4px 0",
-        borderBottom: `1px solid ${token.colorBorderSecondary}`,
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-      }}
-    >
-      <Text ellipsis className="code-font" style={{ fontSize: 12, flex: 1 }} title={n.name}>
-        {n.name}
-      </Text>
-      {stale && <Tag color="red" style={{ margin: 0, fontSize: 10 }}>过期</Tag>}
-    </div>
-  );
-}
-
-function Section({ title, icon, nodes, staleKey }: {
-  title: string; icon: React.ReactNode; nodes: GraphNode[]; staleKey?: (n: GraphNode) => boolean;
-}) {
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <Title level={5} style={{ marginTop: 0, marginBottom: 6, fontSize: 13 }}>
-        {icon} {title} ({nodes.length})
-      </Title>
-      {nodes.length === 0 ? (
-        <Text type="secondary" style={{ fontSize: 12 }}>无</Text>
-      ) : (
-        nodes.map((n) => <NodeLine key={n.id} n={n} stale={staleKey?.(n)} />)
-      )}
-    </div>
-  );
-}
-
+/** 右侧只读上下文面板：聚焦引用 → code 行号窗口 / doc 章节正文（spec §6「行号锚点代码引用（只读展示）」）。 */
 export default function ContextPanel() {
   const { token } = theme.useToken();
   const focused = useAppStore((s) => s.focused);
   const [loading, setLoading] = useState(false);
-  const [data, setData] = useState<PanelData | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [code, setCode] = useState<{ lines: string[]; start: number; hlFrom: number; hlTo: number } | null>(null);
+  const [doc, setDoc] = useState<{ title: string; content: string } | null>(null);
 
   useEffect(() => {
-    if (!focused) {
-      setData(null);
-      return;
-    }
+    setCode(null); setDoc(null); setFailed(false);
+    if (!focused) return;
     let cancelled = false;
     setLoading(true);
-    Promise.all([
-      getCallGraph({ center_node: focused.chunk_id, depth: 1, direction: "BOTH", max_nodes: 20 }),
-      getCodeDocRelations({ center_node: focused.chunk_id, depth: 1, max_nodes: 20 }),
-    ])
-      .then(([call, rel]) => {
-        if (!cancelled) setData(derive(focused.chunk_id, call, rel));
-      })
-      .catch(() => {
-        if (!cancelled) setData({ callers: [], callees: [], docs: [] });
-      })
-      .finally(() => {
+    const run = async () => {
+      try {
+        if (focused.kind === "code" && focused.file_path) {
+          const from = Math.max(1, (focused.start_line ?? 1) - 5);
+          const to = (focused.end_line ?? (focused.start_line ?? 1) + 40) + 5;
+          const r = await readCode({ repo: focused.repo, path: focused.file_path, start_line: from, end_line: to });
+          if (!cancelled) setCode({
+            lines: r.content.split("\n"),
+            start: r.start_line,
+            hlFrom: focused.start_line ?? r.start_line,
+            hlTo: focused.end_line ?? focused.start_line ?? r.start_line,
+          });
+        } else if (focused.doc_id && focused.section) {
+          const r = await readDocSection({ repo: focused.repo, doc_name: focused.doc_id, anchor: focused.section });
+          if (!cancelled) setDoc({ title: r.title || focused.section, content: r.content });
+        } else {
+          setFailed(true);
+        }
+      } catch {
+        if (!cancelled) setFailed(true);
+      } finally {
         if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
+      }
     };
+    void run();
+    return () => { cancelled = true; };
   }, [focused]);
 
   if (!focused) {
@@ -108,45 +55,43 @@ export default function ContextPanel() {
       <div style={{ padding: 16 }}>
         <Text strong>📌 当前上下文</Text>
         <div style={{ marginTop: 12, color: token.colorTextTertiary, fontSize: 13 }}>
-          点击聊天中的引用卡片，此处展示其调用方 / 被调用方 / 关联文档。
+          点击聊天中的引用卡片，此处只读展示对应代码窗口 / 文档章节。
         </div>
       </div>
     );
   }
-
+  const isCode = focused.kind === "code";
   return (
     <div style={{ padding: 16, height: "100%", overflow: "auto" }}>
       <Text strong>📌 当前上下文</Text>
-      <div
-        style={{
-          marginTop: 8,
-          marginBottom: 16,
-          padding: "6px 8px",
-          background: "rgba(255,106,0,0.1)",
-          borderRadius: 6,
-        }}
-      >
-        <Tag color={focused.type === "code" ? "blue" : "gold"} icon={focused.type === "code" ? <CodeOutlined /> : <FileTextOutlined />} style={{ margin: 0 }}>
-          {focused.type === "code" ? "代码" : "文档"}
+      <div style={{ marginTop: 8, marginBottom: 12, padding: "6px 8px", background: "rgba(255,106,0,0.1)", borderRadius: 6 }}>
+        <Tag color={isCode ? "blue" : "gold"} icon={isCode ? <CodeOutlined /> : <FileTextOutlined />} style={{ margin: 0 }}>
+          {isCode ? "代码" : "文档"}
         </Tag>
-        <div className="code-font" style={{ fontSize: 12, marginTop: 4, wordBreak: "break-all" }}>
-          {focused.label}
-        </div>
+        <div className="code-font" style={{ fontSize: 12, marginTop: 4, wordBreak: "break-all" }}>{focused.label}</div>
       </div>
-
-      {loading ? (
-        <div style={{ textAlign: "center", padding: 24 }}>
-          <Spin />
-        </div>
-      ) : data && (data.callers.length || data.callees.length || data.docs.length) ? (
-        <>
-          <Section title="调用方（Callers）" icon={<CodeOutlined />} nodes={data.callers} staleKey={(n) => !!n.stale} />
-          <Section title="被调用（Callees）" icon={<CodeOutlined />} nodes={data.callees} staleKey={(n) => !!n.stale} />
-          <Section title="关联文档" icon={<FileTextOutlined />} nodes={data.docs} staleKey={(n) => !!n.stale} />
-        </>
-      ) : (
-        <Empty description="无调用 / 关联数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-      )}
+      {loading ? <div style={{ textAlign: "center", padding: 24 }}><Spin /></div>
+        : failed ? <Empty description="内容加载失败" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        : code ? (
+          <pre className="code-font" style={{ fontSize: 12, lineHeight: "18px", margin: 0, overflow: "auto" }}>
+            {code.lines.map((ln, i) => {
+              const no = code.start + i;
+              const hl = no >= code.hlFrom && no <= code.hlTo;
+              return (
+                <div key={no} style={{
+                  background: hl ? token.colorPrimaryBg : undefined,
+                  padding: hl ? "0 4px" : undefined, borderRadius: hl ? 3 : undefined,
+                  whiteSpace: "pre",
+                }}>
+                  <span style={{ display: "inline-block", width: 40, color: token.colorTextQuaternary, textAlign: "right", paddingRight: 8 }}>{no}</span>
+                  {ln}
+                </div>
+              );
+            })}
+          </pre>
+        ) : doc ? (
+          <div className="chat-md"><ReactMarkdown remarkPlugins={[remarkGfm]}>{doc.content}</ReactMarkdown></div>
+        ) : null}
     </div>
   );
 }

@@ -1,12 +1,9 @@
 import { create } from "zustand";
 import { getHealth, type HealthResponse } from "../api/client";
+import type { Citation } from "../hooks/types";
 
-/** 当前聚焦的引用 chunk（由聊天引用卡片点击设置，供右侧上下文面板读取）。 */
-export interface FocusedCitation {
-  chunk_id: string;
-  type: "code" | "doc";
-  label: string;
-}
+/** 当前聚焦的引用（由聊天引用卡片点击设置，供右侧上下文面板读取）；repo 用于 /v1/code/read、/v1/docs/section。 */
+export type FocusedCitation = { repo: string } & Citation;
 
 interface AppState {
   health: HealthResponse | null;

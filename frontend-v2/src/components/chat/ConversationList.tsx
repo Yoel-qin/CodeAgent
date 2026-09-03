@@ -3,7 +3,7 @@ import { Button, List, Typography, theme, message as antMessage } from "antd";
 import { PlusOutlined, MessageOutlined } from "@ant-design/icons";
 import { listConversations, type ConversationItem } from "../../api/conversations";
 
-/** 左侧会话列表：新建 / 切换 / 历史回显。 */
+/** 左侧会话列表：新建 / 切换 / 历史回显（v2：裸数组，无 message_count → 副行只显时间）。 */
 export default function ConversationList({
   activeId,
   onSelect,
@@ -20,8 +20,7 @@ export default function ConversationList({
   const refresh = async () => {
     setLoading(true);
     try {
-      const r = await listConversations({ page_size: 50 });
-      setItems(r.items);
+      setItems(await listConversations());
     } catch {
       antMessage.warning("会话列表加载失败");
     } finally {
@@ -47,10 +46,10 @@ export default function ConversationList({
           dataSource={items}
           locale={{ emptyText: "暂无会话" }}
           renderItem={(it) => {
-            const active = it.conversation_id === activeId;
+            const active = it.id === activeId;
             return (
               <div
-                onClick={() => onSelect(it.conversation_id)}
+                onClick={() => onSelect(it.id)}
                 style={{
                   padding: "10px 12px",
                   cursor: "pointer",
@@ -64,7 +63,7 @@ export default function ConversationList({
                   {it.title}
                 </Typography.Text>
                 <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                  {it.message_count} 条 · {new Date(it.updated_at).toLocaleString()}
+                  {new Date(it.updated_at).toLocaleString()}
                 </Typography.Text>
               </div>
             );

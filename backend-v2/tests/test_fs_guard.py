@@ -29,7 +29,12 @@ def test_escape_rejected(mini_repo_env, repo, rel):
         resolve_repo_path(mini_repo_env, repo, rel)
 
 
-@pytest.mark.parametrize("rel", ["/etc/passwd", "C:/Windows/system32", "C:\\Windows\\system32"])
+@pytest.mark.parametrize("rel", [
+    "/etc/passwd",
+    "C:/Windows/system32",
+    "C:\\Windows\\system32",
+    "C:evil.java",  # drive-relative：is_absolute() 在 Windows 上也捕不到，靠 _WIN_DRIVE 兜底
+])
 def test_absolute_rejected(mini_repo_env, rel):
     with pytest.raises(PathEscapeError):
         resolve_repo_path(mini_repo_env, "mini", rel)

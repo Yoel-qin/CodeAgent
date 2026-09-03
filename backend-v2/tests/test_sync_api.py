@@ -9,6 +9,8 @@ brief 2 个逐字 + 三处测试环境适配（断言逐行不动）：
    test_worker_a.py 的 brief 逐字分号行加 ``# noqa: E702``。
 """
 
+from pathlib import Path
+
 import pytest
 
 TEST_STREAM = "v2:pipe:test:wh"
@@ -37,7 +39,8 @@ def test_webhook_enqueues_push(monkeypatch):
     from app.main import app
     from app.pipeline import queue as q_mod
     monkeypatch.setattr(q_mod.settings, "pipe_stream", "v2:pipe:test:wh")
-    monkeypatch.setattr("app.api.sync.settings.repos_root", "D:/project/CodeRagAgent/backend-v2/tests/fixtures")
+    monkeypatch.setattr("app.api.sync.settings.repos_root",
+                        str(Path(__file__).resolve().parent / "fixtures"))
     from fastapi.testclient import TestClient
     with TestClient(app) as client:
         r = client.post("/v1/sync/webhook", json={

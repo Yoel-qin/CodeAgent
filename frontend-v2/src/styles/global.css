@@ -1,0 +1,100 @@
+:root {
+  /* RocketMQ 橙作为强调色 */
+  --brand: #ff6a00;
+  --brand-soft: rgba(255, 106, 0, 0.15);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.code-font {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+}
+
+.brand-dot {
+  color: var(--brand);
+}
+
+/* ---- 聊天 Markdown 渲染 ---- */
+.chat-md p {
+  margin: 0 0 8px;
+}
+.chat-md p:last-child {
+  margin-bottom: 0;
+}
+.chat-md pre {
+  background: rgba(0, 0, 0, 0.35);
+  padding: 10px 12px;
+  border-radius: 6px;
+  overflow: auto;
+  margin: 6px 0;
+}
+.chat-md code {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+}
+.chat-md :not(pre) > code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.25);
+}
+.chat-md ul,
+.chat-md ol {
+  margin: 4px 0 8px;
+  padding-left: 22px;
+}
+.chat-md li {
+  margin: 2px 0;
+}
+.chat-md h1,
+.chat-md h2,
+.chat-md h3 {
+  font-size: 15px;
+  margin: 10px 0 4px;
+}
+.chat-md a {
+  color: #ff8a3d;
+}
+.chat-md blockquote {
+  margin: 6px 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--brand-soft);
+  color: inherit;
+}
+
+.cursor {
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--brand);
+  animation: blink 1s steps(2) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ---- 文档表格预览（Phase 1.5d，渲染后端 table_html） ---- */
+.coderag-html-table table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+.coderag-html-table th,
+.coderag-html-table td {
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+}
+.coderag-html-table thead th {
+  background: rgba(127, 127, 127, 0.2);
+  font-weight: 600;
+}

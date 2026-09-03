@@ -1,0 +1,10 @@
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.vite
+# tsc -b 产物（增量构建信息 + vite.config.ts 编译输出），不入 git
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts

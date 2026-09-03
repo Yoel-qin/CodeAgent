@@ -32,6 +32,39 @@ _PATH_A = "demo-a/src/main/java/com/pj/test/model/SysRole.java"
 _PATH_B = "demo-b/src/main/java/com/pj/test/model/SysRole.java"
 
 
+def _pg_available(dsn: str | None = None) -> bool:
+    """PG 连接探针（connect_timeout=2 防挂起）。
+
+    本模块是全仓唯一需要真 PG 的集成回归测试；CI 的 ci job 是零 infra 契约
+    （无 PG service），探针不可达时整模块跳过，本地/有 PG 环境照常运行。
+    """
+    try:
+        eng = create_engine(dsn or settings.database_url_sync,
+                            connect_args={"connect_timeout": 2})
+    except Exception:  # noqa: S110 — 坏 DSN 等同不可达
+        return False
+    try:
+        with eng.connect():
+            return True
+    except Exception:
+        return False
+    finally:
+        eng.dispose()
+
+
+pytestmark = pytest.mark.skipif(
+    not _pg_available(),
+    reason="需要可达的 PostgreSQL（M47 集成回归）；CI ci job 零 infra，跳过",
+)
+
+
+def test_pg_probe_false_on_refused_port():
+    """探针在端口拒绝连接（= CI 无 PG 场景）时必须返回 False，驱动模块级 skip。"""
+    assert _pg_available(
+        "postgresql+psycopg://coderag:coderag@127.0.0.1:1/coderag"
+    ) is False
+
+
 @pytest.fixture(scope="module")
 def engine():
     return create_engine(settings.database_url_sync)

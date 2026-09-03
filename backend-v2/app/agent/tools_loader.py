@@ -209,7 +209,7 @@ def _result_text(result: object) -> str:
 
 
 def wrap_tool(tool: BaseTool, tracker: ToolCallTracker,
-              default_repo: str | None = None) -> BaseTool:
+              default_repo: str | None = None, trace=None) -> BaseTool:
     """给工具套上 计步/循环检测/citation 提取，返回新 ``StructuredTool``（原工具不动）。
 
     name/description/args_schema 同原（Task 8 的 ReAct 骨架按这三个字段向 LLM 注册）；
@@ -224,6 +224,11 @@ def wrap_tool(tool: BaseTool, tracker: ToolCallTracker,
 
     ① 循环检测（第 3 次同 (name, args) → 返回 LOOP_MESSAGE，不执行）
     ② 计时执行 ③ 从结果 JSON 提取 citation ④ 追加 step ⑤ 原样返回结果字符串。
+
+    M7 起可选 ``trace=SpanCollector``：②的执行段外包一个 ``tool`` span
+    （attrs 携 ``args`` 截前 8 键；工具结果 JSON 带 ``error`` → ``status="error"``、
+    ``error=result["error"][:200]``；执行抛异常 → error span 后原样 raise——langgraph
+    ToolNode 自会兜）。``trace=None``（缺省/既有调用点）零行为变更。
     """
     async def _wrapped(**kwargs):
         if (default_repo and isinstance(kwargs, dict) and "repo" in (tool.args or {})
@@ -236,8 +241,15 @@ def wrap_tool(tool: BaseTool, tracker: ToolCallTracker,
             if n_hits == 3:  # 只在触发的第 3 次记一次，后续同参仍拦截但不重复膨胀 looped
                 tracker.looped.append(tool.name)
             return LOOP_MESSAGE
+        sid = trace.start("tool", tool.name,
+                          attrs={"args": dict(list(kwargs.items())[:8])}) if trace is not None else None
         started = time.perf_counter()
-        result = await tool.ainvoke(kwargs)
+        try:
+            result = await tool.ainvoke(kwargs)
+        except Exception as e:  # noqa: BLE001 —— span 收尾后原样上抛（ToolNode 兜），行为不变
+            if sid is not None:
+                trace.end(sid, status="error", error=type(e).__name__)
+            raise
         duration_ms = (time.perf_counter() - started) * 1000
         text = _result_text(result)
         try:
@@ -246,6 +258,11 @@ def wrap_tool(tool: BaseTool, tracker: ToolCallTracker,
             parsed = None
         if isinstance(parsed, dict):
             tracker.add_citations(_extract_citations(tool.name, kwargs, parsed))
+        if sid is not None:
+            if isinstance(parsed, dict) and "error" in parsed:
+                trace.end(sid, status="error", error=str(parsed["error"])[:200])
+            else:
+                trace.end(sid)
         tracker.steps.append({"tool": tool.name, "args": dict(kwargs), "n": len(tracker.steps) + 1,
                               "duration_ms": round(duration_ms, 1)})
         return text

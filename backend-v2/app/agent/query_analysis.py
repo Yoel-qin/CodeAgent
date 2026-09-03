@@ -168,8 +168,13 @@ async def query_analysis_node(state: AgentState, config: RunnableConfig | None =
     ``configured()`` 真 → 先试 LLM 路（失败/超时转规则），假 → 直接规则；
     返回 ``{**decision 字段, "route": decide_route(decision)}``。LLM 分类经
     ``_cost_callbacks`` 挂进 ``configurable["cost"]`` 预算账本（终审 I-1）。
+
+    M7 起可选 trace（``configurable["trace"]``）：分类调用外包一个 ``route`` span，
+    attrs 携 intent/confidence/route/reason（LLM 路与规则路统一口径）；缺席零行为变更。
     """
     query = state.get("query", "") or ""
+    trace = (config or {}).get("configurable", {}).get("trace")
+    sid = trace.start("route", "query_analysis") if trace is not None else None
     decision: RouteDecision | None = None
     if configured():
         decision = await _llm_classify(query, config)
@@ -178,4 +183,7 @@ async def query_analysis_node(state: AgentState, config: RunnableConfig | None =
     route = decide_route(decision)
     logger.debug("query_analysis: intent={} conf={} route={} reason={}",
                  decision.intent, decision.confidence, route, decision.reason)
+    if trace is not None:
+        trace.end(sid, attrs={"intent": decision.intent, "confidence": decision.confidence,
+                              "route": route, "reason": decision.reason})
     return {**decision.model_dump(), "route": route}

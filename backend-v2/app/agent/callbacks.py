@@ -10,6 +10,9 @@
   （只记不抛——langchain 吞回调异常）。usage 取 ``usage_metadata``（prompt/completion 真值）；
   缺失 → 按文本 ``chars//4`` 估算（completion 记账、prompt 记 0）并标 ``estimated=True``。
   拦截不在回调里做：由 react_base 的 astream chunk 循环轮询 ``cost.exceeded``。
+  M7 起可选 ``trace=SpanCollector``：每次 LLM 调用一个 ``llm`` span（start 记
+  ``on_chat_model_start``、end 带与记账同口径的 ``tokens`` dict）——``trace=None``（缺省，
+  亦是既有全部不带 trace 的构造点）零行为变更。
 
 任何回调异常一律静默（旁观者契约，绝不影响请求）。
 """
@@ -63,14 +66,24 @@ class TokenSSEHandler(BaseCallbackHandler):
 
 
 class CostCallbackHandler(BaseCallbackHandler):
-    """LLM 调用次数/usage → CostController（只记不抛，语义沿旧库 M42）。"""
+    """LLM 调用次数/usage → CostController（只记不抛，语义沿旧库 M42）。
 
-    def __init__(self, cost) -> None:
+    ``trace``（M7 可选）：非 None 时每次 LLM 调用记一个 ``llm`` span——
+    ``on_chat_model_start`` 开 span（按 ``run_id`` 暂存）、``on_llm_end`` 关 span 并带
+    ``tokens``（与记账同口径：usage 真值 ``estimated=False``，否则 chars/4 估算
+    ``estimated=True``）。trace 缺席（None）→ 完全不碰 span，零行为变更。
+    """
+
+    def __init__(self, cost, trace=None) -> None:
         self.cost = cost
+        self.trace = trace
+        self._span_by_run: dict[Any, int] = {}   # run_id → llm span_id
 
     def on_chat_model_start(self, serialized, messages, *, run_id=None, **kwargs) -> None:  # noqa: ARG002
         try:
             self.cost.record_call()
+            if self.trace is not None:
+                self._span_by_run[run_id] = self.trace.start("llm", "llm")
         except Exception:  # noqa: BLE001
             pass
 
@@ -79,10 +92,17 @@ class CostCallbackHandler(BaseCallbackHandler):
             usage = self._usage_from_response(response)
             if usage is not None:
                 self.cost.record_usage(prompt=usage[0], completion=usage[1])
-                return
-            text = self._response_text(response)
-            if text:   # 无 usage → chars/4 估算（prompt 记 0，诚实标 estimated）
-                self.cost.record_usage(prompt=0, completion=len(text) // 4, estimated=True)
+                tokens = {"prompt": usage[0], "completion": usage[1], "estimated": False}
+            else:
+                text = self._response_text(response)
+                est = len(text) // 4   # 无 usage → chars/4 估算（prompt 记 0，诚实标 estimated）
+                if text:
+                    self.cost.record_usage(prompt=0, completion=est, estimated=True)
+                tokens = {"prompt": 0, "completion": est, "estimated": True}
+            if self.trace is not None:
+                sid = self._span_by_run.pop(run_id, None)
+                if sid is not None:   # 无对应 start（中途挂上的回调等）→ 静默跳过
+                    self.trace.end(sid, tokens=tokens)
         except Exception:  # noqa: BLE001
             pass
 

@@ -4,7 +4,7 @@
 ② 取 ``chat_messages`` 最近 ``settings.history_turns`` 轮（**先于**本测 user 落行，
 否则同事务 flush 即读会把当前 query 泄入 history）→ user 落行 + ``conversation`` 事件
 ③ 组装 per-request config
-（session/cost/top_k 走 ``configurable``，**不进图状态**；``recursion_limit`` 60）
+（session/cost/top_k/trace 走 ``configurable``，**不进图状态**；``recursion_limit`` 60）
 ④ ``GRAPH.astream(..., stream_mode="custom")`` 逐 chunk 转发 + 顺序无关累积
 tokens/citations/agent_steps ⑤ 流尽聚合 answer → assistant 落行 + commit → ``done``
 ⑥ 整体 try/except 兜底的兜底：任何逃逸异常发 ``[内部错误: {类型名}]`` + done，
@@ -34,7 +34,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.cost import CostController
 from app.agent.graph import GRAPH
+from app.agent.trace import SpanCollector
 from app.core.config import settings
+from app.db.models.trace import TraceSpan
 from app.services.chat_service import add_message, load_history, open_conversation
 
 __all__ = ["stream_chat"]
@@ -48,12 +50,22 @@ async def stream_chat(
     repo: str | None = None,
     top_k: int = 8,
 ) -> AsyncIterator[tuple[str, dict]]:
-    """跑主图并把自定义事件流转成 SSE 对；收尾持久化 assistant 消息。永不抛。"""
+    """跑主图并把自定义事件流转成 SSE 对；收尾持久化 assistant 消息。永不抛。
+
+    M7 全链路追溯：每请求一个 :class:`~app.agent.trace.SpanCollector`，经
+    ``configurable["trace"]`` 注入（同 session/cost 通道，不进图状态/checkpoint），
+    各层自记 route/agent/tool/llm/retrieval span；流尽后 request span 收尾，
+    span 列表随 assistant 消息**同一事务**落 ``trace_spans``（token_usage 存
+    ``cost.to_meta()`` 原样）。**异常兜底路（except）不落 trace**——assistant 未
+    持久化、message_id 为 None，没有可挂的 FK；本次请求的 span 树随采集器丢弃。
+    """
     repo = repo or settings.default_repo
     cid: str = conversation_id or ""
     msg_id: int | None = None
     citations: list[dict] = []
     cost = CostController(max_tokens=settings.cost_max_tokens, max_llm_calls=settings.cost_max_llm_calls)
+    trace = SpanCollector()
+    req: int | None = None
     try:
         conv, cid = await open_conversation(
             session, query=query, conversation_id=conversation_id, target_repo=repo)
@@ -65,7 +77,9 @@ async def stream_chat(
         yield ("conversation", {"conversation_id": cid, "title": conv.title,
                                 "message_id": user_msg_id})
 
-        config = {"configurable": {"session": session, "cost": cost, "top_k": top_k},
+        req = trace.start("request", f"chat:{cid}")
+        config = {"configurable": {"session": session, "cost": cost, "top_k": top_k,
+                                   "trace": trace},
                   "recursion_limit": 60}
         state = {"query": query, "repo": repo, "conversation_id": cid, "history": history}
 
@@ -92,10 +106,21 @@ async def stream_chat(
                 route = data.get("mode") or route  # 降级路双 retrieval：按最后一条生效
 
         answer = "".join(tokens)
+        # request span 收尾：degraded = 任一内层 span 以 error 收尾（预算/Agent/工具/检索
+        # 降级；兜底异常路不落 trace，见 docstring，此处无需另行覆盖）
+        trace.end(req, attrs={"citations": len(citations), "route": route or None,
+                              "degraded": any(s.get("status") == "error" for s in trace.spans)})
         msg_id = await add_message(
             session, conv, role="assistant", content=answer,
             meta={"citations": citations, "agent_steps": agent_steps,
                   "intent": intent, "route": route, "cost": cost.to_meta()})
+        # 同一事务落 span 树（与 assistant 消息一次 commit；duration = request span 取整）
+        req_span = next((s for s in trace.spans if s["span_id"] == req), None)
+        session.add(TraceSpan(
+            message_id=msg_id, conversation_id=cid, query=query, route=route or "",
+            spans=trace.to_dict(),
+            duration_ms=int(round(req_span["duration_ms"])) if req_span is not None else 0,
+            token_usage=cost.to_meta()))
         await session.commit()
         yield ("done", {"citations": len(citations), "message_id": msg_id, "conversation_id": cid})
     except Exception as e:  # noqa: BLE001 —— 兜底的兜底：HTTP 200 不断流

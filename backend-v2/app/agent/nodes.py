@@ -224,9 +224,17 @@ async def _recall(state: AgentState, repo: str, query: str) -> tuple[list[dict],
 
 
 async def retrieve_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
-    """检索兜底节点：retrieval → citations → LLM 流式生成（或无 key 片段）。"""
+    """检索兜底节点：retrieval → citations → LLM 流式生成（或无 key 片段）。
+
+    M7 起可选 trace（``configurable["trace"]``）：整体 try 内主流程外包一个
+    ``retrieval`` span（attrs 携 mode）；异常降级 → ``status="error"``；缺席零行为变更。
+    """
     w = _safe_writer()
+    trace = (config or {}).get("configurable", {}).get("trace")
+    sid = None
     try:
+        if trace is not None:
+            sid = trace.start("retrieval", "retrieve", attrs={"mode": "retrieve"})
         query = state.get("query", "") or ""
         repo = state.get("repo") or settings.default_repo
         doc_results, code_matches = await _recall(state, repo, query)
@@ -256,8 +264,12 @@ async def retrieve_node(state: AgentState, config: RunnableConfig | None = None)
                 w({"event": "token", "data": {"content": chunk.content}})
         else:
             w({"event": "token", "data": {"content": _snippet_text(doc_results, code_matches)}})
+        if trace is not None:
+            trace.end(sid)
     except Exception as e:  # noqa: BLE001 —— 兜底的兜底，请求永不破
         logger.warning("retrieve_node: 整体降级: {}", e)
+        if sid is not None:
+            trace.end(sid, status="error", error=type(e).__name__)
         w({"event": "token", "data": {"content": f"[检索降级失败: {type(e).__name__}]"}})
     return {"answer": None}
 
@@ -269,32 +281,39 @@ async def clarify_node(state: AgentState, config: RunnableConfig | None = None) 
     """澄清追问节点：retrieval(mode=clarify) → 追问文本 64 字符切片逐个发 token。
 
     extraction 档 ``.invoke``（同步调用经 ``to_thread`` + ``wait_for`` 5s）；失败/超时/
-    无 key → 固定模板追问，永不炸。
+    无 key → 固定模板追问，永不炸。M7 起可选 trace：主流程外包一个 ``retrieval``
+    span（attrs 携 mode）；缺席零行为变更。
     """
     w = _safe_writer()
-    w({"event": "retrieval", "data": {
-        "mode": "clarify",
-        "intent": state.get("intent", ""),
-        "confidence": state.get("confidence", 0.0),
-        "code_hits": 0,
-        "doc_hits": 0,
-    }})
-    text: str | None = None
-    if configured():
-        try:
-            model = chat_model_for("extraction")
-            messages = [
-                SystemMessage(content=_CLARIFY_SYSTEM),
-                HumanMessage(content=state.get("query", "") or ""),
-            ]
-            resp = await asyncio.wait_for(
-                asyncio.to_thread(model.invoke, messages, _cost_callbacks(config)),
-                _CLARIFY_TIMEOUT_S,
-            )
-            text = (getattr(resp, "content", "") or "").strip() or None
-        except Exception as e:  # noqa: BLE001 —— 无 key/超时/异常一律模板
-            logger.warning("clarify_node: extraction 档追问失败，模板兜底: {}", e)
-    text = text or _CLARIFY_FALLBACK
-    for i in range(0, len(text), _TOKEN_CHUNK_CHARS):
-        w({"event": "token", "data": {"content": text[i:i + _TOKEN_CHUNK_CHARS]}})
+    trace = (config or {}).get("configurable", {}).get("trace")
+    sid = trace.start("retrieval", "clarify", attrs={"mode": "clarify"}) if trace is not None else None
+    try:
+        w({"event": "retrieval", "data": {
+            "mode": "clarify",
+            "intent": state.get("intent", ""),
+            "confidence": state.get("confidence", 0.0),
+            "code_hits": 0,
+            "doc_hits": 0,
+        }})
+        text: str | None = None
+        if configured():
+            try:
+                model = chat_model_for("extraction")
+                messages = [
+                    SystemMessage(content=_CLARIFY_SYSTEM),
+                    HumanMessage(content=state.get("query", "") or ""),
+                ]
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(model.invoke, messages, _cost_callbacks(config)),
+                    _CLARIFY_TIMEOUT_S,
+                )
+                text = (getattr(resp, "content", "") or "").strip() or None
+            except Exception as e:  # noqa: BLE001 —— 无 key/超时/异常一律模板
+                logger.warning("clarify_node: extraction 档追问失败，模板兜底: {}", e)
+        text = text or _CLARIFY_FALLBACK
+        for i in range(0, len(text), _TOKEN_CHUNK_CHARS):
+            w({"event": "token", "data": {"content": text[i:i + _TOKEN_CHUNK_CHARS]}})
+    finally:
+        if sid is not None:
+            trace.end(sid)
     return {"answer": None}

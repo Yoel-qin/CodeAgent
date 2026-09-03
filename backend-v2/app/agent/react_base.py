@@ -93,9 +93,11 @@ async def run_react_agent(state: AgentState, config: RunnableConfig | None, *, a
     ``tracker.reacted = True``（降级路径不置位）——节点层据此区分「走了 ReAct」与「被降级接管」。
     """
     tracker = tracker if tracker is not None else ToolCallTracker()
+    configurable = (config or {}).get("configurable") or {}
+    trace = configurable.get("trace")   # M7 SpanCollector；缺席 → 各层零行为变更
     # 会话 repo 机械注入带 repo 参数的工具（Task 10 ④）：系统提示词只"劝" LLM 传 repo，
     # 这里在 wrap 层兜底补缺（LLM 显式传值不被覆盖）——比提示词约束可靠
-    tools = [wrap_tool(t, tracker, default_repo=state.get("repo")) for t in tools]
+    tools = [wrap_tool(t, tracker, default_repo=state.get("repo"), trace=trace) for t in tools]
     writer = _safe_writer()
 
     if not tools:
@@ -121,9 +123,14 @@ async def run_react_agent(state: AgentState, config: RunnableConfig | None, *, a
     cost = configurable.get("cost") or CostController(
         max_tokens=settings.cost_max_tokens, max_llm_calls=settings.cost_max_llm_calls)
 
+    # M7 agent span：只包 ReAct 主循环段（前置降级分支没跑 Agent，不产生 agent span）；
+    # 正常收尾 attrs 补 reacted；BudgetExceeded/异常降级 → status="error"（error=budget/cause）
+    agent_sid = trace.start("agent", agent_name,
+                            attrs={"tools": [t.name for t in tools]}) if trace is not None else None
+
     cfg = dict(config or {})
     cfg["callbacks"] = _merge_callbacks(cfg.get("callbacks"), TokenSSEHandler(writer))
-    cfg["callbacks"] = _merge_callbacks(cfg["callbacks"], CostCallbackHandler(cost))
+    cfg["callbacks"] = _merge_callbacks(cfg["callbacks"], CostCallbackHandler(cost, trace=trace))
     # Agent 每轮 = model + tools 两步；recursion_limit 兜住超限（触发 GraphRecursionError → 降级）
     cfg["recursion_limit"] = max_rounds * 2 + 3
 
@@ -152,14 +159,21 @@ async def run_react_agent(state: AgentState, config: RunnableConfig | None, *, a
         tracker.reacted = True   # ReAct 主循环完整跑完（docqa 无引用拒答判定用）
     except BudgetExceeded as e:
         # 部分结果即止：已发生的 agent_step/citation 先补发，再以模板 notice 顶替生成
+        if trace is not None:
+            trace.end(agent_sid, status="error", error="budget")
         _drain_tracker(writer, tracker)
         _emit(writer, "token", {"content": e.notice()})
         return {}
     except Exception as e:  # noqa: BLE001 —— 含 GraphRecursionError，兜底降级，请求永不中断
         cause = "recursion_limit" if isinstance(e, GraphRecursionError) else type(e).__name__
         logger.warning("react_base[{}]: ReAct 失败（{}），降级 retrieve: {}", agent_name, cause, e)
+        if trace is not None:
+            # 先关 agent span 再降级——retrieve 的 retrieval span 不计入本 agent 耗时
+            trace.end(agent_sid, status="error", error=cause)
         _drain_tracker(writer, tracker)
         await retrieve_node(state, config)
         return {}
     _drain_tracker(writer, tracker)
+    if trace is not None:
+        trace.end(agent_sid, attrs={"reacted": tracker.reacted})
     return {}

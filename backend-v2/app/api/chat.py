@@ -13,7 +13,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.agent.streaming import stream_chat
 from app.db.base import SessionLocal
-from app.schemas.chat import ChatRequest
+from app.schemas.chat import ChatRequest, FeedbackRequest
 from app.services import chat_service
 
 router = APIRouter(prefix="/v1/chat", tags=["chat"])
@@ -56,3 +56,18 @@ async def conversation_detail(conversation_id: str) -> dict:
     if detail is None:
         raise HTTPException(status_code=404, detail="会话不存在")
     return detail
+
+
+@router.post("/messages/{message_id}/feedback")
+async def message_feedback(message_id: int, body: FeedbackRequest) -> dict:
+    """消息反馈落库（M6 Task 3）。
+
+    feedback 无外键——message_id 不存在也接受（M9 前无用户体系）；rating 非法 /
+    comment 超 2000 字 → 422（pydantic 校验）。事务边界在本端点：service 只 flush。
+    """
+    async with SessionLocal() as session:
+        feedback_id = await chat_service.add_feedback(
+            session, message_id, rating=body.rating, comment=body.comment
+        )
+        await session.commit()
+    return {"ok": True, "feedback_id": feedback_id}

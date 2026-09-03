@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-__all__ = ["ChatRequest"]
+__all__ = ["ChatRequest", "FeedbackRequest"]
 
 _CID_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -28,3 +29,14 @@ class ChatRequest(BaseModel):
         if v is not None and not _CID_RE.match(v):
             raise ValueError("conversation_id 须为 32 位小写 hex（uuid4().hex）")
         return v
+
+
+class FeedbackRequest(BaseModel):
+    """POST /v1/chat/messages/{id}/feedback 请求体（M6 Task 3，形状冻结）。
+
+    二元评分 + 可选说明（≤2000 字，超出 → 422）；rating 之外的字段值（如 MAYBE）
+    被 Literal 拒为 422。无六类枚举 / 纠错字段——那是旧 v1 的形状，v2 不带。
+    """
+
+    rating: Literal["HELPFUL", "NOT_HELPFUL"]
+    comment: str | None = Field(default=None, max_length=2000)

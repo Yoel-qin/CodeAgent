@@ -1,5 +1,7 @@
 """POST /v1/sync/webhook（Task 12）——离线管道入口：push 事件入 Redis Stream。
 
+另有 ``GET /v1/sync/events``（M6 Task 3）：pipeline_events 账本分页只读。
+
 校验顺序（brief 决策，先 400 后 422）：
 
 1. ``repo`` 必须是 ``REPOS_ROOT`` 下一级**已存在目录**（防打错仓库名，也防
@@ -16,11 +18,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel
+from sqlalchemy import func, select
 
 from app.core.config import settings
+from app.db.base import SessionLocal
+from app.db.models.pipeline import PipelineEvent
 from app.pipeline.queue import RedisStreamQueue
 
 router = APIRouter(prefix="/v1/sync", tags=["sync"])
@@ -76,3 +81,48 @@ def _require_one_of_two_shapes(body: PushWebhook) -> None:
             status_code=422,
             detail="body 需 (before+after) 或 (commit_hash+files) 二选一",
         )
+
+
+@router.get("/events")
+async def list_events(
+    repo: str | None = Query(default=None),
+    status: str | None = Query(default=None, pattern="^(PENDING|DONE|DEAD)$"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """管道账本分页只读（id 倒序）；repo/status 可选过滤，越界参数 → 422。
+
+    total 与页数据分开取（同 document_service：count(*) 才是过滤后的全量行数）。
+    """
+    count_stmt = select(func.count()).select_from(PipelineEvent)
+    stmt = select(PipelineEvent).order_by(PipelineEvent.id.desc())
+    if repo:
+        count_stmt = count_stmt.where(PipelineEvent.repo == repo)
+        stmt = stmt.where(PipelineEvent.repo == repo)
+    if status:
+        count_stmt = count_stmt.where(PipelineEvent.status == status)
+        stmt = stmt.where(PipelineEvent.status == status)
+
+    async with SessionLocal() as session:
+        total = (await session.execute(count_stmt)).scalar_one()
+        rows = (
+            (await session.execute(stmt.limit(limit).offset(offset))).scalars().all()
+        )
+    return {
+        "total": total,
+        "items": [
+            {
+                "id": e.id,
+                "repo": e.repo,
+                "commit_hash": e.commit_hash,
+                "path": e.path,
+                "event_kind": e.event_kind,
+                "status": e.status,
+                "attempts": e.attempts,
+                "last_error": e.last_error,
+                "created_at": e.created_at,
+                "updated_at": e.updated_at,
+            }
+            for e in rows
+        ],
+    }

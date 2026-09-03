@@ -9,6 +9,7 @@ from app.api.chat import router as chat_router
 from app.api.documents import router as documents_router
 from app.api.graph import router as graph_router
 from app.api.health import router as health_router
+from app.api.monitor import router as monitor_router
 from app.api.reader import router as reader_router
 from app.api.repos import router as repos_router
 from app.api.sync import router as sync_router
@@ -35,3 +36,4 @@ app.include_router(repos_router)
 app.include_router(documents_router)
 app.include_router(graph_router)
 app.include_router(reader_router)
+app.include_router(monitor_router)

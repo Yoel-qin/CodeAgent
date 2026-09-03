@@ -1,0 +1,60 @@
+# v1（backend/）已于 2026-09-03 退役；本 workflow 只测 backend-v2。
+#
+# ci: postgres + redis service 容器（v2 测试需要真 PG——conftest 的 pg_engine 直连，
+#     schema 由 alembic 建，测试事务回滚自清理；queue 测试需要真 Redis——stream 往返，
+#     key v2:pipe:test-* 前后 DEL）。Milvus/ES/embedding 均 monkeypatch 桩，无需服务。
+#
+#     刻意零 env 覆盖：service 容器凭据/库名（coderag/coderag/coderag_v2@localhost:5432）
+#     与 app/core/config.py 默认值天然对齐。勿给 pytest 注入 POSTGRES_* 环境变量——
+#     MCP stdio 子进程（test_graph_server）会剥离非白名单环境变量，注入会导致子进程
+#     与测试进程连不同库而假失败（本地 CI 模拟实测踩坑）。
+#
+#     旧 eval-manual job（v1 diag_eval 基线回归门）随 v1 一起退役；
+#     v2 的评测回归门待后续里程碑重建。
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend-v2
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: coderag
+          POSTGRES_PASSWORD: coderag
+          POSTGRES_DB: coderag_v2
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U coderag"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install deps
+        run: uv sync --extra dev  # pytest/ruff 在 [project.optional-dependencies].dev，默认 uv sync 不装（v1 CI 首跑踩坑沿用）
+      - name: Migrate
+        run: uv run alembic upgrade head  # 测试假设 schema 已迁移（conversations/feedback 等，create_all 并不覆盖全部测试）
+      - name: Pytest
+        run: uv run pytest -q
+      - name: Ruff
+        run: uv run ruff check .

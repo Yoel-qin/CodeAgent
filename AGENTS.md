@@ -4,6 +4,8 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 > **This file mirrors `CLAUDE.md` (the Claude Code guidance) and is kept in lockstep with it.** When you change architecture, run commands, or platform gotchas, update both — they must not diverge.
 
+> **⚠️ v1 已退役（2026-09-03）**：`backend/`（v1 后端）与 `model_server/`（CodeBERT 嵌入服务）已整体删除（git 历史可找回）；infra 中 v1 数据已清空（PG `coderag` 库 DROP、Milvus 4 个 v1 collection、ES `coderag_chunks` 索引、MinIO `coderag` 桶；**MinIO 的 `a-bucket` 是 Milvus 内部存储桶，含 v2 向量数据，绝不可删**）。**当前唯一后端是 `backend-v2/`**（Agentic+MCP 架构，:8010，设计文档在 docs/ 下）；CI 只测 backend-v2（`.github/workflows/ci.yaml`，postgres+redis service，零 env 覆盖——service 凭据与 `app/core/config.py` 默认值对齐；**勿给 CI 注入 `POSTGRES_*` 环境变量**，MCP stdio 子进程会剥离非白名单 env 导致连错库）。本文以下关于 v1 backend 的运行命令/架构/开关章节均为**历史参考**，与现状不符处以 backend-v2 为准。`frontend/`（v1 前端）暂保留，v2 前端待 V2-M6。
+
 ## What this is
 
 CodeRAG — a RAG knowledge base over large Java codebases. Fuses a **switchable dual-encoder embedding** (unified BGE-M3, or dual: CodeBERT for code + BGE-M3 for docs, per `docs/嵌入向量方案.md` 方案一) + BM25 + PG graph traversal + 3-stage reranking, behind a FastAPI backend, a React frontend, and a **LangGraph multi-agent layer** (7 read-only scenario agents — incl. a **WEB_SEARCH** 联网检索 agent backed by remote MCP servers — + **3 pack-driven domain agents** [链路追踪/故障诊断/性能调优, activated by a matching **domain knowledge pack**] + 1 write-action HITL agent). **Graph *vectors* (GNN / path C) and GraphRAG have been dropped**; graph *traversal* (PG `call_graph` BFS) is kept.

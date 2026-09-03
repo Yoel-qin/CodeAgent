@@ -37,7 +37,10 @@ export function useChat(repo: string) {
             if (c.conversation_id) setConversationId(c.conversation_id);
             if (c.title) setConversationTitle(c.title);
           },
-          onRetrieval: (r) => patch(target, (m) => ({ ...m, retrieval: r as RetrievalInfo })),
+          onRetrieval: (r) => {
+            const info = r as RetrievalInfo;
+            patch(target, (m) => ({ ...m, retrieval: info, route: info.mode }));
+          },
           onCitation: (c) => patch(target, (m) => ({ ...m, citations: [...m.citations, c as Citation] })),
           onAgentStep: (s) => patch(target, (m) => ({ ...m, agentSteps: [...(m.agentSteps ?? []), s as AgentStep] })),
           onToken: (t) => patch(target, (m) => ({ ...m, content: m.content + t })),
@@ -71,6 +74,7 @@ export function useChat(repo: string) {
       content: m.content,
       citations: m.meta?.citations ?? [],
       agentSteps: m.meta?.agent_steps,
+      route: m.meta?.route,
       retrieval: undefined,
       createdAt: new Date(m.created_at).getTime(),
       messageId: m.id,

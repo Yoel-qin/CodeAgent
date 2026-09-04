@@ -6,7 +6,7 @@
 
 > **权威文档**：`backend-v2/README.md`（v2 运行与功能细节：MCP server、监控、评测、RBAC、WEB_SEARCH、冒烟矩阵）；`docs/`（gitignored）内的设计 spec 与 v1 里程碑台账（`项目状态.md` / `重构开发清单.md`）为历史参考。
 >
-> **v1 已退役（2026-09-03）**：`backend/`（传统 RAG 管线，M1–M46）与 `model_server/`（CodeBERT）已删除（git 历史可找回）；`frontend/` 为 v1 遗留暂保留，不在 v2 链路中。
+> **v1 已退役（2026-09-03）**：`backend/`（传统 RAG 管线，M1–M46）与 `model_server/`（CodeBERT）已删除；`frontend/`（v1 前端）亦于 2026-09-04 删除（git 历史均可找回）。
 
 ## 技术栈（v2）
 
@@ -60,7 +60,6 @@ CodeRagAgent/
 ├── docker-compose.yml   # 基础设施编排（7 服务）
 ├── backend-v2/          # v2 后端（FastAPI + Agent + 4 MCP server + 管道 worker）
 ├── frontend-v2/         # v2 前端（React，:5174）
-├── frontend/            # v1 前端遗留（退役，暂保留）
 ├── data/                # 持久化卷 + 本地模型（gitignored）
 ├── docs/                # 设计 spec + v1 里程碑台账（gitignored）
 └── *.md                 # README / CLAUDE.md / AGENTS.md

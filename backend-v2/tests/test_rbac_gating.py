@@ -122,6 +122,49 @@ async def test_wrap_tool_blocks_forbidden_domain():
         TOOL_DOMAIN.pop("grep_code", None)
 
 
+# ── Fix R1（评审 Important 1）：wrap_tool repo 维度门 ───────────────────────
+
+async def test_wrap_tool_gates_repo_visibility():
+    """工具层 repo 门：LLM 显式传不可见 repo 拦截（error JSON 不执行）；可见透传 /
+    缺省注入 / "*" 全放 / off 态照旧。工具实参由 LLM 产出，HTTP 层 repo 门拦不到
+    agent 工具调用——此门补上图内最后一环。"""
+    from langchain_core.tools import StructuredTool
+
+    from app.agent.tools_loader import ToolCallTracker, wrap_tool
+
+    async def _inner(repo="", **_kw):
+        return json.dumps({"echo_repo": repo, "ok": True})
+
+    tool = StructuredTool(
+        name="grep_code", description="t",
+        args_schema={"type": "object",
+                     "properties": {"repo": {"type": "string", "default": ""}}},
+        coroutine=_inner)
+    scopes = {"repos": {"a"}, "kinds": {"code", "doc"}}
+
+    # a) LLM 显式传不可见 repo → 拦截（error JSON，不执行）
+    blocked = wrap_tool(tool, ToolCallTracker(), scopes=scopes)
+    out = await blocked.ainvoke({"repo": "b"})
+    assert "no permission" in out and "echo_repo" not in out
+    # b) 显式传可见 repo → 放行透传（LLM 显式值不被覆盖）
+    out2 = await wrap_tool(tool, ToolCallTracker(), scopes=scopes).ainvoke({"repo": "a"})
+    assert "no permission" not in out2 and '"echo_repo": "a"' in out2
+    # c) 未传 repo、default_repo 可见 → 放行，缺省注入照旧
+    out3 = await wrap_tool(tool, ToolCallTracker(), default_repo="a",
+                           scopes=scopes).ainvoke({})
+    assert "no permission" not in out3 and '"echo_repo": "a"' in out3
+    # 会话 repo 不可见且 LLM 未显式传 → fail-closed（缺省/空 repo 不成越权通道）
+    fc = wrap_tool(tool, ToolCallTracker(), default_repo="b", scopes=scopes)
+    assert "no permission" in await fc.ainvoke({})
+    # repos="*" 全放（任意 repo 透传）
+    star = {"repos": "*", "kinds": {"code", "doc"}}
+    out4 = await wrap_tool(tool, ToolCallTracker(), scopes=star).ainvoke({"repo": "any"})
+    assert "no permission" not in out4 and '"echo_repo": "any"' in out4
+    # d) scopes=None（off 态）任意 repo 透传（既有行为零变更）
+    out5 = await wrap_tool(tool, ToolCallTracker()).ainvoke({"repo": "wherever"})
+    assert "no permission" not in out5 and '"echo_repo": "wherever"' in out5
+
+
 # ── API 层：chat repo 门 403 + repos 列表过滤 + graph repo 门 ───────────────
 
 def _override_user(app, user):

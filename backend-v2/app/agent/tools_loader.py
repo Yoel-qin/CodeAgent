@@ -224,9 +224,11 @@ def wrap_tool(tool: BaseTool, tracker: ToolCallTracker,
     """给工具套上 计步/循环检测/citation 提取，返回新 ``StructuredTool``（原工具不动）。
 
     name/description/args_schema 同原（Task 8 的 ReAct 骨架按这三个字段向 LLM 注册）；
-    wrapped 顺序：⓪域防御（M9：``scopes`` 非 None 且 :data:`TOOL_DOMAIN` 给该工具
-    定的读域不在 ``scopes["kinds"]`` → 不执行，返回 error JSON——LLM 侧只见「无权」
-    观察不泄内容；scopes=None 零行为变更）→ ① repo 机械注入
+    wrapped 顺序：⓪域防御（M9 双维度：``scopes`` 非 None 时先判读域——
+    :data:`TOOL_DOMAIN` 给该工具定的域不在 ``scopes["kinds"]`` → 不执行；再判仓库
+    （Fix R1）——声明了 ``repo`` 参数的工具，LLM 显式 repo / 会话 repo 缺省值不在
+    ``scopes["repos"]`` 可见集（``"*"`` 全放）→ 不执行；均返回 error JSON，LLM 侧
+    只见「无权」观察不泄内容；scopes=None 零行为变更）→ ① repo 机械注入
     （``default_repo`` 有值且工具声明了 ``repo`` 参数 → 缺省时补会话 repo，
     LLM 显式传值不覆盖——Task 10 ④：会话 repo 只在图 state 里、工具入参由 LLM 产出，
     漏传即落到 MCP 侧自己的 default_repo 造成跨库检索），
@@ -250,6 +252,16 @@ def wrap_tool(tool: BaseTool, tracker: ToolCallTracker,
             if domain is not None and domain not in (scopes.get("kinds") or ()):
                 return json.dumps(
                     {"error": f"no permission: {domain} 域工具已禁用"}, ensure_ascii=False)
+            # Fix R1（评审 Important 1）：repo 维度同设防——工具实参由 LLM 产出，HTTP 层
+            # repo 门拦不到 agent 工具调用，显式传不可见 repo 不得绕过（跨库读通道）。
+            # target 取值序与下方缺省注入一致（LLM 显式值 > 会话 repo）；二者皆空 =
+            # fail-closed 拦截（空/缺省 repo 不成越权通道）。``repos == "*"`` 全放。
+            repos = scopes.get("repos")
+            if repos != "*" and "repo" in (tool.args or {}):
+                target = kwargs.get("repo") or default_repo
+                if target not in (repos or ()):
+                    return json.dumps(
+                        {"error": f"no permission: 仓库 {target} 不可见"}, ensure_ascii=False)
         if (default_repo and isinstance(kwargs, dict) and "repo" in (tool.args or {})
                 and not kwargs.get("repo")):
             kwargs["repo"] = default_repo

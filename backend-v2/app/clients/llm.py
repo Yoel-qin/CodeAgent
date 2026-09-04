@@ -10,7 +10,7 @@
 """
 from __future__ import annotations
 
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import replace
 
 from langchain_openai import ChatOpenAI
@@ -39,10 +39,10 @@ def apply_model_overrides(overrides: dict[str, dict[str, str]]):
     评测 harness 专用接缝：变体内 set、case 跑完 reset，不污染生产路径
     （缺席 = 空 dict = endpoint_for 原样，零行为变更）。
     """
-    return _MODEL_OVERRIDES.set(dict(overrides or {}))
+    return _MODEL_OVERRIDES.set({k: dict(v) for k, v in (overrides or {}).items()})
 
 
-def reset_model_overrides(token) -> None:
+def reset_model_overrides(token: Token) -> None:
     """恢复 apply 前的覆盖状态（ContextVar token reset）。"""
     _MODEL_OVERRIDES.reset(token)
 

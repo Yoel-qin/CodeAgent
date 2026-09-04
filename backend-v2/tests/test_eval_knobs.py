@@ -2,7 +2,8 @@
 from app.clients import llm
 
 
-def test_model_overrides_apply_and_reset():
+def test_model_overrides_apply_and_reset(monkeypatch):
+    monkeypatch.setattr(llm.settings, "llm_api_key", "sk-test")
     before = llm.endpoint_for("reasoning").model
     token = llm.apply_model_overrides({"reasoning": {"model": "test-model-x"}})
     try:

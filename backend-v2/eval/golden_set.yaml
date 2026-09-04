@@ -4,7 +4,9 @@ repo: rocketmq
 cases:
   - id: code-putmessage
     query: CommitLog 的 putMessage 方法在哪个文件实现
-    expect: {code: ["CommitLog.putMessage"]}
+    # 双锚点容错（评审校准）：本树写入入口实为 asyncPutMessage；putMessage 在此 unresolved
+    # 仅列进报告不碍评分（has_code_anchor 由 asyncPutMessage 撑起），未来树有它也能命中
+    expect: {code: ["CommitLog.putMessage", "CommitLog.asyncPutMessage"]}
   - id: code-commitlog-class
     query: CommitLog 这个类的定义在哪里
     expect: {code: ["CommitLog"]}

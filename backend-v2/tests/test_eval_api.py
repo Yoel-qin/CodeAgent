@@ -107,3 +107,15 @@ def test_get_runs_and_detail(_cleanup_runs):
             assert client.get("/v1/eval/runs/99999999").status_code == 404
     finally:
         eng.dispose()
+
+
+def test_post_run_bad_golden_path_200_failed(_cleanup_runs):
+    """I1：坏 golden_path → 200 + status=FAILED（不再 500）；repo 显式给可清理值
+    （服务测试已断言 repo 缺席时的 settings 回落，此处只钉 API 软失败契约）。"""
+    from app.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/v1/eval/run", json={"golden_path": "no-such.yaml",
+                                              "repo": "test-api-eval"})
+        assert r.status_code == 200 and r.json()["status"] == "FAILED"
+        assert r.json()["error"]

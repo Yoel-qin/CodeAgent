@@ -185,6 +185,19 @@ async def test_run_and_persist_failed_and_no_persist(monkeypatch, tmp_path, _cle
     assert preview["id"] is None and preview["metrics"]["variants"]["baseline"]["n_cases"] == 2
 
 
+async def test_run_and_persist_bad_golden_path(monkeypatch, tmp_path, _cleanup_runs):
+    """I1：golden 加载失败（路径不存在）不抛——落一行 FAILED（repo 回落 settings 默认）。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "default_repo", "test-eval")  # 回落值钉到可清理 repo
+    result = await eval_service.run_and_persist(
+        golden_path=str(tmp_path / "no-such.yaml"), trigger="test")
+    assert result["status"] == "FAILED" and result["error"]
+    assert result["repo"] == "test-eval" and result["id"] is not None
+    detail = await eval_service.get_run(result["id"])  # 新 SessionLocal 复核库里确有
+    assert detail is not None and detail["status"] == "FAILED" and detail["error"]
+
+
 def _cli():
     import importlib.util
     from pathlib import Path

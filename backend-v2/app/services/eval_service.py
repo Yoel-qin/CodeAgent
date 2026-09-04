@@ -8,7 +8,8 @@ brief 适配（有据偏差，须带入评审）：
 1. ``resolve_anchors`` 的 ``session.execute`` 经 ``_execute`` 兼容层——brief 逐字测试把
    conftest 的**同步** ``session`` fixture 传入本 async 服务，SQLAlchemy 同步
    ``Session.execute`` 返回 Result 不可 await（实测 TypeError）；按「结果是否 awaitable」
-   分流，同步/异步会话同一结果形状（生产 ``SessionLocal`` 的 AsyncSession 路不变）。
+   分流，同步/异步会话同一结果形状（生产 ``SessionLocal`` 的 AsyncSession 路不变；
+   session 注解随之声明 ``AsyncSession | Session``）。
 2. ``judge_case``/``judge_scores`` 直接入本模块命名空间并直调——brief 逐字测试
    ``monkeypatch.setattr(eval_service, "judge_case", ...)`` 要求该名字存在且为实际
    调用点（brief 实现经 ``judge_mod.judge_case`` 调用则钉不住）；run_case 同理本就直入。
@@ -22,6 +23,7 @@ from datetime import UTC, datetime
 from loguru import logger
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.base import SessionLocal
@@ -33,7 +35,7 @@ from app.eval.judge import judge_case, judge_scores
 __all__ = ["fix_repos", "get_run", "list_runs", "resolve_anchors", "run_and_persist"]
 
 
-async def _execute(session: AsyncSession, stmt):
+async def _execute(session: AsyncSession | Session, stmt):
     """兼容执行：AsyncSession.execute 是协程 → await；同步 Session（测试 fixture）直调。"""
     result = session.execute(stmt)
     if inspect.isawaitable(result):
@@ -46,7 +48,7 @@ def fix_repos(cases: list[golden.GoldenCase], run_repo: str) -> list[golden.Gold
     return [replace(c, repo=c.repo or run_repo) for c in cases]
 
 
-async def resolve_anchors(session: AsyncSession,
+async def resolve_anchors(session: AsyncSession | Session,
                           cases: list[golden.GoldenCase]) -> dict[str, dict]:
     """逐 case 解析锚点 → 目标集（code 按 repo+class 批量查；doc 按 repo+doc_name 批量查）。
 
@@ -112,28 +114,34 @@ async def run_and_persist(*, repo: str | None = None,
                           persist: bool = True) -> dict:
     """跑一次评测（golden → anchors → 变体×case harness → 聚合 → judge）→ 落账。
 
-    失败不抛：捕获后落 FAILED + error 摘要，返回 run dict（CLI/API 均按状态分支）。
-    judge 只评**首个变体**的答案（baseline 语义；A/B 的答案质量差由主指标承担）。
+    失败不抛：golden 加载/变体构造（I1 修复后也在 try 内）与跑批中途失败均捕获——
+    已建 RUNNING 行 → update FAILED；未建行（load 阶段）→ 直接 INSERT 一行 FAILED
+    （repo 回落 ``repo or settings.default_repo``、config 标 ``error_stage: load``）；
+    ``persist=False`` → 合成 FAILED dict。judge 只评**首个变体**的答案（baseline
+    语义；A/B 的答案质量差由主指标承担）。
     """
     path = golden_path or settings.eval_golden_path
-    default_repo, cases = golden.load_golden_set(path)
-    run_repo = repo or default_repo or settings.default_repo
-    fixed = fix_repos(cases, run_repo)
-    eval_variants = [EvalVariant(**v) for v in (variants or [{}])]
-    kind = "ab" if len(eval_variants) > 1 else "single"
-
+    # 预计算（load 失败时 except 分支同样要用）：kind 只数变体个数（构造前后等长）；
+    # run_repo 先按 settings 回落，golden 加载成功后再按文件级 repo 精化
+    kind = "ab" if len(variants or [{}]) > 1 else "single"
+    run_repo = repo or settings.default_repo
     run_id: int | None = None
-    if persist:
-        async with SessionLocal() as session:
-            row = EvalRun(repo=run_repo, kind=kind, status="RUNNING",
-                          config={"trigger": trigger, "judge": judge, "golden_path": path,
-                                  "variants": [asdict(v) for v in eval_variants]})
-            session.add(row)
-            await session.commit()
-            run_id = row.id
-
     rows: list[dict] = []
     try:
+        default_repo, cases = golden.load_golden_set(path)
+        run_repo = repo or default_repo or settings.default_repo
+        fixed = fix_repos(cases, run_repo)
+        eval_variants = [EvalVariant(**v) for v in (variants or [{}])]
+
+        if persist:
+            async with SessionLocal() as session:
+                row = EvalRun(repo=run_repo, kind=kind, status="RUNNING",
+                              config={"trigger": trigger, "judge": judge, "golden_path": path,
+                                      "variants": [asdict(v) for v in eval_variants]})
+                session.add(row)
+                await session.commit()
+                run_id = row.id
+
         async with SessionLocal() as session:
             anchors = await resolve_anchors(session, fixed)
         first_evidence: dict[str, CaseEvidence] = {}
@@ -166,6 +174,15 @@ async def run_and_persist(*, repo: str | None = None,
                     "created_at": None, "finished_at": None, "per_query": rows}
     except Exception as e:  # noqa: BLE001 —— 评测失败落 FAILED，不向上抛
         logger.warning("eval_service: 评测失败（run_id={}）: {}", run_id, e)
+        if persist and run_id is None:
+            # load 阶段失败（还没建 RUNNING 行）→ 直接落一行 FAILED（I1：不再 500）
+            async with SessionLocal() as session:
+                row = EvalRun(repo=run_repo, kind=kind, status="FAILED",
+                              config={"trigger": trigger, "error_stage": "load"},
+                              error=str(e)[:2000], finished_at=datetime.now(UTC))
+                session.add(row)
+                await session.commit()
+            return _row_dict(row, with_per_query=True)
         if persist:
             async with SessionLocal() as session:
                 await session.execute(update(EvalRun).where(EvalRun.id == run_id).values(

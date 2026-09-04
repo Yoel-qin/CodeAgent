@@ -7,7 +7,9 @@
     uv run python scripts/eval_run.py --ab r4:rounds_code=4 --ab nograph:code_no_graph=1
     uv run python scripts/eval_run.py --no-persist              # 预览（不落库）
 
-退出码：--validate 有 unresolved → 1；跑批 FAILED → 1。
+退出码：--validate 有 case 零可解析锚点（code/doc 全 spec unresolved）→ 1；跑批
+FAILED → 1。部分 spec unresolved 仍列印但不计 BAD——与 metrics ``has_*_anchor``
+分母语义对称（双锚点容错：任一 spec 解析即可评分）。
 """
 from __future__ import annotations
 
@@ -65,10 +67,13 @@ async def _validate(repo: str | None, path: str) -> int:
     for c in fixed:
         unresolved = [s for s, ts in anchors[c.id]["code"].items() if not ts] + \
                      [s for s, ts in anchors[c.id]["doc"].items() if not ts]
-        print(f"[{'BAD' if unresolved else 'OK '}] {c.id}  repo={c.repo}  "
+        # 双锚点容错（评审校准同轮）：BAD 只数「零可解析锚点」的 case（与 metrics
+        # has_*_anchor 分母语义对称）；残缺 spec 仍列印（校准线索）不碍退出码
+        dead = not any(anchors[c.id]["code"].values()) and not any(anchors[c.id]["doc"].values())
+        print(f"[{'BAD' if dead else 'OK '}] {c.id}  repo={c.repo}  "
               f"unresolved={unresolved if unresolved else '无'}")
-        bad += bool(unresolved)
-    print(f"共 {len(fixed)} case，unresolved {bad} 条" + ("（exit 1）" if bad else ""))
+        bad += dead
+    print(f"共 {len(fixed)} case，零可解析锚点 {bad} 条" + ("（exit 1）" if bad else ""))
     return 1 if bad else 0
 
 

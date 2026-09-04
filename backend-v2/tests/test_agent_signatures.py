@@ -45,7 +45,7 @@ def test_node_module_does_not_enable_pep563(mod):
     """节点模块不得启用 PEP 563（双保险：注解对象断言的成因侧守卫）。
 
     AST 层判 ``from __future__ import annotations`` 的模块级 ImportFrom——不用子串匹配
-    （四个模块头部都有提及该句的警示注释，子串会误报）。
+    （五个模块头部都有提及该句的警示注释，子串会误报）。
     """
     tree = ast.parse(inspect.getsource(mod))
     futures = [n for n in tree.body

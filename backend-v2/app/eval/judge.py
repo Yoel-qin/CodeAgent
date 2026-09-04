@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 from statistics import fmean
 
@@ -45,7 +46,12 @@ def _user_prompt(query: str, answer: str, citations: list[dict]) -> str:
 
 
 def _parse_scores(text: str) -> dict | None:
-    """容错解析：剥 ```json 围栏 → json.loads → 4 维齐 + 数值 clamp 0..1；任一不满足 → None。"""
+    """容错解析：剥 ```json 围栏 → json.loads → 4 维齐 + 数值 clamp 0..1；任一不满足 → None。
+
+    非有限值（NaN / Infinity——Python ``json.loads`` 默认放行这三个字面量）与 bool
+    同判无效：clamp 会把 NaN 静默洗成 0.0（hallucination 低=好 → 无效分洗成最优分），
+    故 ``math.isfinite`` 门先行，整案走既有降级路径返 None。
+    """
     raw = text.strip()
     if not raw.startswith("{"):
         m = _FENCE_RE.search(raw)
@@ -59,7 +65,7 @@ def _parse_scores(text: str) -> dict | None:
     out: dict[str, float] = {}
     for dim in JUDGE_DIMS:
         v = obj.get(dim)
-        if not isinstance(v, (int, float)) or isinstance(v, bool):
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v):
             return None
         out[dim] = min(1.0, max(0.0, float(v)))
     return out

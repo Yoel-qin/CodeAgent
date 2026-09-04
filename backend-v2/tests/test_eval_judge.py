@@ -46,6 +46,26 @@ async def test_judge_case_soft_fails(monkeypatch):
     assert await judge.judge_case("q", "a", []) is None  # 缺维 → None（不猜）
 
 
+async def test_judge_case_rejects_nonfinite_and_bool(monkeypatch):
+    """终审 #8/#9：NaN/Infinity 字面量（json.loads 默认放行）与 bool 混入 → 整案 None。
+
+    NaN 若放行到 clamp 会被 min/max 静默洗成 0.0——hallucination（低=好）即无效分
+    洗成最优分；``math.isfinite`` 门先行使其走既有降级路径。bool 拒绝（True 是
+    int 子类，isinstance 放行）此前已实现但无测试钉，一并锚定。
+    """
+    monkeypatch.setattr(judge, "configured", lambda: True)
+    nonfinite = ("{\"faithfulness\": NaN, \"answer_relevance\": Infinity, "
+                 "\"citation_accuracy\": 0.5, \"hallucination\": 0.5}")
+    monkeypatch.setattr(judge, "chat_model_for",
+                        lambda _t="reasoning": _fake_model(nonfinite))
+    assert await judge.judge_case("q", "a", []) is None  # 非有限值 → None（不洗分）
+    bool_json = json.dumps({"faithfulness": True, "answer_relevance": 0.5,
+                            "citation_accuracy": 0.5, "hallucination": 0.5})
+    monkeypatch.setattr(judge, "chat_model_for",
+                        lambda _t="reasoning": _fake_model(bool_json))
+    assert await judge.judge_case("q", "a", []) is None  # bool 混入 → None
+
+
 def test_judge_scores_macro_avg_and_none():
     rows = [{"faithfulness": 1.0, "answer_relevance": 0.0, "citation_accuracy": 0.0,
              "hallucination": 0.0}, None,

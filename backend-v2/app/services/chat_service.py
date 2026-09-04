@@ -122,11 +122,18 @@ async def list_conversations(
     *,
     limit: int = 50,
     offset: int = 0,
+    repos: list[str] | None = None,
 ) -> list[Conversation]:
-    """会话列表，updated_at 倒序（同刻 updated_at 以 id 升序 tie-break，排序确定）。"""
-    stmt = (select(Conversation)
-            .order_by(Conversation.updated_at.desc(), Conversation.id)
-            .limit(limit).offset(offset))
+    """会话列表，updated_at 倒序（同刻 updated_at 以 id 升序 tie-break，排序确定）。
+
+    ``repos``（RBAC 可见仓库列表，None = 不过滤；终审 I-1）——过滤在 SQL 层，
+    limit/offset 分页语义不被逐行过滤破坏；受限用户的空/未知 ``target_repo``
+    不在集合内 → 不进列表（fail-closed）。
+    """
+    stmt = select(Conversation)
+    if repos is not None:
+        stmt = stmt.where(Conversation.target_repo.in_(repos))
+    stmt = stmt.order_by(Conversation.updated_at.desc(), Conversation.id).limit(limit).offset(offset)
     rows = await session.execute(stmt)
     return list(rows.scalars().all())
 

@@ -166,6 +166,7 @@ async def test_wrap_tool_gates_repo_visibility():
 
 
 # ── API 层：chat repo 门 403 + repos 列表过滤 + graph repo 门 ───────────────
+# 终审 I-1：conversations 历史读通道 repo 门（列表过滤 + 详情 404）。
 
 def _override_user(app, user):
     from app.api.deps import get_current_user
@@ -226,4 +227,56 @@ def test_graph_repo_forbidden_403(monkeypatch):
             assert client.get("/v1/graph/search",
                               params={"q": "x", "repo": "rocketmq"}).status_code == 403
     finally:
+        app.dependency_overrides.clear()
+
+
+def test_conversations_repo_gate(monkeypatch):
+    """终审 I-1：conversations 历史读通道补 repo 门。
+
+    external（doc-only、repos=["sa-token"]）用户：不可见 repo（rocketmq）的会话
+    不进列表、详情 404（与不存在同判，不暴露存在性）——assistant 正文含
+    file:line 代码引用，历史读不得旁路图内门；可见 repo 会话正常列出可读。
+    种子走 sync 引擎裸 INSERT（on conflict do update 幂等），测后删净——不碰
+    共享 async engine 连接池（TestClient 独立事件循环复用旧池连接会在 pre-ping
+    炸，见 test_chat_api 模块 docstring）。
+    """
+    import uuid
+
+    from sqlalchemy import create_engine, text
+
+    from app.main import app
+
+    monkeypatch.setattr(settings, "rbac_enabled", True)
+    monkeypatch.setattr(settings, "jwt_secret", "unit-test-secret")  # 见模块 docstring 适配
+    hidden_id, visible_id = uuid.uuid4().hex, uuid.uuid4().hex
+    sync_engine = create_engine(settings.postgres_dsn_sync)
+    try:
+        with sync_engine.connect() as conn:
+            for cid, repo in ((hidden_id, "rocketmq"), (visible_id, "sa-token")):
+                conn.execute(text(
+                    "insert into conversations (id, target_repo, title) values "
+                    "(:i, :r, :t) on conflict (id) do update "
+                    "set target_repo = excluded.target_repo"),
+                    {"i": cid, "r": repo, "t": f"repo 门测试 {repo}"})
+            conn.commit()
+        _override_user(app, {"username": "ext", "role": "external",
+                             "allowed_scopes": {"repos": ["sa-token"], "kinds": ["doc"]},
+                             "endpoint_classes": ["*"]})
+        with TestClient(app) as client:
+            lst = client.get("/v1/chat/conversations").json()
+            ids = [c["id"] for c in lst]
+            assert visible_id in ids and hidden_id not in ids
+            assert all(c["target_repo"] == "sa-token" for c in lst)  # 列表只出可见集
+            # 不可见详情 404，且与「不存在」响应不可区分（不暴露存在性）
+            assert client.get(f"/v1/chat/conversations/{hidden_id}").status_code == 404
+            assert client.get("/v1/chat/conversations/deadbeef").status_code == 404
+            detail = client.get(f"/v1/chat/conversations/{visible_id}")
+            assert detail.status_code == 200
+            assert detail.json()["conversation"]["target_repo"] == "sa-token"
+    finally:
+        with sync_engine.connect() as conn:
+            conn.execute(text("delete from conversations where id = any(:ids)"),
+                         {"ids": [hidden_id, visible_id]})
+            conn.commit()
+        sync_engine.dispose()
         app.dependency_overrides.clear()

@@ -79,9 +79,9 @@ def reset_tools() -> None:
         _TOOLS[name] = []
 
 
-def get_code_tools() -> list[BaseTool]:
-    """代码侧工具 = code-mcp 5 + graph-mcp 4。"""
-    return _TOOLS["code"] + _TOOLS["graph"]
+def get_code_tools(include_graph: bool = True) -> list[BaseTool]:
+    """代码侧工具 = code-mcp 5（+ graph-mcp 4；``include_graph=False`` 供评测 A/B 剔除）。"""
+    return _TOOLS["code"] + (_TOOLS["graph"] if include_graph else [])
 
 
 def get_doc_tools() -> list[BaseTool]:

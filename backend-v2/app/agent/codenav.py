@@ -20,12 +20,20 @@ __all__ = ["codenav_node"]
 
 
 async def codenav_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
-    """代码导航节点：4 步分层导航 ReAct（定位→结构→细节→验证），降级链见 react_base。"""
+    """代码导航节点：4 步分层导航 ReAct（定位→结构→细节→验证），降级链见 react_base。
+
+    M8 起评测旋钮（configurable，缺席零行为变更）：``rounds_code`` 覆盖轮数上限、
+    ``code_no_graph`` 剔除 graph-mcp 工具（A/B「图工具有没有用」）。
+    """
+    cfg = (config or {}).get("configurable") or {}
+    # 旋钮缺席时按无参调用（与历史调用逐字节一致，兼容零参 monkeypatch stub）；
+    # 仅 code_no_graph 置位才传 include_graph=False 剔除 graph-mcp 工具。
+    tools = get_code_tools(include_graph=False) if cfg.get("code_no_graph") else get_code_tools()
     return await run_react_agent(
         state, config,
         agent_name="codenav",
-        tools=get_code_tools(),
+        tools=tools,
         system_prompt=CODENAV_SYSTEM,
-        max_rounds=settings.agent_rounds_code,
+        max_rounds=cfg.get("rounds_code") or settings.agent_rounds_code,
         degrade_label="CodeNav",
     )

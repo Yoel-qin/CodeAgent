@@ -38,12 +38,13 @@ def _safe_writer():
 async def docqa_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
     """文档问答节点：hybrid 检索 ReAct + 收尾无引用提示（见模块 docstring）。"""
     tracker = ToolCallTracker()
+    cfg = (config or {}).get("configurable") or {}
     await run_react_agent(
         state, config,
         agent_name="docqa",
         tools=get_doc_tools(),
         system_prompt=DOCQA_SYSTEM,
-        max_rounds=settings.agent_rounds_doc,
+        max_rounds=cfg.get("rounds_doc") or settings.agent_rounds_doc,
         degrade_label="DocQA",
         tracker=tracker,
     )

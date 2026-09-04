@@ -10,6 +10,9 @@
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
+from dataclasses import replace
+
 from langchain_openai import ChatOpenAI
 
 from app.clients.model_adapter import ModelEndpoint, parse_model_routes, resolve_endpoint
@@ -24,9 +27,31 @@ _TIER_TEMP = {"routing": 0.0, "extraction": 0.1, "reasoning": 0.3}
 _TIER_MODELS: dict[tuple[str, str, str, str], ChatOpenAI] = {}
 
 
+#: 评测 A/B 请求级模型覆盖（档 → 端点字段子集）。default={}：未 apply 时 .get() 直接空。
+#: 值永不原地修改（apply 拷贝入、消费方只读）→ 共享空 dict 默认值安全。
+_MODEL_OVERRIDES: ContextVar[dict[str, dict[str, str]]] = ContextVar(
+    "coderag_model_overrides", default={})
+
+
+def apply_model_overrides(overrides: dict[str, dict[str, str]]):
+    """按档覆盖端点字段（base_url/api_key/model 子集），返回 reset token（配 reset 用）。
+
+    评测 harness 专用接缝：变体内 set、case 跑完 reset，不污染生产路径
+    （缺席 = 空 dict = endpoint_for 原样，零行为变更）。
+    """
+    return _MODEL_OVERRIDES.set(dict(overrides or {}))
+
+
+def reset_model_overrides(token) -> None:
+    """恢复 apply 前的覆盖状态（ContextVar token reset）。"""
+    _MODEL_OVERRIDES.reset(token)
+
+
 def endpoint_for(task_type: str) -> ModelEndpoint:
-    """解析档位端点（settings.model_routes + 字段级回落 llm_*）。"""
-    return resolve_endpoint(task_type, parse_model_routes(settings.model_routes))
+    """解析档位端点（settings.model_routes + 字段级回落 llm_* + 评测 ContextVar 覆盖）。"""
+    ep = resolve_endpoint(task_type, parse_model_routes(settings.model_routes))
+    override = _MODEL_OVERRIDES.get().get(task_type)
+    return replace(ep, **override) if override else ep
 
 
 def chat_model_for(task_type: str = "reasoning") -> ChatOpenAI:

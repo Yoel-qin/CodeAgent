@@ -28,7 +28,11 @@ class _FakeChatModel(BaseChatModel):
         return self | PydanticOutputParser(pydantic_object=schema)
 
 
-def test_decide_route_truth_table():
+def test_decide_route_truth_table(monkeypatch):
+    from app.agent import query_analysis as qa
+
+    # M9 起 web 分支读进程级 _TOOLS["web"]——显式钉空，防未来测试污染进程态后静默翻转
+    monkeypatch.setattr(qa, "get_web_tools", lambda: [])
     assert decide_route(None) == "retrieve"
     assert decide_route(RouteDecision(intent="code", confidence=0.95, simple_fact=True)) == "retrieve"
     assert decide_route(RouteDecision(intent="code", confidence=0.5)) == "clarify"

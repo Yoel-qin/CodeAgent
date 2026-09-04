@@ -12,17 +12,18 @@ import inspect
 import pytest
 from langchain_core.runnables import RunnableConfig
 
-from app.agent import codenav, docqa, nodes, query_analysis
+from app.agent import codenav, docqa, nodes, query_analysis, web_search
 
 NODES = [
     query_analysis.query_analysis_node,
     codenav.codenav_node,
     docqa.docqa_node,
+    web_search.web_search_node,
     nodes.retrieve_node,
     nodes.clarify_node,
 ]
 
-MODULES = [query_analysis, codenav, docqa, nodes]
+MODULES = [query_analysis, codenav, docqa, web_search, nodes]
 
 # 允许的注解形态（真注解对象；RunnableConfig | None 与 Optional[RunnableConfig] 在
 # typing 下是相等且同 hash 的同一对象，集合两形态通吃）

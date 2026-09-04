@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("RBAC_ENABLED=1 需要 JWT_SECRET（启动 fail-fast，防弱密钥静默上线）")
     try:
         # 模块属性调用：测试只需钉 tools_loader.load_tools 一处（直引符号需双钉，Task 10 评审遗留）
-        await tools_loader.load_tools()  # 三 server 独立降级；整体再兜一层：加载失败不阻断启动
+        await tools_loader.load_tools()  # 各组独立降级；整体再兜一层：加载失败不阻断启动
     except Exception as e:  # noqa: BLE001 —— MCP 全挂时 agent 仍可启动（运行期再降级）
         logger.error("lifespan: tools 加载失败（agent 工具侧降级）: {}", e)
     yield

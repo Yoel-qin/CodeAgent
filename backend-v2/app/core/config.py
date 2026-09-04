@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     cost_max_llm_calls: int = 12
     history_turns: int = 6
 
+    # 评测（Plan 5 M8）：golden set 路径（相对 backend-v2 运行目录）
+    eval_golden_path: str = "eval/golden_set.yaml"
+
     # 离线管道（Plan 3 M5）：Redis Stream 队列 + 死信流 + 消费组 + 重试上限
     pipe_stream: str = "v2:pipe:events"
     pipe_dead_stream: str = "v2:pipe:dead"

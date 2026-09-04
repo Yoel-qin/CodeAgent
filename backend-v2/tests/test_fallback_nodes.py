@@ -405,3 +405,25 @@ async def test_clarify_cost_callback_records_llm_call(monkeypatch):
     assert cost.llm_calls == 1
     assert "请补充类名" in "".join(
         c["data"]["content"] for c in w if c["event"] == "token")
+
+
+async def test_retrieve_respects_configurable_top_k(monkeypatch):
+    """M8 变体旋钮接活：configurable["top_k"] 穿透到 hybrid_search；缺席 = 既有常量默认。"""
+    from app.agent import nodes
+
+    monkeypatch.setattr(nodes, "configured", lambda: False)
+    seen = {}
+
+    def _fake_hybrid(repo, query, top_k, module):
+        seen["top_k"] = top_k
+        return {"results": []}
+
+    monkeypatch.setattr(nodes, "hybrid_search", _fake_hybrid)
+    monkeypatch.setattr(nodes, "grep_code",
+                        lambda *a: {"matches": [], "total_count": 0, "truncated": False,
+                                    "engine": "python"})
+    await nodes.retrieve_node({"query": "刷盘机制怎么写的", "repo": "mini", "history": []},
+                              {"configurable": {"top_k": 3}})
+    assert seen["top_k"] == 3
+    await nodes.retrieve_node({"query": "刷盘机制怎么写的", "repo": "mini", "history": []}, None)
+    assert seen["top_k"] == 8  # 缺席 = 常量默认（零行为变更）

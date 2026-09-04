@@ -18,22 +18,28 @@ async def list_documents(
     repo: str | None,
     limit: int,
     offset: int,
+    repos: list[str] | None = None,
 ) -> tuple[int, list[tuple[Document, int]]]:
     """文档列表（id 倒序 + limit/offset），伴随每篇的 section 数。
 
     section 数用 ``outerjoin + count(DocSection.id) + group_by`` 一条 SQL 取回——
     无节的文档计 0（``count(*)`` 会错计成 1）。``repo`` 为空 = 不过滤。
+    ``repos``（RBAC 可见仓库列表，None = 不过滤；M9）——count 与页查询同步过滤。
     total 与页数据分开取：聚合查询带 group_by，语义是「分组数」而非全量行数，
     单独一条 ``count(*)`` 才是过滤后的 total。
     """
     count_stmt = select(func.count()).select_from(Document)
     if repo:
         count_stmt = count_stmt.where(Document.repo == repo)
+    if repos is not None:
+        count_stmt = count_stmt.where(Document.repo.in_(repos))
     total = (await session.execute(count_stmt)).scalar_one()
 
     stmt = select(Document, func.count(DocSection.id))
     if repo:
         stmt = stmt.where(Document.repo == repo)
+    if repos is not None:
+        stmt = stmt.where(Document.repo.in_(repos))
     stmt = (
         stmt.outerjoin(DocSection, DocSection.document_id == Document.id)
         .group_by(Document.id)

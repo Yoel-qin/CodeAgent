@@ -4,6 +4,8 @@ session 用法沿 documents.py（``async with SessionLocal()``）；SQL 全部�
 graph_service，路由只做参数边界与透传。参数边界在 Query 上声明：
 direction Literal 三值、depth 1..5、max_nodes 上限 300、search limit 1..50、
 q 必填非空——越界/缺失 → 422（防巨 depth/max_nodes 打爆 PG）。
+
+M9：三端点均加 repo 门（RBAC on 时不可见 repo → 403；off 直通）。
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.deps import require_class
+from app.api.deps import ensure_repo_allowed, get_current_user, require_class
 from app.db.base import SessionLocal
 from app.services import graph_service
 
@@ -23,8 +25,10 @@ async def search_entities(
     q: str = Query(..., min_length=1),
     repo: str = Query(...),
     limit: int = Query(default=15, ge=1, le=50),
+    user: dict = Depends(get_current_user),
 ) -> dict:
     """实体搜索（类名/方法名子串，方法实体排前）→ ``{"items": [...]}``。"""
+    ensure_repo_allowed(user, repo)
     async with SessionLocal() as session:
         return await graph_service.search_entities(session, q=q, repo=repo, limit=limit)
 
@@ -37,8 +41,10 @@ async def call_graph(
     direction: Literal["BOTH", "CALLERS", "CALLEES"] = Query(default="BOTH"),
     depth: int = Query(default=2, ge=1, le=5),
     max_nodes: int = Query(default=50, ge=1, le=300),
+    user: dict = Depends(get_current_user),
 ) -> dict:
     """类/方法中心调用图（``{"nodes","edges","center","truncated"}``）。"""
+    ensure_repo_allowed(user, repo)
     async with SessionLocal() as session:
         return await graph_service.call_graph(
             session, repo=repo, class_name=class_name, method=method,
@@ -50,7 +56,9 @@ async def call_graph(
 async def module_deps(
     repo: str = Query(...),
     max_nodes: int = Query(default=60, ge=1, le=300),
+    user: dict = Depends(get_current_user),
 ) -> dict:
     """跨 module 聚合调用图（nodes type=module、edges weight=调用数）。"""
+    ensure_repo_allowed(user, repo)
     async with SessionLocal() as session:
         return await graph_service.module_deps_graph(session, repo=repo, max_nodes=max_nodes)

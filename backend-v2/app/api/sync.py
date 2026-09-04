@@ -13,6 +13,9 @@
 
 本端点只入队、不记账（pipeline_events 的记账发生在 worker 侧
 ``event_log.record_event``），成功返回 ``{"enqueued": True, "event_id": <redis id>}``。
+
+M9：RBAC on 时 webhook 加 repo 门（不可见 repo → 403，router 级 sync 类门之外再补）；
+``/events`` 指定 repo 同门、未指定时按可见集过滤（同 documents 模式）。
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from app.api.deps import require_class
+from app.api.deps import ensure_repo_allowed, get_current_user, require_class
 from app.core.config import settings
 from app.db.base import SessionLocal
 from app.db.models.pipeline import PipelineEvent
@@ -46,7 +49,8 @@ class PushWebhook(BaseModel):
 
 
 @router.post("/webhook")
-def push_webhook(body: PushWebhook) -> dict:
+def push_webhook(body: PushWebhook, user: dict = Depends(get_current_user)) -> dict:
+    ensure_repo_allowed(user, body.repo)
     _require_known_repo(body.repo)
     _require_one_of_two_shapes(body)
 
@@ -90,16 +94,29 @@ async def list_events(
     status: str | None = Query(default=None, pattern="^(PENDING|DONE|DEAD)$"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    user: dict = Depends(get_current_user),
 ) -> dict:
     """管道账本分页只读（id 倒序）；repo/status 可选过滤，越界参数 → 422。
 
     total 与页数据分开取（同 document_service：count(*) 才是过滤后的全量行数）。
+    M9：RBAC on 时指定 repo 不在可见集 → 403，未指定 → 只出可见集。
     """
+    repos_filter: list[str] | None = None
+    if settings.rbac_enabled:
+        allowed = (user.get("allowed_scopes") or {}).get("repos") or []
+        if "*" not in allowed:
+            if repo is not None:
+                ensure_repo_allowed(user, repo)
+            else:
+                repos_filter = sorted(allowed)
     count_stmt = select(func.count()).select_from(PipelineEvent)
     stmt = select(PipelineEvent).order_by(PipelineEvent.id.desc())
     if repo:
         count_stmt = count_stmt.where(PipelineEvent.repo == repo)
         stmt = stmt.where(PipelineEvent.repo == repo)
+    if repos_filter is not None:
+        count_stmt = count_stmt.where(PipelineEvent.repo.in_(repos_filter))
+        stmt = stmt.where(PipelineEvent.repo.in_(repos_filter))
     if status:
         count_stmt = count_stmt.where(PipelineEvent.status == status)
         stmt = stmt.where(PipelineEvent.status == status)

@@ -198,31 +198,38 @@ async def _enrich_doc_content(repo: str, doc_results: list[dict]) -> None:
 
 
 async def _recall(state: AgentState, repo: str, query: str,
-                  top_k: int | None = None) -> tuple[list[dict], list[dict]]:
+                  top_k: int | None = None,
+                  scopes: dict | None = None) -> tuple[list[dict], list[dict]]:
     """doc 路 hybrid + code 路 grep；两路独立 try/except，一路挂另一路照常。
 
+    M9 RBAC 门 2：``scopes`` 非 None 时按读域跳路——无 doc 域跳过 hybrid、
+    无 code 域跳过 grep（无权侧 0 命中 0 引用，不向 LLM/用户泄内容）。
     ``hybrid_search`` / ``grep_code`` 均同步——``asyncio.to_thread`` **只传位置参数**
     （keyword-only 经 to_thread 会 TypeError 且被本层 try 静默吞掉，见旧库坑）。
     top_k 缺席 = 模块常量默认（M8 变体旋钮接活）。
     """
+    allow_doc = scopes is None or "doc" in (scopes.get("kinds") or ())
+    allow_code = scopes is None or "code" in (scopes.get("kinds") or ())
     doc_results: list[dict] = []
-    try:
-        res = await asyncio.to_thread(hybrid_search, repo, query,
-                                      top_k or _RETRIEVE_TOP_K, None)
-        doc_results = (res or {}).get("results") or []
-    except Exception as e:  # noqa: BLE001 —— doc 路软失败降级为空
-        logger.warning("retrieve_node: doc 路失败降级为空: {}", e)
+    if allow_doc:
+        try:
+            res = await asyncio.to_thread(hybrid_search, repo, query,
+                                          top_k or _RETRIEVE_TOP_K, None)
+            doc_results = (res or {}).get("results") or []
+        except Exception as e:  # noqa: BLE001 —— doc 路软失败降级为空
+            logger.warning("retrieve_node: doc 路失败降级为空: {}", e)
 
     code_matches: list[dict] = []
-    toks = re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", query)[:_CODE_TOKEN_LIMIT]
-    for tok in toks:
-        try:
-            res = await asyncio.to_thread(
-                grep_code, settings.repos_root, repo, tok, _GREP_GLOB, True, _GREP_MAX_RESULTS
-            )
-            code_matches.extend((res or {}).get("matches") or [])
-        except Exception as e:  # noqa: BLE001 —— code 路软失败跳过该词
-            logger.warning("retrieve_node: code 路 {!r} 失败跳过: {}", tok, e)
+    if allow_code:
+        toks = re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", query)[:_CODE_TOKEN_LIMIT]
+        for tok in toks:
+            try:
+                res = await asyncio.to_thread(
+                    grep_code, settings.repos_root, repo, tok, _GREP_GLOB, True, _GREP_MAX_RESULTS
+                )
+                code_matches.extend((res or {}).get("matches") or [])
+            except Exception as e:  # noqa: BLE001 —— code 路软失败跳过该词
+                logger.warning("retrieve_node: code 路 {!r} 失败跳过: {}", tok, e)
     return doc_results, code_matches
 
 
@@ -241,7 +248,8 @@ async def retrieve_node(state: AgentState, config: RunnableConfig | None = None)
         query = state.get("query", "") or ""
         repo = state.get("repo") or settings.default_repo
         top_k = (config or {}).get("configurable", {}).get("top_k")
-        doc_results, code_matches = await _recall(state, repo, query, top_k)
+        scopes = (config or {}).get("configurable", {}).get("scopes")
+        doc_results, code_matches = await _recall(state, repo, query, top_k, scopes=scopes)
         await _enrich_doc_content(repo, doc_results)
         w({"event": "retrieval", "data": {
             "mode": "retrieve",

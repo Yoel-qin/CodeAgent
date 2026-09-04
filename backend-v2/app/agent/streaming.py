@@ -49,6 +49,7 @@ async def stream_chat(
     conversation_id: str | None = None,
     repo: str | None = None,
     top_k: int = 8,
+    scopes: dict | None = None,
 ) -> AsyncIterator[tuple[str, dict]]:
     """跑主图并把自定义事件流转成 SSE 对；收尾持久化 assistant 消息。永不抛。
 
@@ -58,6 +59,11 @@ async def stream_chat(
     span 列表随 assistant 消息**同一事务**落 ``trace_spans``（token_usage 存
     ``cost.to_meta()`` 原样）。**异常兜底路（except）不落 trace**——assistant 未
     持久化、message_id 为 None，没有可挂的 FK；本次请求的 span 树随采集器丢弃。
+
+    M9 起 ``scopes``（RBAC on 时 :func:`app.api.deps.request_scopes` 归一化产物）
+    经 ``configurable["scopes"]`` 注入图内三路门（query_analysis 改路由 /
+    retrieve 按域跳路 / wrap_tool 域防御）；None（off 态）**不注入该键**——
+    configurable 形状与 off 态逐字节一致，零行为变更。
     """
     repo = repo or settings.default_repo
     cid: str = conversation_id or ""
@@ -78,9 +84,11 @@ async def stream_chat(
                                 "message_id": user_msg_id})
 
         req = trace.start("request", f"chat:{cid}")
-        config = {"configurable": {"session": session, "cost": cost, "top_k": top_k,
-                                   "trace": trace},
-                  "recursion_limit": 60}
+        # M9：scopes 键只在非 None 时注入——off 态 configurable 形状与既有逐字节一致
+        cfg_map: dict = {"session": session, "cost": cost, "top_k": top_k, "trace": trace}
+        if scopes is not None:
+            cfg_map["scopes"] = scopes
+        config = {"configurable": cfg_map, "recursion_limit": 60}
         state = {"query": query, "repo": repo, "conversation_id": cid, "history": history}
 
         tokens: list[str] = []

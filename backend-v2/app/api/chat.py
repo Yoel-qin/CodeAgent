@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
 from app.agent.streaming import stream_chat
-from app.api.deps import require_class
+from app.api.deps import ensure_repo_allowed, get_current_user, request_scopes, require_class
+from app.core.config import settings
 from app.db.base import SessionLocal
 from app.schemas.chat import ChatRequest, FeedbackRequest
 from app.services import chat_service
@@ -21,16 +22,20 @@ router = APIRouter(prefix="/v1/chat", tags=["chat"], dependencies=[Depends(requi
 
 
 @router.post("/completions")
-async def completions(req: ChatRequest):
-    """SSE 流式问答：事件 conversation / retrieval / citation / token / agent_step / done。"""
+async def completions(req: ChatRequest, user: dict = Depends(get_current_user)):
+    """SSE 流式问答：事件 conversation / retrieval / citation / token / agent_step / done。
+
+    M9：RBAC on 时 repo 门（不可见 → 403）+ scopes 注入图内三路门；off 全直通。
+    """
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="query 不能为空")
+    ensure_repo_allowed(user, req.repo or settings.default_repo)
 
     async def event_gen():
         async with SessionLocal() as session:
             async for event, data in stream_chat(
                 session, query=req.query, conversation_id=req.conversation_id,
-                repo=req.repo, top_k=req.top_k,
+                repo=req.repo, top_k=req.top_k, scopes=request_scopes(user),
             ):
                 yield {"event": event, "data": json.dumps(data, ensure_ascii=False)}
 

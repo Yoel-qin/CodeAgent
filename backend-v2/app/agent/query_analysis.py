@@ -171,6 +171,12 @@ async def query_analysis_node(state: AgentState, config: RunnableConfig | None =
 
     M7 起可选 trace（``configurable["trace"]``）：分类调用外包一个 ``route`` span，
     attrs 携 intent/confidence/route/reason（LLM 路与规则路统一口径）；缺席零行为变更。
+
+    M9 RBAC 门 1：``configurable["scopes"]`` 非 None 且 intent 的读域
+    （code/doc）不在 ``scopes["kinds"]`` 时，无权 intent 不进场景 Agent——route
+    改判 ``retrieve``（纯检索兜底仍受门 2 按域跳路约束）；``decision.intent``
+    保持原值（诚实记录被门控的分类结论，span attrs 补 ``gated``）。scopes
+    缺席（RBAC off）零行为变更。
     """
     query = state.get("query", "") or ""
     trace = (config or {}).get("configurable", {}).get("trace")
@@ -181,9 +187,19 @@ async def query_analysis_node(state: AgentState, config: RunnableConfig | None =
     if decision is None:
         decision = rule_classify(query)
     route = decide_route(decision)
+    # M9 RBAC 门 1：无读域权限的 intent 不进场景 Agent（v1 模式——reroute retrieve）；
+    # decision.intent 保持原值（诚实记录被门控的分类结论）
+    scopes = (config or {}).get("configurable", {}).get("scopes")
+    gated = False
+    if scopes is not None:
+        kinds = scopes.get("kinds") or set()
+        if (decision.intent == "code" and "code" not in kinds) or (
+                decision.intent == "doc" and "doc" not in kinds):
+            route = "retrieve"
+            gated = True
     logger.debug("query_analysis: intent={} conf={} route={} reason={}",
                  decision.intent, decision.confidence, route, decision.reason)
     if trace is not None:
         trace.end(sid, attrs={"intent": decision.intent, "confidence": decision.confidence,
-                              "route": route, "reason": decision.reason})
+                              "route": route, "reason": decision.reason, "gated": gated or None})
     return {**decision.model_dump(), "route": route}

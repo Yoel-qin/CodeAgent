@@ -11,6 +11,8 @@
 
 两个下游函数皆同步，经 ``asyncio.to_thread`` 下放线程——**只传位置参数**（to_thread
 的 kwargs 走线程包装会被静默吞成 TypeError 的老坑，见 fs_guard/CLAUDE.md）。
+
+M9：两端点均加 repo 门（RBAC on 时不可见 repo → 403，先于任何读取；off 直通）。
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.api.deps import require_class
+from app.api.deps import ensure_repo_allowed, get_current_user, require_class
 from app.core.config import settings
 from app.core.doc_search import get_doc_toc, read_doc_section
 from app.core.reader import read_file
@@ -32,8 +34,10 @@ async def code_read(
     path: str,
     start_line: int | None = Query(default=None, ge=1),
     end_line: int | None = Query(default=None, ge=1),
+    user: dict = Depends(get_current_user),
 ) -> dict:
     """读 repo 内文件窗口，返回 read_file 同形 dict（content/total_lines/start_line/end_line/truncated）。"""
+    ensure_repo_allowed(user, repo)
     result = await asyncio.to_thread(
         read_file, settings.repos_root, repo, path, start_line, end_line
     )
@@ -45,8 +49,10 @@ async def code_read(
 
 
 @router.get("/docs/section")
-async def doc_section(repo: str, doc_name: str, anchor: str) -> dict:
+async def doc_section(repo: str, doc_name: str, anchor: str,
+                      user: dict = Depends(get_current_user)) -> dict:
     """按 (doc_name, anchor) 取文档段落正文；TOC 无此映射或段落读不到 → 404。"""
+    ensure_repo_allowed(user, repo)
     toc = await asyncio.to_thread(get_doc_toc, repo)
     doc_id = next(
         (

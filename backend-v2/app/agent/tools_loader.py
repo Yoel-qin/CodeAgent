@@ -11,7 +11,8 @@
    无需关闭句柄，shutdown 清理 = `reset_tools()` 清缓存。
 2. **分区** `get_code_tools()`（code 5 + graph 4）/ `get_doc_tools()`（doc 5）。
 3. **wrap** `wrap_tool()`：用 ``StructuredTool``（name/description/args_schema 同原、
-   coroutine=wrapped）重造每个工具，wrapped 在透传之外做三件事——
+   coroutine=wrapped）重造每个工具，wrapped 在透传之外做四件事——
+   M9 域防御（``scopes`` 非 None 时无权读域的工具直接拒执行，见 :data:`TOOL_DOMAIN`）、
    同 (tool, args) 3 次循环检测、耗时计步（``tracker.steps``）、从工具观察的
    JSON 里提取 citation（``tracker.citations``，去重 + 截 20）。
 """
@@ -34,6 +35,10 @@ LOOP_MESSAGE = '{"error": "loop detected: same tool+args 3 times"}'
 
 # 模块级缓存：server 名 → 已加载工具（挂掉的 server 保持 []）
 _TOOLS: dict[str, list[BaseTool]] = {name: [] for name in SERVER_NAMES}
+
+#: 工具名 → 读域（M9 wrap 层域防御用）：code/graph server 的工具 = "code"，
+#: doc server 的工具 = "doc"；web 组不填（外网内容不做 code/doc 门控）。
+TOOL_DOMAIN: dict[str, str] = {}
 
 # citation 去重键（Global Constraints 冻结）：code=(file_path, start_line)、doc=(doc_id, section)
 
@@ -69,6 +74,10 @@ async def load_tools(transports: dict[str, dict] | None = None) -> None:
             logger.warning("tools_loader: {}-mcp 工具加载失败，该组置空降级: {}", name, e)
             tools = []
         _TOOLS[name] = list(tools)
+        if name in ("code", "graph"):
+            TOOL_DOMAIN.update({t.name: "code" for t in tools})
+        elif name == "doc":
+            TOOL_DOMAIN.update({t.name: "doc" for t in tools})
         logger.info("tools_loader: {}-mcp 加载 {} 个工具{}", name, len(tools),
                     "" if tools else "（降级：该 server 不可用）")
 
@@ -77,6 +86,7 @@ def reset_tools() -> None:
     """清空工具缓存（shutdown 清理 / 测试隔离）。"""
     for name in SERVER_NAMES:
         _TOOLS[name] = []
+    TOOL_DOMAIN.clear()
 
 
 def get_code_tools(include_graph: bool = True) -> list[BaseTool]:
@@ -209,28 +219,37 @@ def _result_text(result: object) -> str:
 
 
 def wrap_tool(tool: BaseTool, tracker: ToolCallTracker,
-              default_repo: str | None = None, trace=None) -> BaseTool:
+              default_repo: str | None = None, trace=None,
+              scopes: dict | None = None) -> BaseTool:
     """给工具套上 计步/循环检测/citation 提取，返回新 ``StructuredTool``（原工具不动）。
 
     name/description/args_schema 同原（Task 8 的 ReAct 骨架按这三个字段向 LLM 注册）；
-    wrapped 顺序：⓪ repo 机械注入（``default_repo`` 有值且工具声明了 ``repo`` 参数 →
-    缺省时补会话 repo，LLM 显式传值不覆盖——Task 10 ④：会话 repo 只在图 state 里、
-    工具入参由 LLM 产出，漏传即落到 MCP 侧自己的 default_repo 造成跨库检索），
+    wrapped 顺序：⓪域防御（M9：``scopes`` 非 None 且 :data:`TOOL_DOMAIN` 给该工具
+    定的读域不在 ``scopes["kinds"]`` → 不执行，返回 error JSON——LLM 侧只见「无权」
+    观察不泄内容；scopes=None 零行为变更）→ ① repo 机械注入
+    （``default_repo`` 有值且工具声明了 ``repo`` 参数 → 缺省时补会话 repo，
+    LLM 显式传值不覆盖——Task 10 ④：会话 repo 只在图 state 里、工具入参由 LLM 产出，
+    漏传即落到 MCP 侧自己的 default_repo 造成跨库检索），
 
     判「缺省」须把空值一并算上：外层 ``StructuredTool`` 的 ``_parse_input`` 会先把
     schema 可选默认填进 kwargs（MCP 工具声明形如 ``repo: str = ""``，LLM 漏传到
     wrapped 手里已是 ``""`` 而非缺键），纯 ``setdefault`` 拦不住；空 repo 永远不是
     合法目标，填回默认语义等价。
 
-    ① 循环检测（第 3 次同 (name, args) → 返回 LOOP_MESSAGE，不执行）
-    ② 计时执行 ③ 从结果 JSON 提取 citation ④ 追加 step ⑤ 原样返回结果字符串。
+    ② 循环检测（第 3 次同 (name, args) → 返回 LOOP_MESSAGE，不执行）
+    ③ 计时执行 ④ 从结果 JSON 提取 citation ⑤ 追加 step ⑥ 原样返回结果字符串。
 
-    M7 起可选 ``trace=SpanCollector``：②的执行段外包一个 ``tool`` span
+    M7 起可选 ``trace=SpanCollector``：③的执行段外包一个 ``tool`` span
     （attrs 携 ``args`` 截前 8 键；工具结果 JSON 带 ``error`` → ``status="error"``、
     ``error=result["error"][:200]``；执行抛异常 → error span 后原样 raise——langgraph
     ToolNode 自会兜）。``trace=None``（缺省/既有调用点）零行为变更。
     """
     async def _wrapped(**kwargs):
+        if scopes is not None:
+            domain = TOOL_DOMAIN.get(tool.name)
+            if domain is not None and domain not in (scopes.get("kinds") or ()):
+                return json.dumps(
+                    {"error": f"no permission: {domain} 域工具已禁用"}, ensure_ascii=False)
         if (default_repo and isinstance(kwargs, dict) and "repo" in (tool.args or {})
                 and not kwargs.get("repo")):
             kwargs["repo"] = default_repo

@@ -1,0 +1,186 @@
+"""Task 9：作用域门控穿透。off 态（scopes=None）零行为变更 + on 态三路门。
+API 层用 dependency_overrides 注入伪用户（不打真 JWT——认证逻辑 Task 8 已测）。
+
+与 brief 逐字文本的唯一适配（沿 test_auth_rbac.rbac_on 先例）：三个 on 态 API 测试
+补 ``monkeypatch.setattr(settings, "jwt_secret", "unit-test-secret")``——
+``app.main`` lifespan 在 ``rbac_enabled`` 且 ``jwt_secret`` 空时启动即抛
+RuntimeError（fail-fast），而 jwt_secret 默认空（本机 .env 与 CI 均无值），
+不补则 TestClient 进不了 lifespan，测试根本到不了被测的门。
+"""
+import json
+import logging
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.core.config import settings
+
+
+@pytest.fixture(autouse=True)
+def _env(monkeypatch):
+    from app.agent import tools_loader
+    from app.db.base import engine
+
+    async def _noop_load(transports=None):
+        return None
+
+    monkeypatch.setattr(tools_loader, "load_tools", _noop_load)
+    yield
+    slog = logging.getLogger("sqlalchemy")
+    prev, slog.level = slog.level, logging.CRITICAL + 1
+    try:
+        import asyncio
+
+        asyncio.run(engine.dispose())
+    finally:
+        slog.setLevel(prev)
+
+
+# ── 纯函数：repo_visible / request_scopes ──────────────────────────────────
+
+def test_repo_visible_and_request_scopes(monkeypatch):
+    from app.api.deps import normalize_scopes, repo_visible, request_scopes
+
+    monkeypatch.setattr(settings, "rbac_enabled", False)
+    assert repo_visible({}, "any") is True and request_scopes({}) is None
+
+    monkeypatch.setattr(settings, "rbac_enabled", True)
+    user = {"allowed_scopes": {"repos": ["rocketmq"], "kinds": ["doc"]}}
+    assert repo_visible(user, "rocketmq") and not repo_visible(user, "other")
+    scopes = request_scopes(user)
+    assert scopes == {"repos": {"rocketmq"}, "kinds": {"doc"}}
+    assert normalize_scopes({"repos": ["*"], "kinds": []})["kinds"] == {"code", "doc"}
+
+
+# ── 图内门 1：query_analysis 无权 intent 改路由 ────────────────────────────
+
+async def test_query_analysis_gates_code_intent(monkeypatch):
+    from app.agent import query_analysis
+
+    monkeypatch.setattr(query_analysis, "configured", lambda: False)
+    state = {"query": "CommitLog putMessage 在哪", "repo": "r", "history": []}
+    # 无门控：规则路判 code → codenav
+    out = await query_analysis.query_analysis_node(state, None)
+    assert out["route"] == "codenav"
+    # 有门控（只 doc 域）：intent 仍 code（诚实记录），路由改 retrieve
+    cfg = {"configurable": {"scopes": {"repos": "*", "kinds": {"doc"}}}}
+    out2 = await query_analysis.query_analysis_node(state, cfg)
+    assert out2["intent"] == "code" and out2["route"] == "retrieve"
+
+
+# ── 图内门 2：retrieve_node 按域跳路 ────────────────────────────────────────
+
+async def test_retrieve_node_skips_forbidden_kind(monkeypatch):
+    from app.agent import nodes
+
+    monkeypatch.setattr(nodes, "configured", lambda: False)
+    calls = {"hybrid": 0, "grep": 0}
+    monkeypatch.setattr(nodes, "hybrid_search",
+                        lambda *a: calls.__setitem__("hybrid", calls["hybrid"] + 1) or {"results": []})
+    monkeypatch.setattr(nodes, "grep_code",
+                        lambda *a: calls.__setitem__("grep", calls["grep"] + 1)
+                        or {"matches": [], "total_count": 0, "truncated": False, "engine": "python"})
+    state = {"query": "CommitLog putMessage 查询", "repo": "mini", "history": []}
+    # 只 code 域：doc 路（hybrid）被跳过
+    await nodes.retrieve_node(state, {"configurable": {
+        "scopes": {"repos": "*", "kinds": {"code"}}}})
+    assert calls == {"hybrid": 0, "grep": 2}  # query 提取 2 个英文标识符各跑一次 grep
+    # 只 doc 域：code 路（grep）被跳过
+    calls["grep"] = 0
+    await nodes.retrieve_node(state, {"configurable": {
+        "scopes": {"repos": "*", "kinds": {"doc"}}}})
+    assert calls == {"hybrid": 1, "grep": 0}
+
+
+# ── 图内门 3：wrap_tool 域防御 ─────────────────────────────────────────────
+
+async def test_wrap_tool_blocks_forbidden_domain():
+    from langchain_core.tools import StructuredTool
+
+    from app.agent.tools_loader import TOOL_DOMAIN, ToolCallTracker, wrap_tool
+
+    TOOL_DOMAIN["grep_code"] = "code"  # 测试直写（生产由 load_tools 填充）
+    try:
+        async def _inner(**_kw):
+            return json.dumps({"matches": []})
+
+        # args_schema 显式给（沿 test_chat_api._doc_tool 先例）：本仓 langchain-core 对
+        # **kwargs-only coroutine 推不出 schema，args_schema 缺失时 StructuredTool 构造期即 422
+        tool = StructuredTool(
+            name="grep_code", description="t",
+            args_schema={"type": "object", "properties": {}, "additionalProperties": True},
+            coroutine=_inner)
+        wrapped = wrap_tool(tool, ToolCallTracker(),
+                            scopes={"repos": "*", "kinds": {"doc"}})
+        out = await wrapped.ainvoke({})
+        assert "no permission" in out  # 被拦：返回 error JSON 而非执行
+        ok = wrap_tool(tool, ToolCallTracker(), scopes={"repos": "*", "kinds": {"code", "doc"}})
+        assert "no permission" not in await ok.ainvoke({})
+        no_gate = wrap_tool(tool, ToolCallTracker())  # scopes=None（off 态）零行为变更
+        assert "no permission" not in await no_gate.ainvoke({})
+    finally:
+        TOOL_DOMAIN.pop("grep_code", None)
+
+
+# ── API 层：chat repo 门 403 + repos 列表过滤 + graph repo 门 ───────────────
+
+def _override_user(app, user):
+    from app.api.deps import get_current_user
+    app.dependency_overrides[get_current_user] = lambda: user
+
+
+def test_chat_repo_forbidden_403(monkeypatch):
+    from app.main import app
+
+    monkeypatch.setattr(settings, "rbac_enabled", True)
+    monkeypatch.setattr(settings, "jwt_secret", "unit-test-secret")  # 见模块 docstring 适配
+    _override_user(app, {"username": "ext", "role": "external",
+                         "allowed_scopes": {"repos": ["sa-token"], "kinds": ["doc"]},
+                         "endpoint_classes": ["*"]})
+    try:
+        with TestClient(app) as client:
+            r = client.post("/v1/chat/completions",
+                            json={"query": "q", "repo": "rocketmq"})
+            assert r.status_code == 403
+            # 可见 repo 放行（走到 SSE——钉 LLM 为无 key 避免 ESPN 依赖，断言 200）
+            from app.agent import nodes, query_analysis
+            monkeypatch.setattr(query_analysis, "configured", lambda: False)
+            monkeypatch.setattr(nodes, "configured", lambda: False)
+            assert client.post("/v1/chat/completions",
+                               json={"query": "q", "repo": "sa-token"}).status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_repos_list_filtered(monkeypatch, tmp_path):
+    from app.main import app
+
+    monkeypatch.setattr(settings, "rbac_enabled", True)
+    monkeypatch.setattr(settings, "jwt_secret", "unit-test-secret")  # 见模块 docstring 适配
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    monkeypatch.setattr("app.api.repos.settings.repos_root", str(tmp_path))
+    _override_user(app, {"username": "u", "role": "external",
+                         "allowed_scopes": {"repos": ["a"], "kinds": ["doc"]},
+                         "endpoint_classes": ["*"]})
+    try:
+        with TestClient(app) as client:
+            assert client.get("/v1/repos").json()["items"] == ["a"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_graph_repo_forbidden_403(monkeypatch):
+    from app.main import app
+
+    monkeypatch.setattr(settings, "rbac_enabled", True)
+    monkeypatch.setattr(settings, "jwt_secret", "unit-test-secret")  # 见模块 docstring 适配
+    _override_user(app, {"username": "u", "role": "developer",
+                         "allowed_scopes": {"repos": ["sa-token"], "kinds": ["code", "doc"]},
+                         "endpoint_classes": ["*"]})
+    try:
+        with TestClient(app) as client:
+            assert client.get("/v1/graph/search",
+                              params={"q": "x", "repo": "rocketmq"}).status_code == 403
+    finally:
+        app.dependency_overrides.clear()

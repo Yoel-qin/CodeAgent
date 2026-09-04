@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Layout, Menu, Input, Space, Tag, Typography, theme } from "antd";
+import { Button, Dropdown, Layout, Menu, Input, Space, Tag, Typography, theme } from "antd";
 import {
   MessageOutlined,
   FileTextOutlined,
@@ -10,7 +10,8 @@ import {
   DashboardOutlined,
   LineChartOutlined,
 } from "@ant-design/icons";
-import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { clearToken, getToken } from "../api/client";
 import { useAppStore } from "../stores/app";
 import ContextPanel from "../components/ContextPanel";
 import CommandPalette from "../components/CommandPalette";
@@ -57,6 +58,13 @@ export default function Workbench() {
     return () => clearInterval(t);
   }, [fetchHealth]);
 
+  // M9 RBAC 守卫：后端要求登录且本地无 token → 回登录页（health 未加载时放行，
+  // 首帧不闪跳；health 拉到 auth_required 后本守卫立即生效）。
+  // 置于 useEffect 之后——守卫提前返回会跳过其后 hook 调用，违反 Rules of Hooks。
+  if (health?.auth_required && !getToken()) {
+    return <Navigate to="/login" replace />;
+  }
+
   const selected = "/" + (location.pathname.split("/")[1] || "chat");
   const ok = health?.status === "ok";
 
@@ -89,6 +97,24 @@ export default function Workbench() {
         <Tag color={ok ? "success" : health ? "warning" : "default"}>
           {ok ? "● 索引正常" : health ? "● 部分降级" : "● 连接中"}
         </Tag>
+        {health?.auth_required && localStorage.getItem("coderag_username") ? (
+          <Dropdown
+            menu={{
+              items: [{ key: "logout", label: "登出" }],
+              onClick: ({ key }) => {
+                if (key === "logout") {
+                  clearToken();
+                  localStorage.removeItem("coderag_username");
+                  window.location.href = "/login";
+                }
+              },
+            }}
+          >
+            <Button type="text" size="small">
+              {localStorage.getItem("coderag_username")}
+            </Button>
+          </Dropdown>
+        ) : null}
         <RobotOutlined style={{ fontSize: 16, cursor: "pointer" }} />
       </Header>
 

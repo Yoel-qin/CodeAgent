@@ -78,7 +78,13 @@ export default function EvalPage() {
     }
   };
 
-  const openDetail = async (id: number) => setDetail(await getEvalRun(id));
+  const openDetail = async (id: number) => {
+    try {
+      setDetail(await getEvalRun(id));
+    } catch (e) {
+      message.error(`加载评测详情失败：${(e as Error).message}`); // T7 评审：404/网络错零反馈
+    }
+  };
 
   const variantNames = useMemo(
     () => Object.keys(detail?.metrics?.variants ?? {}), [detail]);

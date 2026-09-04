@@ -6,11 +6,13 @@ import DocumentsPage from "./pages/DocumentsPage";
 import GraphPage from "./pages/GraphPage";
 import MonitorPage from "./pages/MonitorPage";
 import EvalPage from "./pages/EvalPage";
+import LoginPage from "./pages/LoginPage";
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        <Route path="/login" element={<LoginPage />} />
         <Route element={<Workbench />}>
           <Route index element={<Navigate to="/chat" replace />} />
           <Route path="chat" element={<ChatPage />} />

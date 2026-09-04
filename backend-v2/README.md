@@ -120,7 +120,7 @@ doc = `doc_name#anchor`）。跑批走真实 Agent 图（不落业务表），�
 uv run python scripts/eval_run.py --validate
 # 单 baseline 跑批 + QA 4 维 LLM 评判
 uv run python scripts/eval_run.py --judge
-# A/B：轮数减半 vs 禁图工具（baseline 自动作为对照）
+# A/B：轮数减半 vs 禁图工具（要 baseline 对照需另跑一次无参默认）
 uv run python scripts/eval_run.py --ab r4:rounds_code=4,rounds_doc=2 --ab nograph:code_no_graph=1
 ```
 

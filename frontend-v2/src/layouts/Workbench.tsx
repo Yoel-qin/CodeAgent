@@ -8,6 +8,7 @@ import {
   SearchOutlined,
   RobotOutlined,
   DashboardOutlined,
+  LineChartOutlined,
 } from "@ant-design/icons";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "../stores/app";
@@ -36,6 +37,7 @@ const navItems = [
     children: [
       { key: "/sync", label: "同步管道", icon: <SyncOutlined /> },
       { key: "/monitor", label: "系统监控", icon: <DashboardOutlined /> },
+      { key: "/eval", label: "评测", icon: <LineChartOutlined /> },
     ],
   },
 ];

@@ -5,6 +5,7 @@ import SyncPage from "./pages/SyncPage";
 import DocumentsPage from "./pages/DocumentsPage";
 import GraphPage from "./pages/GraphPage";
 import MonitorPage from "./pages/MonitorPage";
+import EvalPage from "./pages/EvalPage";
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
           <Route path="documents" element={<DocumentsPage />} />
           <Route path="graph" element={<GraphPage />} />
           <Route path="sync" element={<SyncPage />} />
+          <Route path="eval" element={<EvalPage />} />
           <Route path="monitor" element={<MonitorPage />} />
           <Route path="*" element={<Navigate to="/chat" replace />} />
         </Route>

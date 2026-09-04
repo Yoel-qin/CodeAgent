@@ -125,41 +125,38 @@ def get_callers(
 
 
 def get_module_deps(repo: str, module: str) -> dict:
-    """模块间依赖（按 callee module 分组，top3 key classes）。"""
+    """模块间依赖（按 callee module 分组，top3 key classes）。
+
+    单查询 class 级聚合 + Python 侧分组：原实现每个依赖模块再发一次 top3
+    key-classes 查询（N+1，RocketMQ client 模块 11 次 PG 往返，直调 p95
+    114ms 越线 spec 100ms 门）；改写后行为契约不变（回归锁
+    test_module_deps_aggregation），仅往返 1 次。
+    """
     sql = """
-    SELECT callee.module AS module, COUNT(*) AS call_count
+    SELECT callee.module AS dep_module, callee.class_name, COUNT(*) AS cnt
     FROM call_edges e
     JOIN code_entities caller ON caller.id = e.caller_id
     JOIN code_entities callee ON callee.id = e.callee_id
     WHERE caller.repo = :repo AND caller.module = :module
       AND callee.module != caller.module
-    GROUP BY callee.module
-    ORDER BY call_count DESC
-    """
-    sql_classes = """
-    SELECT callee.class_name, COUNT(*) AS cnt
-    FROM call_edges e
-    JOIN code_entities caller ON caller.id = e.caller_id
-    JOIN code_entities callee ON callee.id = e.callee_id
-    WHERE caller.repo = :repo AND caller.module = :module
-      AND callee.module = :dep_module
-    GROUP BY callee.class_name
+    GROUP BY callee.module, callee.class_name
     ORDER BY cnt DESC
-    LIMIT 3
     """
     try:
-        deps = _exec(sql, {"repo": repo, "module": module})
-        if deps is None:
+        rows = _exec(sql, {"repo": repo, "module": module})
+        if rows is None:
             return {"error": "query execution failed", "dependencies": []}
-        result = []
-        for d in deps:
-            kcs = _exec(sql_classes, {"repo": repo, "module": module, "dep_module": d["module"]})
-            key_classes = [r["class_name"] for r in (kcs or [])]
-            result.append({
-                "module": d["module"],
-                "call_count": d["call_count"],
-                "key_classes": key_classes,
-            })
+        agg: dict[str, dict] = {}
+        # rows 已按 cnt DESC：每模块首次出现的 3 行即该模块 top3 key classes
+        for r in rows:
+            entry = agg.setdefault(
+                r["dep_module"],
+                {"module": r["dep_module"], "call_count": 0, "key_classes": []},
+            )
+            entry["call_count"] += r["cnt"]
+            if len(entry["key_classes"]) < 3:
+                entry["key_classes"].append(r["class_name"])
+        result = sorted(agg.values(), key=lambda x: x["call_count"], reverse=True)
         return {"dependencies": result}
     except Exception as exc:
         return {"error": str(exc), "dependencies": []}

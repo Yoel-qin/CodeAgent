@@ -1,7 +1,7 @@
 """开发机一键拉起 v2 全部进程（backend + code/doc/graph/common 四个 MCP server）。
 
 用法（backend-v2/ 下）：uv run python scripts/dev_up.py [--with-frontend]
-  --with-frontend  追加拉起 frontend-v2（pnpm dev，:5174，代理 /api→:8010；需先 pnpm install）
+  --with-frontend  追加拉起 frontend-v2（pnpm dev，:5300，代理 /api→:8010；需先 pnpm install）
 Ctrl-C 退出并终止全部子进程。Windows GBK 控制台 → stdout 重配 UTF-8。
 """
 import subprocess

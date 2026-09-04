@@ -46,13 +46,13 @@ uv run python scripts/smoke_mcp.py --pattern MAX_RETRY_TIMES --repo mini_repo
 
 ## 前端（frontend-v2，仓库根目录）
 
-React 18 + Vite，dev 端口 **5174**（`vite.config` strictPort），代理 `/api` → `http://localhost:8010`（后端不变）。
+React 18 + Vite，dev 端口 **5300**（`vite.config` strictPort），代理 `/api` → `http://localhost:8010`（后端不变）。
 首次运行需先 `pnpm install` 一次。
 
 ```bash
 cd frontend-v2
 pnpm install        # 仅首次（或依赖变更后）
-pnpm dev            # http://localhost:5174
+pnpm dev            # http://localhost:5300
 pnpm typecheck && pnpm build   # 回归门
 ```
 
@@ -68,7 +68,7 @@ uv run python scripts/dev_up.py --with-frontend
 `uv run alembic upgrade head`、且已有入库 repo。任一步不过 → 修复后重来。
 
 1. `uv run python scripts/dev_up.py --with-frontend`；`curl http://localhost:8010/health` → `"status":"ok"`（或 degraded 但四组件非 down）
-2. 浏览器 http://localhost:5174 ：五页路由可达、侧栏仅 5 项（问答/文档/调用图/同步/监控）、⌘K 仅导航
+2. 浏览器 http://localhost:5300 ：五页路由可达、侧栏仅 5 项（问答/文档/调用图/同步/监控）、⌘K 仅导航
 3. ChatPage：repo 选已入库仓库，问一个代码问题（如 `CommitLog putMessage`）→ token 流式出字、引用卡片出现（code 卡带行号）、点卡片右侧面板出代码窗口且高亮行区间
 4. DocumentsPage：列表出已入库文档、抽屉出章节
 5. GraphPage：搜索类名 → 调用图渲染（cytoscape 布局）、切「模块依赖」出模块图

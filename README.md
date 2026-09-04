@@ -1,6 +1,6 @@
 # CodeRAG — 代码智能知识库（v2：Agentic + MCP）
 
-**当前唯一后端是 `backend-v2/`**（方案二：Agentic 工具检索 + 文档向量库 + MCP 协议层，API :8010）；前端 `frontend-v2/`（:5174）。
+**当前唯一后端是 `backend-v2/`**（方案二：Agentic 工具检索 + 文档向量库 + MCP 协议层，API :8010）；前端 `frontend-v2/`（:5300）。
 
 检索范式与 v1 根本不同：**代码不切块不做向量**——Agent 经 MCP 只读工具（grep/glob/read_file/find_symbol + PG 调用图）精确导航源码；**文档走向量 + BM25 RRF 混检**（BGE-M3 / Milvus + ES）。Router 按意图分发 CodeNav / DocQA / WEB_SEARCH 等 ReAct Agent，DeepSeek 三档可配（routing/extraction/reasoning，可混部本地 vLLM）。
 
@@ -23,7 +23,7 @@
 |---|---|---|
 | backend-v2 API | 8010 | `uvicorn app.main:app`（或 dev_up） |
 | 4 个 MCP server | 8110–8113 | dev_up 拉起（或 `python -m app.mcp_servers.<name>_server`） |
-| frontend-v2 | 5174 | `pnpm dev`（代理 /api → :8010） |
+| frontend-v2 | 5300 | `pnpm dev`（代理 /api → :8010） |
 
 ## 快速开始
 
@@ -40,7 +40,7 @@ uv run alembic upgrade head         # head = v2_0008
 uv run python scripts/dev_up.py     # 一键拉起 backend + 四个 MCP server
 
 # 3. 前端（另一终端，仓库根）
-cd frontend-v2 && pnpm install && pnpm dev   # http://localhost:5174
+cd frontend-v2 && pnpm install && pnpm dev   # http://localhost:5300
 
 # 4. 验证
 curl http://localhost:8010/health   # 组件健康
@@ -59,7 +59,7 @@ uv run python scripts/smoke_mcp.py  # code-mcp 冒烟（退出码严格）
 CodeRagAgent/
 ├── docker-compose.yml   # 基础设施编排（7 服务）
 ├── backend-v2/          # v2 后端（FastAPI + Agent + 4 MCP server + 管道 worker）
-├── frontend-v2/         # v2 前端（React，:5174）
+├── frontend-v2/         # v2 前端（React，:5300）
 ├── data/                # 持久化卷 + 本地模型（gitignored）
 ├── docs/                # 设计 spec + v1 里程碑台账（gitignored）
 └── *.md                 # README / CLAUDE.md / AGENTS.md

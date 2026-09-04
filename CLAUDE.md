@@ -14,16 +14,18 @@ Progress is well past the Phase-1 minimal loop (parse → chunk → index → 3-
 
 Repo comments and all root-level design docs are in **Chinese**. Code comments frequently reference design sections like "§10" (DDL) or "§11" (retrieval) — these point into `coderag后端设计方案.md` / `coderag前端设计方案 .md`.
 
-## Run architecture (read this first — docs are partly stale)
+## Run architecture (read this first — this section is v1 历史参考)
 
-There are **two run tiers**, and the README/Makefile predate the current split:
+> **2026-09-04 起：根 `README.md` 与 `Makefile` 已重写为 v2 视角**（README = v2 门面导航到 `backend-v2/README.md`；Makefile = infra compose 代理 + backend-v2 本地命令代理），本节的 v1 描述与它们不再对应——v2 运行方式以 `backend-v2/README.md` 为准。
+
+There are **two run tiers**:
 
 - **Docker = infrastructure only.** `docker-compose.yml` runs postgres / redis / minio / elasticsearch / etcd / milvus / attu. There is **no** `backend`, `frontend`, `nginx`, or `model_server` service in compose. All infra ports are mapped to `localhost` (PG 5432, Redis 6379, MinIO 9000, ES 9200, Milvus 19530).
 - **App processes run locally on the host.** The split was made to cut Docker memory. Two local processes: the **backend** (`backend/`, :8000) and **frontend** (`frontend/`, :5173). An optional third — **`model_server/`** (:8100, FastAPI) — loads **CodeBERT** (`microsoft/codebert-base`, 768-d, via `transformers`) and is called by the backend **only in `EMBEDDING_STRATEGY=dual` mode** to embed code/comments. Default `unified` mode never starts it. Needs torch+transformers; GPU preferred, CPU fallback.
 
-Consequence: **the Makefile's app-level targets are stale** — `make migrate|test|lint|ingest|backend-shell|restart|logs` all do `docker compose exec backend …`, which fails because that service no longer exists. Only `make up|dev|down|ps` still work. For everything else, run locally inside `backend/` (commands below).
+Consequence: the v1-era Makefile's app-level targets (`make migrate|test|lint|ingest|backend-shell|restart|logs` doing `docker compose exec backend …`) were removed in the 2026-09-04 Makefile rewrite; current targets proxy to `backend-v2/` local `uv run` commands.
 
-The root `*.md` design docs (`README.md`, `Makefile`, `coderag*设计方案.md`) still describe the old full-stack Docker layout — trust `docs/项目状态.md` and `docker-compose.yml` over them when they conflict.
+The v1-era root design docs (`coderag*设计方案.md`, now under `docs/`) describe the old full-stack Docker layout — historical reference only.
 
 ## Common commands
 

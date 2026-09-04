@@ -1,0 +1,34 @@
+# V2-M8 golden set。锚点语法：code = "Class.method" | "Class"；doc = "doc_name#anchor"
+# （anchor 为 ingest 生成的 slug）。doc case 待文档库校准后追加（机制与匹配已实现）。
+repo: rocketmq
+cases:
+  - id: code-putmessage
+    query: CommitLog 的 putMessage 方法在哪个文件实现
+    expect: {code: ["CommitLog.putMessage"]}
+  - id: code-commitlog-class
+    query: CommitLog 这个类的定义在哪里
+    expect: {code: ["CommitLog"]}
+  - id: code-store
+    query: DefaultMessageStore 类在源码哪个位置
+    expect: {code: ["DefaultMessageStore"]}
+  - id: code-consumequeue
+    query: ConsumeQueue 是哪个类，定义在哪个包
+    expect: {code: ["ConsumeQueue"]}
+  - id: code-indexservice
+    query: 索引构建 IndexService 的 buildIndex 方法在哪
+    expect: {code: ["IndexService.buildIndex"]}
+  - id: code-mappedfile
+    query: MappedFile 抽象类的定义位置
+    expect: {code: ["MappedFile"]}
+  - id: code-pullhold
+    query: 长轮询请求挂起 PullRequestHoldService 在哪实现
+    expect: {code: ["PullRequestHoldService"]}
+  - id: code-remotingcmd
+    query: RemotingCommand 的 encode 编码方法在哪
+    expect: {code: ["RemotingCommand.encode"]}
+  - id: code-offsetstore
+    query: 消费位 offset 持久化 RemoteBrokerOffsetStore 类在哪
+    expect: {code: ["RemoteBrokerOffsetStore"]}
+  - id: code-storeconfig
+    query: 刷盘相关的配置项定义在哪个配置类
+    expect: {code: ["MessageStoreConfig"]}

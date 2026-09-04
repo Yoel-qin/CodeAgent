@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.api.deps import require_class
 from app.db.base import SessionLocal
 from app.services import graph_service
 
-router = APIRouter(prefix="/v1/graph", tags=["graph"])
+router = APIRouter(prefix="/v1/graph", tags=["graph"], dependencies=[Depends(require_class("graph"))])
 
 
 @router.get("/search")

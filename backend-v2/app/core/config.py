@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     mcp_graph_port: int = 8112
     mcp_common_port: int = 8113
 
+    # RBAC（Plan 5 M9）：off → 匿名伪用户透传零行为变更；on 时空 JWT_SECRET 启动即拒
+    rbac_enabled: bool = False
+    jwt_secret: str = ""
+    jwt_expire_minutes: int = 720
+
     @property
     def postgres_dsn(self) -> str:
         return (

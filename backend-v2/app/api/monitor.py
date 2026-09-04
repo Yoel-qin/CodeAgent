@@ -6,13 +6,14 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
 
+from app.api.deps import require_class
 from app.db.base import SessionLocal
 from app.services import monitor_service
 
-router = APIRouter(prefix="/v1/monitor", tags=["monitor"])
+router = APIRouter(prefix="/v1/monitor", tags=["monitor"], dependencies=[Depends(require_class("monitor"))])
 
 _WINDOW = Query(default="7d", pattern="^(today|7d|all)$")
 

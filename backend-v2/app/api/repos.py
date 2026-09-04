@@ -7,11 +7,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.api.deps import require_class
 from app.core.config import settings
 
-router = APIRouter(prefix="/v1/repos", tags=["repos"])
+router = APIRouter(prefix="/v1/repos", tags=["repos"], dependencies=[Depends(require_class("repos"))])
 
 
 @router.get("")

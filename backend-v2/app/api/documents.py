@@ -6,12 +6,13 @@ offset ≥0，越界 → 422（防负 offset / 巨 limit 打到 PG 报 500）。
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.deps import require_class
 from app.db.base import SessionLocal
 from app.services import document_service
 
-router = APIRouter(prefix="/v1/documents", tags=["documents"])
+router = APIRouter(prefix="/v1/documents", tags=["documents"], dependencies=[Depends(require_class("documents"))])
 
 
 @router.get("")

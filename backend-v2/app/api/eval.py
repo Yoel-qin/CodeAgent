@@ -1,12 +1,13 @@
 """评测 API（M8）：POST /run（同步长跑，前端单请求 600s 超时）+ GET 列表/详情。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.deps import require_class
 from app.schemas.eval import EvalRunRequest
 from app.services import eval_service
 
-router = APIRouter(prefix="/v1/eval", tags=["eval"])
+router = APIRouter(prefix="/v1/eval", tags=["eval"], dependencies=[Depends(require_class("eval"))])
 
 
 @router.post("/run")

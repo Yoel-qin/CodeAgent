@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.deps import require_class
 from app.core.config import settings
 from app.core.doc_search import get_doc_toc, read_doc_section
 from app.core.reader import read_file
 
-router = APIRouter(prefix="/v1", tags=["reader"])
+router = APIRouter(prefix="/v1", tags=["reader"], dependencies=[Depends(require_class("reader"))])
 
 
 @router.get("/code/read")

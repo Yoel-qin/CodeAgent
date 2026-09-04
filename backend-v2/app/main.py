@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from loguru import logger
 
 from app.agent import tools_loader
+from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.documents import router as documents_router
 from app.api.eval import router as eval_router
@@ -14,12 +15,15 @@ from app.api.monitor import router as monitor_router
 from app.api.reader import router as reader_router
 from app.api.repos import router as repos_router
 from app.api.sync import router as sync_router
+from app.core.config import settings
 from app.core.logging import setup_logging
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    if settings.rbac_enabled and not settings.jwt_secret:
+        raise RuntimeError("RBAC_ENABLED=1 需要 JWT_SECRET（启动 fail-fast，防弱密钥静默上线）")
     try:
         # 模块属性调用：测试只需钉 tools_loader.load_tools 一处（直引符号需双钉，Task 10 评审遗留）
         await tools_loader.load_tools()  # 三 server 独立降级；整体再兜一层：加载失败不阻断启动
@@ -39,3 +43,4 @@ app.include_router(graph_router)
 app.include_router(reader_router)
 app.include_router(monitor_router)
 app.include_router(eval_router)
+app.include_router(auth_router)

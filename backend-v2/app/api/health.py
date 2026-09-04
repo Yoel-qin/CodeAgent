@@ -65,4 +65,5 @@ async def health() -> dict:
             logger.warning(f"[health] {name} down: {e}")
     components["llm_config"] = _llm_status()
     ok = all(c.get("status") in ("ok", "unconfigured") for c in components.values())
-    return {"status": "ok" if ok else "degraded", "components": components}
+    return {"status": "ok" if ok else "degraded", "components": components,
+            "auth_required": settings.rbac_enabled}

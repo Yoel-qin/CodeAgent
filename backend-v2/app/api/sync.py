@@ -18,17 +18,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
+from app.api.deps import require_class
 from app.core.config import settings
 from app.db.base import SessionLocal
 from app.db.models.pipeline import PipelineEvent
 from app.pipeline.queue import RedisStreamQueue
 
-router = APIRouter(prefix="/v1/sync", tags=["sync"])
+router = APIRouter(prefix="/v1/sync", tags=["sync"], dependencies=[Depends(require_class("sync"))])
 
 
 class FileSync(BaseModel):

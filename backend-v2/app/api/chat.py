@@ -8,15 +8,16 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
 from app.agent.streaming import stream_chat
+from app.api.deps import require_class
 from app.db.base import SessionLocal
 from app.schemas.chat import ChatRequest, FeedbackRequest
 from app.services import chat_service
 
-router = APIRouter(prefix="/v1/chat", tags=["chat"])
+router = APIRouter(prefix="/v1/chat", tags=["chat"], dependencies=[Depends(require_class("chat"))])
 
 
 @router.post("/completions")

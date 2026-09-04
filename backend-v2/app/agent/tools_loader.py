@@ -2,14 +2,16 @@
 
 三层职责：
 
-1. **加载** `load_tools()`：三个 **独立** 的 ``MultiServerMCPClient``（code :8110 /
-   doc :8111 / graph :8112，streamable-http），逐 client ``await get_tools()`` 独立
-   try/except——一个 server 挂只把该组工具置 ``[]`` + log warning，不影响其余
-   （兑现降级链「code-mcp 挂 → 仅文档问答」）。adapters 0.3.x 的 client **不支持
-   ``async with``**（``__aenter__`` 直接 raise），构造后直接 ``await get_tools()``；
-   连接配置留在工具闭包里、每次工具调用新建 session，故 client 本体用完即弃、
-   无需关闭句柄，shutdown 清理 = `reset_tools()` 清缓存。
-2. **分区** `get_code_tools()`（code 5 + graph 4）/ `get_doc_tools()`（doc 5）。
+1. **加载** `load_tools()`：**独立** 的 ``MultiServerMCPClient``（code :8110 /
+   doc :8111 / graph :8112，streamable-http；M9 起 web 组 = ``WEB_MCP_SERVERS``
+   配置的远程 server，一个 client 挂多 server，未配置则该组不出现），逐 client
+   ``await get_tools()`` 独立 try/except——一个 server 挂只把该组工具置 ``[]`` +
+   log warning，不影响其余（兑现降级链「code-mcp 挂 → 仅文档问答」）。adapters
+   0.3.x 的 client **不支持 ``async with``**（``__aenter__`` 直接 raise），构造后
+   直接 ``await get_tools()``；连接配置留在工具闭包里、每次工具调用新建 session，
+   故 client 本体用完即弃、无需关闭句柄，shutdown 清理 = `reset_tools()` 清缓存。
+2. **分区** `get_code_tools()`（code 5 + graph 4）/ `get_doc_tools()`（doc 5）/
+   `get_web_tools()`（web = 远程检索工具，未配置/不可达 → ``[]``）。
 3. **wrap** `wrap_tool()`：用 ``StructuredTool``（name/description/args_schema 同原、
    coroutine=wrapped）重造每个工具，wrapped 在透传之外做四件事——
    M9 域防御（``scopes`` 非 None 时无权读域的工具直接拒执行，见 :data:`TOOL_DOMAIN`）、
@@ -27,7 +29,7 @@ from app.core.config import settings
 
 # ── 常量 ──────────────────────────────────────────────────────────────────
 
-SERVER_NAMES = ("code", "doc", "graph")
+SERVER_NAMES = ("code", "doc", "graph", "web")
 
 MAX_CITATIONS = 20
 
@@ -43,9 +45,32 @@ TOOL_DOMAIN: dict[str, str] = {}
 # citation 去重键（Global Constraints 冻结）：code=(file_path, start_line)、doc=(doc_id, section)
 
 
+def _parse_web_servers() -> dict[str, dict]:
+    """解析 ``WEB_MCP_SERVERS`` JSON 数组 → ``{name: {url, transport}}``。
+
+    空/坏 JSON/非数组 → ``{}``（web intent 落 retrieve 兜底，绝不崩 startup）；
+    元素缺 name 或 url 跳过；transport 缺省 ``streamable_http``。
+    """
+    raw = (settings.web_mcp_servers or "").strip()
+    if not raw:
+        return {}
+    try:
+        arr = json.loads(raw)
+    except ValueError:
+        logger.warning("tools_loader: WEB_MCP_SERVERS 非法 JSON，web 工具置空: {}",
+                       raw[:100])
+        return {}
+    out: dict[str, dict] = {}
+    for item in arr if isinstance(arr, list) else []:
+        if isinstance(item, dict) and item.get("name") and item.get("url"):
+            out[str(item["name"])] = {"url": str(item["url"]),
+                                      "transport": str(item.get("transport") or "streamable_http")}
+    return out
+
+
 def _default_transports() -> dict[str, dict]:
-    """按 settings 拼三 server 的 streamable-http 连接配置（生产路径）。"""
-    return {
+    """按 settings 拼四 server 连接配置（生产路径）；web 组仅在配置了远程 server 时出现。"""
+    cfg = {
         "code": {"url": f"http://{settings.mcp_host}:{settings.mcp_code_port}/mcp",
                  "transport": "streamable_http"},
         "doc": {"url": f"http://{settings.mcp_host}:{settings.mcp_doc_port}/mcp",
@@ -53,10 +78,18 @@ def _default_transports() -> dict[str, dict]:
         "graph": {"url": f"http://{settings.mcp_host}:{settings.mcp_graph_port}/mcp",
                   "transport": "streamable_http"},
     }
+    web = _parse_web_servers()
+    if web:
+        cfg["web"] = web
+    return cfg
 
 
 async def load_tools(transports: dict[str, dict] | None = None) -> None:
-    """加载并缓存三 MCP server 的工具；`transports` 供测试注入 stdio 配置。
+    """加载并缓存各 MCP server 组的工具；`transports` 供测试注入 stdio 配置。
+
+    生产路径四组：code/doc/graph（本地 streamable-http）+ web（M9，
+    ``WEB_MCP_SERVERS`` 配置的远程 server，一个 client 挂多 server；未配置
+    则该组不出现 → ``_TOOLS["web"]`` 恒空 → web intent 落 retrieve 兜底）。
 
     每个 server 独立 try/except：加载失败 → 该组工具置 ``[]`` + log warning，
     其余 server 不受影响；未知 server 名跳过并告警。整体失败不抛（lifespan
@@ -68,7 +101,9 @@ async def load_tools(transports: dict[str, dict] | None = None) -> None:
             logger.warning("tools_loader: 未知 server 名 {!r}（可选 {}），跳过", name, SERVER_NAMES)
             continue
         try:
-            client = MultiServerMCPClient({name: conn})
+            # code/doc/graph：单 server 包 {name: conn}；web：conn 已是 {server: conn}
+            # 多 server dict，直接整体交给 client（v1 MultiServerMCPClient 多 server 模式）
+            client = MultiServerMCPClient(conn if name == "web" else {name: conn})
             tools = await client.get_tools()
         except Exception as e:  # noqa: BLE001 —— 单 server 挂不拖垮其余（降级链地基）
             logger.warning("tools_loader: {}-mcp 工具加载失败，该组置空降级: {}", name, e)
@@ -97,6 +132,11 @@ def get_code_tools(include_graph: bool = True) -> list[BaseTool]:
 def get_doc_tools() -> list[BaseTool]:
     """文档侧工具 = doc-mcp 5。"""
     return _TOOLS["doc"]
+
+
+def get_web_tools() -> list[BaseTool]:
+    """远程 web 检索工具（未配置/不可达 → 空，路由侧据此落 retrieve 兜底）。"""
+    return _TOOLS["web"]
 
 
 def tools_ready() -> bool:

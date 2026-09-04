@@ -1,8 +1,9 @@
 """主图装配（Plan 3 Task 9）：StateGraph(AgentState) 单层图，编译一次模块级复用。
 
 拓扑（brief 冻结）：``query_analysis``（Task 6 router）入口 → conditional edges 只读
-``state["route"]``（``decide_route`` 真值表产出，取值仅四种）映射四节点 → 各节点
-``→ END``。**无 checkpointer**——跨轮记忆走 ``chat_messages`` history（Task 9
+``state["route"]``（``decide_route`` 真值表产出，取值仅五种）映射五节点 → 各节点
+``→ END``（M9 增 ``web_search``：远程 web 工具可用时才可被路由到，否则 web intent
+落 ``retrieve``）。**无 checkpointer**——跨轮记忆走 ``chat_messages`` history（Task 9
 streaming 层注入 ``state["history"]``），spec M4 无跨重启恢复要求。
 
 spec 偏差（写进 :mod:`app.agent.streaming` docstring）：spec §5.1 的独立
@@ -21,11 +22,13 @@ from app.agent.docqa import docqa_node
 from app.agent.nodes import clarify_node, retrieve_node
 from app.agent.query_analysis import query_analysis_node
 from app.agent.state import AgentState
+from app.agent.web_search import web_search_node
 
 __all__ = ["GRAPH", "build_graph"]
 
 #: conditional edges 的 path_map：``state["route"]`` → 节点名（decide_route 的取值域）
-_ROUTES = {"codenav": "codenav", "docqa": "docqa", "retrieve": "retrieve", "clarify": "clarify"}
+_ROUTES = {"codenav": "codenav", "docqa": "docqa", "retrieve": "retrieve",
+           "clarify": "clarify", "web_search": "web_search"}
 
 
 def build_graph():
@@ -36,6 +39,7 @@ def build_graph():
     graph.add_node("docqa", docqa_node)
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("clarify", clarify_node)
+    graph.add_node("web_search", web_search_node)
     graph.set_entry_point("query_analysis")
     graph.add_conditional_edges("query_analysis", lambda state: state.get("route", "retrieve"), _ROUTES)
     for name in _ROUTES.values():

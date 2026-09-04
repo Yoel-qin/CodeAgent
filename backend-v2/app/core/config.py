@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # Agent 层（Plan 3 M4）：工具轮上限 / 成本预算 / 跨轮记忆
     agent_rounds_code: int = 8
     agent_rounds_doc: int = 3
+    agent_rounds_web: int = 4
+    # WEB_SEARCH（M9）：远程 MCP server JSON 数组 [{"name","url","transport"?}]，
+    # transport 缺省 streamable_http（可选 sse）；空 = web intent 落 retrieve 兜底
+    web_mcp_servers: str = ""
     cost_max_tokens: int = 80000
     cost_max_llm_calls: int = 12
     history_turns: int = 6

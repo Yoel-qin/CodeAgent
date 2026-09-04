@@ -6,8 +6,8 @@ conditional edge 只读 ``state["route"]``：
 
 - ``codenav`` → 代码导航 Agent（M6）；``docqa`` → 文档问答 Agent（M5）
 - ``clarify`` → 追问兜底（Task 7；模型不确定 ``confidence < 0.7``）
-- ``retrieve`` → 纯检索兜底（Task 7；``None`` / 简单事实 / web——web Agent 是
-  V2-M9，当前一律 retrieve 兜底）
+- ``retrieve`` → 纯检索兜底（Task 7；``None`` / 简单事实 / other——M9 起 web 在
+  远程 web 工具可用时路由 ``web_search``，未配置/不可达落本兜底）
 
 双路分类，规则路兜底、**永不抛**：
 
@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 
 from app.agent.callbacks import CostCallbackHandler
 from app.agent.state import AgentState
+from app.agent.tools_loader import get_web_tools
 from app.clients.llm import chat_model_for, configured
 
 __all__ = ["AgentState", "RouteDecision", "decide_route", "query_analysis_node", "rule_classify"]
@@ -77,8 +78,8 @@ def decide_route(d: RouteDecision | None) -> str:
     """真值表：decision → 路由目标（纯函数，Task 9 conditional edge 的唯一依据）。
 
     ``None → retrieve``；简单事实（高把握）→ ``retrieve``；低把握（< 0.7）→
-    ``clarify``；再按 intent 分派 code/doc；web/other 高把握也落 ``retrieve``
-    （web Agent 是 V2-M9，当前一律 retrieve 兜底）。
+    ``clarify``；再按 intent 分派 code/doc；web → 远程 web 工具已加载则
+    ``web_search``（M9），否则 ``retrieve`` 兜底；other → ``retrieve``。
     """
     if d is None:
         return "retrieve"
@@ -86,6 +87,9 @@ def decide_route(d: RouteDecision | None) -> str:
         return "retrieve"
     if d.confidence < 0.7:
         return "clarify"
+    if d.intent == "web":
+        # M9：远程 web 工具已加载 → web_search 节点；未配置/不可达 → retrieve 兜底
+        return "web_search" if get_web_tools() else "retrieve"
     if d.intent == "code":
         return "codenav"
     if d.intent == "doc":

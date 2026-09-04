@@ -34,7 +34,7 @@ api.interceptors.response.use(
     }
     const data = err.response?.data;
     return Promise.reject(
-      Object.assign(new Error(data?.message || err.message || "请求失败"), {
+      Object.assign(new Error((data?.detail ?? data?.message) || err.message || "请求失败"), {
         status: err.response?.status ?? 0,
         error_code: data?.error_code,
         raw: data,

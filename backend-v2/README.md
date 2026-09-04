@@ -3,6 +3,9 @@
 方案二架构：代码走 grep/AST 只读工具精确检索（MCP server 暴露），文档走向量/BM25，
 PG 存调用图。详见 `docs/superpowers/specs/2026-08-28-backend-v2-agentic-mcp-design.md`。
 
+特性：MCP 代码工具检索 · 文档向量/BM25 · 调用图 · 多 Agent 编排（ReAct）·
+可观测 trace · **评测**（V2-M8）· **RBAC**（V2-M9）· **WEB_SEARCH 联网检索**（V2-M9）。
+
 ## 快速开始（backend-v2/ 下）
 
 ```bash
@@ -106,4 +109,50 @@ uv run python scripts/dev_up.py --with-frontend
 3. **全链路追溯**——TraceView：span 树（AntD Tree）+ 内联 SVG 瀑布图，列表点行进详情。
 
 > 截图位：MonitorPage 三卡（概览 / 管道状态 / 全链路追溯树+瀑布图）。
+
+## 评测（V2-M8）
+
+golden set 在 `eval/golden_set.yaml`（锚点语法：code = `Class.method` / `Class`，
+doc = `doc_name#anchor`）。跑批走真实 Agent 图（不落业务表），结果落 `eval_runs`：
+
+```bash
+# 锚点校准（不跑批；unresolved 的 case 会在跑批中被跳过并在报告中列出）
+uv run python scripts/eval_run.py --validate
+# 单 baseline 跑批 + QA 4 维 LLM 评判
+uv run python scripts/eval_run.py --judge
+# A/B：轮数减半 vs 禁图工具（baseline 自动作为对照）
+uv run python scripts/eval_run.py --ab r4:rounds_code=4,rounds_doc=2 --ab nograph:code_no_graph=1
+```
+
+REST：`POST /v1/eval/run`（variants/judge 同 CLI）+ `GET /v1/eval/runs[/{id}]`；前端
+「评测」页可视化（变体对比 + 历史 + 逐 case 明细）。指标：代码定位命中率 / 引用准确率 /
+轮次分布 / 延迟分位 / 均 Token。变体旋钮：`rounds_code/rounds_doc/code_no_graph/
+model_reasoning/top_k`（缺席 = 生产默认）。
+
+## RBAC（V2-M9，默认关闭）
+
+```bash
+# 1. 根 .env 或 backend-v2/.env：RBAC_ENABLED=1 + JWT_SECRET=<随机串>
+# 2. 建用户（角色 4 选 1：admin/developer/ops/external）
+uv run python scripts/create_user.py alice <password> developer
+```
+
+- 登录：`POST /v1/auth/login` → JWT（前端自动带；过期自动回登录页）
+- 两权限维度：`roles.allowed_scopes`（repo 可见性 + code/doc 读域——external 不见
+  代码）、`endpoint_classes`（router 归口）
+- 门控三路：router 级类门（403）；图内（无 code 权限不路由 CodeNav、retrieve 按域
+  跳路、code 域工具防御返回无权提示）；repo 可见性（chat 403 / 列表过滤 / 详情 404）
+- `RBAC_ENABLED=0`（默认）→ 匿名透传，全部端点零行为变更
+
+## WEB_SEARCH 联网检索（V2-M9，默认关闭）
+
+`WEB_MCP_SERVERS` 配置远程 MCP server（web 检索/抓取），Router 的 web intent 路由到
+WebSearch Agent：
+
+```
+WEB_MCP_SERVERS=[{"name":"tavily","url":"http://localhost:9144/sse","transport":"sse"}]
+```
+
+未配置/不可达 → web intent 自动落 retrieve 兜底（不崩、无死路）；web 结果只发
+agent_step 轨迹不发 citation（非 KB chunk）。
 

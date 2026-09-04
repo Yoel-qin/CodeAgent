@@ -222,3 +222,15 @@ def test_parse_variant_arg():
 
     with pytest.raises(argparse.ArgumentTypeError):
         cli.parse_variant_arg(":rounds_code=4")
+
+
+def test_cli_duplicate_ab_names_exit_2():
+    """--ab 同名变体在报告 agg 按名分组会静默合并——CLI 对齐 API 侧 422，报错退出 2。"""
+    import argparse
+    import asyncio
+
+    cli = _cli()
+    args = argparse.Namespace(
+        ab=["r4:rounds_code=4", "r4:code_no_graph=1"],
+        repo="rocketmq", judge=False, set=None, no_persist=True)
+    assert asyncio.run(cli._run(args)) == 2

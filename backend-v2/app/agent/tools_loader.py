@@ -49,7 +49,8 @@ def _parse_web_servers() -> dict[str, dict]:
     """解析 ``WEB_MCP_SERVERS`` JSON 数组 → ``{name: {url, transport}}``。
 
     空/坏 JSON/非数组 → ``{}``（web intent 落 retrieve 兜底，绝不崩 startup）；
-    元素缺 name 或 url 跳过；transport 缺省 ``streamable_http``。
+    元素缺 name 或 url 跳过；transport 缺省 ``streamable_http``；重名后者
+    覆盖前者并 log warning（M9 加固轮：静默覆盖会让配置笔误少一半可观测性）。
     """
     raw = (settings.web_mcp_servers or "").strip()
     if not raw:
@@ -63,8 +64,11 @@ def _parse_web_servers() -> dict[str, dict]:
     out: dict[str, dict] = {}
     for item in arr if isinstance(arr, list) else []:
         if isinstance(item, dict) and item.get("name") and item.get("url"):
-            out[str(item["name"])] = {"url": str(item["url"]),
-                                      "transport": str(item.get("transport") or "streamable_http")}
+            name = str(item["name"])
+            if name in out:
+                logger.warning("tools_loader: WEB_MCP_SERVERS 重名 server %r，后者覆盖前者", name)
+            out[name] = {"url": str(item["url"]),
+                         "transport": str(item.get("transport") or "streamable_http")}
     return out
 
 
@@ -268,7 +272,8 @@ def wrap_tool(tool: BaseTool, tracker: ToolCallTracker,
     :data:`TOOL_DOMAIN` 给该工具定的域不在 ``scopes["kinds"]`` → 不执行；再判仓库
     （Fix R1）——声明了 ``repo`` 参数的工具，LLM 显式 repo / 会话 repo 缺省值不在
     ``scopes["repos"]`` 可见集（``"*"`` 全放）→ 不执行；均返回 error JSON，LLM 侧
-    只见「无权」观察不泄内容；scopes=None 零行为变更）→ ① repo 机械注入
+    只见「无权」观察不泄内容；被拦截调用仍记 ``blocked`` 步（trace 可观测，M9
+    加固轮）；scopes=None 零行为变更）→ ① repo 机械注入
     （``default_repo`` 有值且工具声明了 ``repo`` 参数 → 缺省时补会话 repo，
     LLM 显式传值不覆盖——Task 10 ④：会话 repo 只在图 state 里、工具入参由 LLM 产出，
     漏传即落到 MCP 侧自己的 default_repo 造成跨库检索），
@@ -290,6 +295,8 @@ def wrap_tool(tool: BaseTool, tracker: ToolCallTracker,
         if scopes is not None:
             domain = TOOL_DOMAIN.get(tool.name)
             if domain is not None and domain not in (scopes.get("kinds") or ()):
+                tracker.steps.append({"tool": tool.name, "args": dict(kwargs),
+                                      "n": len(tracker.steps) + 1, "blocked": True})
                 return json.dumps(
                     {"error": f"no permission: {domain} 域工具已禁用"}, ensure_ascii=False)
             # Fix R1（评审 Important 1）：repo 维度同设防——工具实参由 LLM 产出，HTTP 层
@@ -300,6 +307,8 @@ def wrap_tool(tool: BaseTool, tracker: ToolCallTracker,
             if repos != "*" and "repo" in (tool.args or {}):
                 target = kwargs.get("repo") or default_repo
                 if target not in (repos or ()):
+                    tracker.steps.append({"tool": tool.name, "args": dict(kwargs),
+                                          "n": len(tracker.steps) + 1, "blocked": True})
                     return json.dumps(
                         {"error": f"no permission: 仓库 {target} 不可见"}, ensure_ascii=False)
         if (default_repo and isinstance(kwargs, dict) and "repo" in (tool.args or {})

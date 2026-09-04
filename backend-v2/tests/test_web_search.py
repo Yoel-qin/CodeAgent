@@ -32,6 +32,19 @@ def test_parse_web_servers_valid(monkeypatch):
     }
 
 
+def test_parse_web_servers_duplicate_name(monkeypatch):
+    """重名 server 后者覆盖前者并告警（不静默）——M9 加固轮。"""
+    from app.agent import tools_loader
+
+    raw = json.dumps([
+        {"name": "dup", "url": "http://a/mcp"},
+        {"name": "dup", "url": "http://b/mcp"},
+    ])
+    monkeypatch.setattr("app.core.config.settings.web_mcp_servers", raw)
+    assert tools_loader._parse_web_servers() == {
+        "dup": {"url": "http://b/mcp", "transport": "streamable_http"}}
+
+
 def test_default_transports_includes_web_only_when_configured(monkeypatch):
     from app.agent import tools_loader
 

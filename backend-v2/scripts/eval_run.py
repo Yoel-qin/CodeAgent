@@ -80,7 +80,13 @@ async def _validate(repo: str | None, path: str) -> int:
 async def _run(args: argparse.Namespace) -> int:
     from app.services import eval_service
 
-    variants = [parse_variant_arg(a) for a in (args.ab or [])] or None
+    parsed = [parse_variant_arg(a) for a in (args.ab or [])]
+    names = [v["name"] for v in parsed]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:  # 对齐 API 侧 422：同名变体在报告 agg 按名分组会静默合并
+        print(f"--ab 变体重名: {', '.join(dupes)}", file=sys.stderr)
+        return 2
+    variants = parsed or None
     result = await eval_service.run_and_persist(
         repo=args.repo, variants=variants, judge=args.judge,
         golden_path=args.set, trigger="cli", persist=not args.no_persist)

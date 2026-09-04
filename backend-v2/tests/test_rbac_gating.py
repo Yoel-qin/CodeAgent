@@ -110,10 +110,14 @@ async def test_wrap_tool_blocks_forbidden_domain():
             name="grep_code", description="t",
             args_schema={"type": "object", "properties": {}, "additionalProperties": True},
             coroutine=_inner)
-        wrapped = wrap_tool(tool, ToolCallTracker(),
+        tracker = ToolCallTracker()
+        wrapped = wrap_tool(tool, tracker,
                             scopes={"repos": "*", "kinds": {"doc"}})
         out = await wrapped.ainvoke({})
         assert "no permission" in out  # 被拦：返回 error JSON 而非执行
+        # M9 加固轮：被拦截调用记 blocked 步（trace 可观测，不再是无痕拒绝）
+        assert tracker.steps and tracker.steps[-1]["blocked"] is True \
+            and tracker.steps[-1]["tool"] == "grep_code"
         ok = wrap_tool(tool, ToolCallTracker(), scopes={"repos": "*", "kinds": {"code", "doc"}})
         assert "no permission" not in await ok.ainvoke({})
         no_gate = wrap_tool(tool, ToolCallTracker())  # scopes=None（off 态）零行为变更

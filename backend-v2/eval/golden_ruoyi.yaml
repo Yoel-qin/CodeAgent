@@ -1,0 +1,39 @@
+# 真实库验证 golden set —— RuoYi-Vue（若依前后端分离版，repo=ruoyi-vue）。
+# 锚点语法同 golden_set.yaml：code = "Class.method" | "Class"；doc = "doc_name#anchor"
+# （anchor 为 ingest 生成 slug；ruoyi 文档侧为 ruoyi-db-data.xlsx 的 sheet 名）。
+# 全部锚点已对照 PG coderag_v2.code_entities / doc_sections 逐一核实（Task 5，2026-09-05）。
+repo: ruoyi-vue
+cases:
+  - id: code-user-list
+    query: 查询用户列表的查询逻辑是在哪个 Service 类的哪个方法里实现的
+    # SysUserServiceImpl.selectUserList 69-80；控制器入口 SysUserController.list 56-66
+    expect: {code: ["SysUserServiceImpl.selectUserList", "SysUserController.list"]}
+  - id: code-login
+    query: 用户登录的校验逻辑（含验证码校验）是在哪个类里实现的
+    expect: {code: ["SysLoginService.login", "SysLoginService.validateCaptcha"]}
+  - id: code-token-create
+    query: 登录成功之后生成 JWT token 的方法在哪个类里
+    # TokenService.createToken 两个重载（109-126 / 173-185）均为可接受目标
+    expect: {code: ["TokenService.createToken"]}
+  - id: code-token-parse
+    query: 每次请求是怎么从 token 里解析出当前登录用户的
+    expect: {code: ["TokenService.getLoginUser", "TokenService.parseToken"]}
+  - id: code-datascope
+    query: 数据权限过滤是基于哪个切面类实现的，核心过滤逻辑在哪个方法
+    expect: {code: ["DataScopeAspect.dataScopeFilter", "DataScopeAspect"]}
+  - id: code-job-run
+    query: 定时任务手动执行一次（立即运行）的方法在哪个类实现
+    expect: {code: ["SysJobServiceImpl.run"]}
+  - id: code-menu-router
+    query: 后端把菜单组装成前端路由的结构是在哪个方法里做的
+    expect: {code: ["SysMenuServiceImpl.buildMenus"]}
+  - id: code-user-controller
+    query: SysUserController 这个类定义在哪个文件
+    expect: {code: ["SysUserController"]}
+  - id: doc-sysuser-table
+    # 携「手册/文档」措辞落 doc intent（初版纯表名问法被 LLM 分类器判 clarify/codenav，见 task-5-eval.md）
+    query: 数据手册文档里 sys_user 表初始化默认带哪些用户，都有哪些字段
+    expect: {doc: ["ruoyi-db-data.xlsx#sys_user"]}
+  - id: doc-sysjob-table
+    query: 初始化文档里系统自带的定时任务有哪些，sys_job 表数据长什么样
+    expect: {doc: ["ruoyi-db-data.xlsx#sys_job"]}

@@ -1,0 +1,39 @@
+# 真实库验证 golden set —— XXL-JOB 分布式任务调度平台（repo=xxl-job）。
+# code 锚点经 code_entities 核实；doc 锚点取官方中文文档 md 的章节 slug
+# （XXL-JOB官方文档.md，slug 规则：heading_path 各段 slug 化后 "/" join）。
+repo: xxl-job
+cases:
+  - id: code-job-add
+    query: 新建一个调度任务的逻辑是在哪个 service 类的哪个方法里实现的
+    expect: {code: ["XxlJobServiceImpl.add"]}
+  - id: code-manual-trigger
+    query: 在控制台手动触发一次任务执行，代码入口在哪个方法
+    expect: {code: ["XxlJobServiceImpl.trigger", "JobTrigger.trigger"]}
+  - id: code-schedule-thread
+    query: 调度中心跑调度循环的线程类是哪个，调度主逻辑在哪个方法
+    # JobScheduleHelper.start 42-257（时间轮/下次触发时间刷新在同类其余方法）
+    expect: {code: ["JobScheduleHelper.start", "JobScheduleHelper"]}
+  - id: code-jobthread
+    query: 执行器里真正执行任务逻辑的线程是哪个类，run 方法在哪
+    expect: {code: ["JobThread.run", "JobThread"]}
+  - id: code-executor-init
+    query: 执行器 XxlJobExecutor 启动初始化时做了哪些事，start 方法在哪
+    expect: {code: ["XxlJobExecutor.start"]}
+  - id: code-callback
+    query: 任务执行完之后结果是怎么回调上报给调度中心的
+    expect: {code: ["TriggerCallbackThreadHelper.start", "TriggerCallbackThreadHelper.pushCallBack"]}
+  - id: code-registry
+    query: 执行器把自己注册到调度中心的逻辑在哪个方法
+    expect: {code: ["JobRegistryHelper.registry", "JobRegistryHelper.registryRemove"]}
+  - id: code-helper-log
+    query: 在任务代码里写执行日志用哪个工具类的什么方法
+    expect: {code: ["XxlJobHelper.log", "XxlJobFileAppender.appendLog"]}
+  - id: doc-init-db
+    query: 部署 XXL-JOB 之前要初始化调度数据库，官方文档是怎么说的
+    expect: {doc: ["XXL-JOB官方文档.md#二-快速入门/2-1-初始化-调度数据库"]}
+  - id: doc-bean-mode
+    query: BEAN 模式类形式的任务怎么开发，官方文档里怎么写
+    expect: {doc: ["XXL-JOB官方文档.md#三-任务详解/3-1-bean模式-类形式"]}
+  - id: doc-design-schedule
+    query: 官方文档里调度模块为什么自研而不用 Quartz
+    expect: {doc: ["XXL-JOB官方文档.md#五-总体设计/5-4-调度模块剖析/5-4-2-自研调度模块"]}

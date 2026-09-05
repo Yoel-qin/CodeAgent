@@ -207,3 +207,27 @@ def test_logout_clears_cookie(rbac_on, seeded_user):
         r = client.post("/v1/auth/logout")
         assert r.status_code == 200 and r.json() == {"ok": True}
         assert "coderag_token=" in r.headers.get("set-cookie", "")
+
+
+# ── KEEP③地基：GET /v1/auth/me ─────────────────────────────────────────────
+
+
+def test_me_off_501():
+    from app.main import app
+
+    with TestClient(app) as client:
+        assert client.get("/v1/auth/me").status_code == 501
+
+
+def test_me_on_shape_and_auth(rbac_on, seeded_user):
+    from app.main import app
+
+    with TestClient(app) as client:
+        assert client.get("/v1/auth/me").status_code == 401  # 无 token
+        token = _login(client, "rbac-test-dev").json()["access_token"]
+        r = client.get("/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        u = r.json()["user"]
+        assert u["username"] == "rbac-test-dev" and u["role"] == "developer"
+        assert u["endpoint_classes"] == ["*"]
+        assert "repos" in u["allowed_scopes"]

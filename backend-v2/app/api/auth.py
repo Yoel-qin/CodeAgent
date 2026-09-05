@@ -2,10 +2,11 @@
 RBAC off → 501（提示未启用，前端据此不显示登录入口）。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.security import create_token, verify_password
 from app.db.base import SessionLocal
@@ -51,3 +52,17 @@ async def logout(response: Response) -> dict:
         raise HTTPException(status_code=501, detail="RBAC 未启用（RBAC_ENABLED=0），无需登出")
     response.delete_cookie("coderag_token", path="/")
     return {"ok": True}
+
+
+@router.get("/me")
+async def me(user: dict = Depends(get_current_user)) -> dict:
+    """当前用户载荷（KEEP③ 前端菜单过滤地基；形状 = login 的 user 段）。
+
+    认证同其余端点（Bearer/cookie 双读）；RBAC off → 501（对齐 login——
+    匿名无需 /me，前端只在 auth_required 时调用）。
+    """
+    if not settings.rbac_enabled:
+        raise HTTPException(status_code=501, detail="RBAC 未启用（RBAC_ENABLED=0），匿名无需 /me")
+    return {"user": {"username": user["username"], "role": user["role"],
+                     "allowed_scopes": user["allowed_scopes"],
+                     "endpoint_classes": user["endpoint_classes"]}}

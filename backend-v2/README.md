@@ -156,3 +156,17 @@ WEB_MCP_SERVERS=[{"name":"tavily","url":"http://localhost:9144/sse","transport":
 未配置/不可达 → web intent 自动落 retrieve 兜底（不崩、无死路）；web 结果只发
 agent_step 轨迹不发 citation（非 KB chunk）。
 
+## 图片视觉描述（默认关闭）
+
+ingest 期对 docx/md 等文档中的 IMAGE 元素调 SiliconFlow 视觉模型生成中文描述，
+描述作为 `kind="image"` 的 doc_section 入库（向量 + BM25 均可召回），
+`media_chunks.description` 同步填充。无 key / 调用失败 → 空描述（= 现状），软失败。
+
+| 配置键 | 默认 | 说明 |
+| --- | --- | --- |
+| `VISION_DESC_ENABLED` | `false` | 图片视觉描述总开关（on 时 ingest 逐图调视觉模型，描述进 doc_sections 可检索） |
+| `VISION_MODEL` | `PaddlePaddle/PaddleOCR-VL-1.5` | SiliconFlow 视觉模型（OCR/文档理解特化，免费） |
+| `VISION_BASE_URL` | `""` | 空 → 回落 `EMBEDDING_BASE_URL` |
+| `VISION_API_KEY` | `""` | 空 → 回落 `EMBEDDING_API_KEY` |
+| `VISION_MAX_IMAGES_PER_DOC` | `50` | 单文档描述图片数上限（成本护栏，超出记 `parse_meta.vision_skipped`） |
+

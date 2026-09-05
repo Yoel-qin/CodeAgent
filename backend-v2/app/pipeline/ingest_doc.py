@@ -97,22 +97,28 @@ def _ingest_doc_pg(
         }
 
     # ---- 视觉描述注入（spec §3.3：开关 on 时逐 IMAGE 串行描述，软失败 None 不破流程）----
+    # describe_image 自身已软失败；此层兜的是循环代码本身的意外（如未来 parser 塞非
+    # bytes 的 image_bytes 导致 b64 编码错）——增强失败钉死在降级（描述缺失）而非
+    # ingest 失败。meta 计数赋值也在 try 内：任何意外都保持 None = 未启用语义。
     described = 0
     skipped = 0
     if settings.vision_desc_enabled:
-        for el in elements:
-            if el.type != "IMAGE":
-                continue
-            if described >= settings.vision_max_images_per_doc:
-                skipped += 1
-                continue
-            raw = (el.metadata or {}).get("image_bytes")
-            desc = describe_image(raw, ext=(el.metadata or {}).get("ext") or "png") if raw else None
-            if desc:
-                el.content = desc
-                described += 1
-        meta.vision_described = described
-        meta.vision_skipped = skipped or None
+        try:
+            for el in elements:
+                if el.type != "IMAGE":
+                    continue
+                if described >= settings.vision_max_images_per_doc:
+                    skipped += 1
+                    continue
+                raw = (el.metadata or {}).get("image_bytes")
+                desc = describe_image(raw, ext=(el.metadata or {}).get("ext") or "png") if raw else None
+                if desc:
+                    el.content = desc
+                    described += 1
+            meta.vision_described = described
+            meta.vision_skipped = skipped or None
+        except Exception:
+            pass
 
     # ---- 分段 ----
     specs = chunk_doc_elements(elements, file_path=str(file_path), file_hash=file_hash)

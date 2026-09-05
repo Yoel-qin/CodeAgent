@@ -17,6 +17,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
+from app.agent import tools_loader
 from app.agent.cost import CostController
 from app.agent.graph import GRAPH
 from app.clients.llm import apply_model_overrides, reset_model_overrides
@@ -25,6 +26,25 @@ from app.eval import match
 from app.eval.golden import CodeTarget, DocTarget, GoldenCase
 
 __all__ = ["CaseEvidence", "EvalVariant", "build_row", "run_case"]
+
+#: 进程级「已确保加载」标记：真实库验证（Task 5）发现 harness 直驱主图不经
+#: FastAPI lifespan（``load_tools`` 仅在 ``app/main.py`` lifespan 调用）——独立
+#: 进程（CLI ``eval_run.py`` / 直调）里 ``_TOOLS`` 恒空 → 全部场景节点命中
+#: react_base 的「工具服务不可用」降级 → rounds 恒 0、code_hit 全靠 retrieve
+#: 兜底。故 ``run_case`` 首次调用前兜一次 ``load_tools``（模块属性调用——测试
+#: 钉 ``tools_loader.load_tools`` 即可阻断，test_eval_harness 既有钉法）；已在
+#: backend 进程（lifespan 已载）/已尝试过（失败=server 不可用，空工具照常降级，
+#: 不逐 case 重试刷屏）→ no-op。
+_TOOLS_ENSURED = False
+
+
+async def _ensure_tools_loaded() -> None:
+    global _TOOLS_ENSURED
+    if _TOOLS_ENSURED or tools_loader.tools_ready():
+        _TOOLS_ENSURED = True
+        return
+    _TOOLS_ENSURED = True
+    await tools_loader.load_tools()
 
 
 @dataclass
@@ -84,6 +104,7 @@ async def run_case(case: GoldenCase, variant: EvalVariant) -> CaseEvidence:
     ev = CaseEvidence(case_id=case.id, variant=variant.name)
     token = apply_model_overrides(variant.model_overrides())
     t0 = time.perf_counter()
+    await _ensure_tools_loaded()  # 独立进程兜载工具（见 _TOOLS_ENSURED 注释）
     try:
         async for chunk in GRAPH.astream(state, config=config, stream_mode="custom"):
             if not isinstance(chunk, dict) or "event" not in chunk:

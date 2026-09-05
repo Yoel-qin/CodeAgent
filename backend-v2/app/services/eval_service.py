@@ -193,3 +193,19 @@ async def run_and_persist(*, repo: str | None = None,
                     "config": None, "metrics": None, "error": str(e)[:2000],
                     "created_at": None, "finished_at": None, "per_query": rows}
     return await get_run(run_id)
+
+
+async def reclaim_orphan_runs() -> int:
+    """KEEP①：startup 回收 RUNNING 悬挂行（进程中断遗留）→ FAILED。
+
+    单 uvicorn 进程启动时不存在「本进程在跑的评测」，全量回收安全；并行 CLI
+    跑批恰逢重启被误标的边缘场景由 error 文案自解释。异常由调用方（lifespan）
+    兜住 log，不阻断启动。
+    """
+    async with SessionLocal() as session:
+        result = await session.execute(
+            update(EvalRun).where(EvalRun.status == "RUNNING").values(
+                status="FAILED", error="进程重启回收：RUNNING 悬挂（进程中断）",
+                finished_at=datetime.now(UTC)))
+        await session.commit()
+        return int(result.rowcount or 0)

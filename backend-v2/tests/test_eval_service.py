@@ -16,6 +16,7 @@ brief 适配（有据偏差，须带入评审）：
 """
 import pytest
 
+from app.core.config import settings
 from app.db.models import CodeEntity, DocSection, Document
 from app.eval import golden
 from app.services import eval_service
@@ -234,3 +235,71 @@ def test_cli_duplicate_ab_names_exit_2():
         ab=["r4:rounds_code=4", "r4:code_no_graph=1"],
         repo="rocketmq", judge=False, set=None, no_persist=True)
     assert asyncio.run(cli._run(args)) == 2
+
+
+# ── KEEP①：RUNNING 孤儿回收 ────────────────────────────────────────────────
+
+
+async def test_reclaim_orphan_runs():
+    """RUNNING 悬挂行 → FAILED（error 注明 + finished_at）；DONE 不动；幂等。
+    真落真清 + 尾部 dispose app engine（asyncpg 池跨事件循环，同文件既有约定）。"""
+    from sqlalchemy import create_engine, text
+
+    from app.db.base import engine as app_engine
+
+    eng = create_engine(settings.postgres_dsn_sync)
+    with eng.begin() as conn:
+        conn.execute(text(
+            "insert into eval_runs (repo, kind, status, config) values "
+            "('reclaim-test', 'single', 'RUNNING', '{}'::jsonb), "
+            "('reclaim-test', 'single', 'DONE', '{}'::jsonb)"))
+    try:
+        assert await eval_service.reclaim_orphan_runs() == 1
+        with eng.begin() as conn:
+            rows = conn.execute(text(
+                "select status, error, finished_at from eval_runs "
+                "where repo='reclaim-test' order by id")).all()
+        assert rows[0][0] == "FAILED" and "进程重启回收" in rows[0][1]
+        assert rows[0][2] is not None
+        assert rows[1][0] == "DONE" and rows[1][1] is None
+        assert await eval_service.reclaim_orphan_runs() == 0  # 幂等：无 RUNNING → 0
+    finally:
+        with eng.begin() as conn:
+            conn.execute(text("delete from eval_runs where repo='reclaim-test'"))
+        eng.dispose()
+        await app_engine.dispose()
+
+
+def test_lifespan_reclaims_on_startup(monkeypatch):
+    """main.py lifespan 启动即回收：插 RUNNING 行 → TestClient with（触发 lifespan）→ 行翻 FAILED。"""
+    import asyncio
+
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine, text
+
+    from app.agent import tools_loader
+    from app.db.base import engine as app_engine
+    from app.main import app
+
+    async def _noop_load(transports=None):
+        return None
+
+    monkeypatch.setattr(tools_loader, "load_tools", _noop_load)  # 对齐 test_auth_rbac._env
+
+    eng = create_engine(settings.postgres_dsn_sync)
+    with eng.begin() as conn:
+        conn.execute(text(
+            "insert into eval_runs (repo, kind, status, config) values "
+            "('reclaim-lifespan', 'single', 'RUNNING', '{}'::jsonb)"))
+    try:
+        with TestClient(app):  # with 进入即跑 lifespan（含回收）
+            with eng.begin() as conn:
+                row = conn.execute(text(
+                    "select status, error from eval_runs "
+                    "where repo='reclaim-lifespan'")).one()
+            assert row[0] == "FAILED" and "进程重启回收" in row[1]
+    finally:
+        with eng.begin() as conn:
+            conn.execute(text("delete from eval_runs where repo='reclaim-lifespan'"))
+        eng.dispose()
+        asyncio.run(app_engine.dispose())

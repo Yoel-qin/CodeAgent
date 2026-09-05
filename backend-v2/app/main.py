@@ -17,6 +17,7 @@ from app.api.repos import router as repos_router
 from app.api.sync import router as sync_router
 from app.core.config import settings
 from app.core.logging import setup_logging
+from app.services.eval_service import reclaim_orphan_runs
 
 
 @asynccontextmanager
@@ -29,6 +30,12 @@ async def lifespan(app: FastAPI):
         await tools_loader.load_tools()  # 各组独立降级；整体再兜一层：加载失败不阻断启动
     except Exception as e:  # noqa: BLE001 —— MCP 全挂时 agent 仍可启动（运行期再降级）
         logger.error("lifespan: tools 加载失败（agent 工具侧降级）: {}", e)
+    try:
+        reclaimed = await reclaim_orphan_runs()
+        if reclaimed:
+            logger.info("lifespan: 回收 {} 条 RUNNING 悬挂 eval_runs", reclaimed)
+    except Exception as e:  # noqa: BLE001 —— 回收失败（表未建/DB 不可达）不阻断启动
+        logger.warning("lifespan: eval_runs 孤儿回收跳过: {}", e)
     yield
     tools_loader.reset_tools()
 

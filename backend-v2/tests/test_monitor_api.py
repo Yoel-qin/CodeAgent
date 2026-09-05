@@ -12,12 +12,33 @@ API 层空库契约 + Redis 段软失败（pipeline 端点 Redis 挂不 500）�
    API 层「空库契约」（requests==0 / total==0 / hit_rate None / 404）由此真正确定；
    连接在端点自己的事件循环（TestClient portal 线程）里建立，绝不跨循环复用
    fixture 连接（test_chat_api 先例：池化连接绑旧循环跨测试复用会在 pre-ping 处炸）。
-   monitor 端点因此全程不触 app 共享 engine 连接池，无需 dispose 兜底 fixture。
+   monitor 端点因此全程不触 app 共享 engine 连接池。
+3. KEEP① 起 lifespan 会跑 eval_runs 孤儿回收（经 SessionLocal 触 app 共享 engine 池
+   ——上条第「端点不触池」只保住端点侧），故仍补 autouse 测后 ``engine.dispose()``
+   清池：池化 asyncpg 连接绑在 TestClient 的独立事件循环上，不 dispose 会在进程收尾
+   GC 时冒 unraisable 警告（test_documents_api 同款处理）。
 """
 import json
+import logging
 
 import pytest
 from sqlalchemy import text
+
+
+@pytest.fixture(autouse=True)
+def _dispose_app_engine():
+    """测后清 app 共享 engine 池（lifespan 回收经 SessionLocal 触共享池）。"""
+    import asyncio
+
+    from app.db.base import engine
+
+    yield
+    slog = logging.getLogger("sqlalchemy")
+    prev, slog.level = slog.level, logging.CRITICAL + 1
+    try:
+        asyncio.run(engine.dispose())
+    finally:
+        slog.setLevel(prev)
 
 
 @pytest.fixture

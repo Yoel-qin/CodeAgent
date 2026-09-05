@@ -1,20 +1,41 @@
 """M5 Task 12：POST /v1/sync/webhook（push 事件入队 Redis Stream）。
 
-brief 2 个逐字 + 三处测试环境适配（断言逐行不动）：
+brief 2 个逐字 + 四处测试环境适配（断言逐行不动）：
 1. autouse 钉 ``tools_loader.load_tools`` 为 noop——TestClient 会跑 lifespan，
    不钉则真连 127.0.0.1:8110/8111/8112 的 MCP server（与 test_chat_api 同款处理）。
 2. autouse 前后 DEL 测试流 key（``v2:pipe:test:wh*``）——删除 stream key 连 consumer
    group 一起删掉，与 test_queue.py 的 rq fixture 同款清场。
 3. test_webhook_unknown_repo_400 里 app/TestClient 两个 import 换行排序（ruff I001）；
    test_worker_a.py 的 brief 逐字分号行加 ``# noqa: E702``。
+4. autouse 测后 ``engine.dispose()`` 清 app 共享 engine 池——KEEP① 起 lifespan 会跑
+   eval_runs 孤儿回收（经 SessionLocal 触共享池），池化 asyncpg 连接绑在 TestClient
+   的独立事件循环上，不 dispose 会在进程收尾 GC 时冒 unraisable 警告
+   （test_documents_api 同款处理）。
 """
 
+import logging
 from pathlib import Path
 
 import pytest
 
 TEST_STREAM = "v2:pipe:test:wh"
 TEST_DEAD = "v2:pipe:test:whd"
+
+
+@pytest.fixture(autouse=True)
+def _dispose_app_engine():
+    """测后清 app 共享 engine 池（lifespan 回收经 SessionLocal 触共享池）。"""
+    import asyncio
+
+    from app.db.base import engine
+
+    yield
+    slog = logging.getLogger("sqlalchemy")
+    prev, slog.level = slog.level, logging.CRITICAL + 1
+    try:
+        asyncio.run(engine.dispose())
+    finally:
+        slog.setLevel(prev)
 
 
 @pytest.fixture(autouse=True)

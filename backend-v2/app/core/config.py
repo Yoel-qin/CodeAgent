@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_model: str = "BAAI/bge-m3"
 
+    # —— 图片视觉描述（真实库验证 T4-1 follow-up；默认 off = 零行为变更）——
+    vision_desc_enabled: bool = False
+    vision_model: str = "PaddlePaddle/PaddleOCR-VL-1.5"   # SiliconFlow 在售，免费
+    vision_base_url: str = ""      # 空 → 回落 embedding_base_url（同服务商字段级回落）
+    vision_api_key: str = ""       # 空 → 回落 embedding_api_key
+    vision_max_images_per_doc: int = 50   # 成本护栏：单文档描述图片数上限
+
     # ES IK 分词
     es_ik_enabled: bool = False
 

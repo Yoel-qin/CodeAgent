@@ -41,8 +41,8 @@ def build_doc_rows(
       - 空 heading_path → "sec-{order_index}"
       - 同文档内撞名追加 "-2" / "-3" 递增消歧
 
-    media_rows：v1 doc_chunker 不产 IMAGE spec，恒空列表。
-    图片段由 Task 5 ingest 直接从 DocElement 采集（不经过 chunk_doc_elements）。
+    media_rows：doc_chunker 对已描述 IMAGE（content 非空）产 kind="image" spec；
+    media 采集仍在 ingest 层（不经过 build_doc_rows），media_rows 恒空。
     签名保留 (section_rows, media_rows) 以对称。
     """
     section_rows: list[dict] = []

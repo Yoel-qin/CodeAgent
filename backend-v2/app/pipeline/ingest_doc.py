@@ -25,6 +25,8 @@ from app.clients.embedding_client import embed_texts
 from app.clients.es_client import bulk_index_sections, get_es
 from app.clients.milvus_client import get_client, upsert_sections
 from app.clients.minio_client import upload_original
+from app.clients.vision_client import describe_image
+from app.core.config import settings
 from app.db.models.doc import DocSection, Document, MediaChunk
 from app.pipeline.chunking.doc_chunker import chunk_doc_elements
 from app.pipeline.chunking.doc_sections import build_doc_rows
@@ -94,6 +96,24 @@ def _ingest_doc_pg(
             "status": "FAILED", "skipped": False,
         }
 
+    # ---- 视觉描述注入（spec §3.3：开关 on 时逐 IMAGE 串行描述，软失败 None 不破流程）----
+    described = 0
+    skipped = 0
+    if settings.vision_desc_enabled:
+        for el in elements:
+            if el.type != "IMAGE":
+                continue
+            if described >= settings.vision_max_images_per_doc:
+                skipped += 1
+                continue
+            raw = (el.metadata or {}).get("image_bytes")
+            desc = describe_image(raw, ext=(el.metadata or {}).get("ext") or "png") if raw else None
+            if desc:
+                el.content = desc
+                described += 1
+        meta.vision_described = described
+        meta.vision_skipped = skipped or None
+
     # ---- 分段 ----
     specs = chunk_doc_elements(elements, file_path=str(file_path), file_hash=file_hash)
     section_rows, _ = build_doc_rows(specs, document_id=0, repo=repo)
@@ -129,12 +149,13 @@ def _ingest_doc_pg(
     for row in section_rows:
         session.add(DocSection(**row))
 
-    # 插入 media_chunks（IMAGE 元素，description 空串占位，OCR 不做）
+    # 插入 media_chunks（IMAGE 元素；description=视觉描述，未描述/开关 off 为空串——现状）
     for el in elements:
         if el.type == "IMAGE":
             session.add(MediaChunk(
                 document_id=doc.id, repo=repo, kind="image",
-                description="", page=el.page_number, bbox=el.bbox,
+                description=el.content or "",
+                page=el.page_number, bbox=el.bbox,
             ))
 
     session.flush()

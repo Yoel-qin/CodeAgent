@@ -27,3 +27,5 @@ class ParseMeta:
     ocr_required: bool = False
     parse_status: str = "COMPLETED"  # COMPLETED / PARTIAL / FAILED
     parse_error: str | None = None
+    vision_described: int | None = None   # VISION_DESC on 时实际产出描述的图片数
+    vision_skipped: int | None = None     # 超过 VISION_MAX_IMAGES_PER_DOC 被跳过的图片数

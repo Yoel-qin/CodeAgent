@@ -1,8 +1,9 @@
-"""文档切片（从旧库移植）：按 H2/H3 章节切文本，保留 heading_path；大段代码块(≥5行)独立成 chunk；表格独立成 chunk（大表 >30 行按 20 行分片）。
+"""文档切片（从旧库移植）：按 H2/H3 章节切文本，保留 heading_path；大段代码块(≥5行)独立成 chunk；表格独立成 chunk（大表 >30 行按 20 行分片）；已描述图片独立成 chunk。
 
 chunk_id:
 - 文本/代码：``doc_{fileHash8}_{order}``
 - 表格：``tbl_{fileHash8}_p{page}_{order}``，分片 ``..._frag{n}``
+- 图片（已描述）：``img_{fileHash8}_{order}``
 
 v2 裁剪：DocChunkSpec 只保留文档入库用字段（去掉 keywords/code_anchors/content_hash/table 结构化字段/image 字段），
 approx_token_count 内联（无 jieba 依赖）。
@@ -37,7 +38,7 @@ class DocChunkSpec:
     file_path: str
     heading_path: list[str] = field(default_factory=list)
     level: int | None = None
-    kind: str = "text"                 # text / table
+    kind: str = "text"                 # text / table / image
     content: str = ""
     page: int | None = None
     token_count: int = 0
@@ -82,9 +83,10 @@ def _split_oversized(text: str, heading_path: list[str]) -> list[str]:
 
 
 def _split_blocks(elements: list[DocElement]) -> list[dict]:
-    """DocElement 序列 → 有序块（文本块或表格块）。表格打断当前文本块。"""
+    """DocElement 序列 → 有序块（文本块/表格块/图片块）。表格与图片打断当前文本块。"""
     blocks: list[dict] = []
     stack: list[tuple[int, str]] = []
+    img_count = 0
 
     def path() -> list[str]:
         return [t for _, t in stack]
@@ -120,6 +122,16 @@ def _split_blocks(elements: list[DocElement]) -> list[dict]:
                            "table_meta": el.metadata, "content": el.content,
                            "page": el.page_number})
             cur = None  # 表格后的文本另开新块
+        elif el.type == "IMAGE" and el.content:
+            # 已描述图片独立成块（描述由 ingest 的 VISION_DESC 注入 el.content；
+            # 空描述 IMAGE 不产块——现状保持）。img_count 只数已描述图，与 ingest
+            # 的 described 计数一一对应（spec §3.4）
+            close_text()
+            img_count += 1
+            blocks.append({"is_table": False, "is_image": True, "heading_path": [],
+                           "content": el.content, "page": el.page_number,
+                           "img_seq": img_count})
+            cur = None
         elif el.type == "ANCHOR":
             if cur is None:
                 cur = new_text()
@@ -163,14 +175,15 @@ def _make_spec(chunk_id: str, file_path: str, heading_path: list[str], level: in
     )
 
 
-def _make_table_spec(*, chunk_id, file_path, heading_path, order, content, commit_hash,
-                     page_number) -> DocChunkSpec:
+def _make_typed_spec(*, kind: str, chunk_id, file_path, heading_path, order, content,
+                     commit_hash, page_number) -> DocChunkSpec:
+    """table / image 共用的非文本 spec 构造（level 恒 None）。"""
     return DocChunkSpec(
         chunk_id=chunk_id,
         file_path=file_path,
         heading_path=heading_path,
         level=None,
-        kind="table",
+        kind=kind,
         content=content,
         page=page_number,
         token_count=_approx_token_count(content),
@@ -217,28 +230,42 @@ def _emit_table(specs: list[DocChunkSpec], blk: dict, fh8: str, file_path: str,
         for fi, start in enumerate(range(0, len(body_rows), TABLE_FRAGMENT_SIZE)):
             frag = body_rows[start:start + TABLE_FRAGMENT_SIZE]
             frag_text = " | ".join(headers) + "\n" + "\n".join(" | ".join(r) for r in frag)
-            specs.append(_make_table_spec(
-                chunk_id=f"{parent_id}_frag{fi + 1}", file_path=file_path, heading_path=titles,
-                order=order, content=f"{desc}\n{frag_text}", commit_hash=commit_hash,
-                page_number=page))
+            specs.append(_make_typed_spec(
+                kind="table", chunk_id=f"{parent_id}_frag{fi + 1}", file_path=file_path,
+                heading_path=titles, order=order, content=f"{desc}\n{frag_text}",
+                commit_hash=commit_hash, page_number=page))
             order += 1
         return order
 
-    specs.append(_make_table_spec(
-        chunk_id=parent_id, file_path=file_path, heading_path=titles, order=order,
-        content=content, commit_hash=commit_hash, page_number=page))
+    specs.append(_make_typed_spec(
+        kind="table", chunk_id=parent_id, file_path=file_path, heading_path=titles,
+        order=order, content=content, commit_hash=commit_hash, page_number=page))
+    return order + 1
+
+
+def _emit_image(specs: list[DocChunkSpec], blk: dict, fh8: str, file_path: str,
+                commit_hash: str, order: int) -> int:
+    """已描述图片 → kind="image" spec（title=图 n：描述前缀 40 字，作 anchor 源）。"""
+    desc = blk["content"] or ""
+    title = f"图 {blk['img_seq']}：{desc[:40]}"
+    specs.append(_make_typed_spec(
+        kind="image", chunk_id=f"img_{fh8}_{order}", file_path=file_path,
+        heading_path=[title], order=order, content=desc, commit_hash=commit_hash,
+        page_number=blk["page"]))
     return order + 1
 
 
 def chunk_doc_elements(elements: list[DocElement], *, file_path: str, file_hash: str,
                        commit_hash: str = "UNKNOWN") -> list[DocChunkSpec]:
-    """把 DocElement 列表切成 DocChunkSpec（文本/代码/表格，含大表分片）。"""
+    """把 DocElement 列表切成 DocChunkSpec（文本/代码/表格/已描述图片，含大表分片）。"""
     fh8 = file_hash[:8]
     specs: list[DocChunkSpec] = []
     order = 0
     for blk in _split_blocks(elements):
         if blk["is_table"]:
             order = _emit_table(specs, blk, fh8, file_path, commit_hash, order)
+        elif blk.get("is_image"):
+            order = _emit_image(specs, blk, fh8, file_path, commit_hash, order)
         else:
             order = _emit_text(specs, blk, fh8, file_path, commit_hash, order)
     return specs

@@ -29,7 +29,7 @@ class Document(Base):
     module: Mapped[str | None] = mapped_column(String(256))
     source_path: Mapped[str] = mapped_column(String(1024))
     minio_key: Mapped[str | None] = mapped_column(String(1024))
-    doc_type: Mapped[str] = mapped_column(String(32))  # markdown/pdf/docx/txt
+    doc_type: Mapped[str] = mapped_column(String(32))  # markdown/pdf/docx/xlsx/txt
     status: Mapped[str] = mapped_column(String(32))  # COMPLETED/PARTIAL/FAILED
     file_hash: Mapped[str] = mapped_column(String(64))
     parse_meta: Mapped[dict] = mapped_column(_pg_jsonb, default=dict)

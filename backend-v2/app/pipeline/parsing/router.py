@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from app.pipeline.parsing.doc_element import DocElement, ParseMeta
+from app.pipeline.parsing.excel_parser import parse_xlsx
 from app.pipeline.parsing.markdown_parser import parse_markdown
 from app.pipeline.parsing.pdf_parser import parse_pdf
 from app.pipeline.parsing.txt_parser import decode_text, parse_txt
@@ -18,6 +19,7 @@ DOC_FORMAT_EXTS: dict[str, str] = {
     ".pdf": "pdf",
     ".docx": "docx", ".doc": "doc",
     ".txt": "txt",
+    ".xlsx": "xlsx",
 }
 # ext → code|doc
 EXT_KIND: dict[str, str] = {".java": "code", **{ext: "doc" for ext in DOC_FORMAT_EXTS}}
@@ -46,4 +48,6 @@ def parse_doc(data: bytes, ext: str, file_path: str) -> tuple[list[DocElement], 
         return parse_docx(data, file_path)
     if fmt == "txt":
         return parse_txt(data, file_path)
+    if fmt == "xlsx":
+        return parse_xlsx(data, file_path)
     raise ValueError(f"未实现的格式: {fmt}")

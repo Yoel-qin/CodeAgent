@@ -17,7 +17,7 @@ from app.pipeline.ingest_doc import delete_doc, ingest_doc_file
 from app.pipeline.workers import WorkerError, repo_dir_of
 
 # 与 ingest_doc_repo 支持集一致
-DOC_EXTS = frozenset({".md", ".markdown", ".pdf", ".docx", ".txt"})
+DOC_EXTS = frozenset({".md", ".markdown", ".pdf", ".docx", ".txt", ".xlsx"})
 _MUTABLE_STATUS = ("A", "M", "D")
 
 

@@ -38,3 +38,32 @@ def test_docx_generated_in_test(tmp_path):
     elems, meta = parse_doc(p.read_bytes(), ".docx", "a.docx")
     assert meta.file_format == "docx"
     assert any("Doc Title" in (e.content or "") for e in elems if e.type == "HEADING")
+
+
+def test_xlsx_generated_in_test(tmp_path):
+    """KEEP xlsx：多 sheet → 每 sheet 一个 HEADING + 一个结构化 TABLE；空 sheet 跳过。"""
+    from openpyxl import Workbook
+
+    from app.pipeline.parsing import parse_doc
+
+    wb = Workbook()
+    ws1 = wb.active
+    ws1.title = "用户统计"
+    ws1.append(["姓名", "部门", "登录次数"])
+    ws1.append(["张三", "研发部", 12])
+    ws1.append(["李四", "运维部", 5])
+    wb.create_sheet("空表")
+    p = tmp_path / "stats.xlsx"
+    wb.save(p)
+
+    elements, meta = parse_doc(p.read_bytes(), ".xlsx", str(p))
+    assert meta.file_format == "xlsx" and meta.parse_status == "COMPLETED"
+    assert meta.total_tables == 1  # 只有非空 sheet 计入
+    kinds = [(e.type, e.content) for e in elements]
+    assert kinds[0] == ("HEADING", "用户统计")
+    tables = [e for e in elements if e.type == "TABLE"]
+    assert len(tables) == 1
+    td = tables[0].metadata["table_data"]
+    assert td["headers"] == ["姓名", "部门", "登录次数"]
+    assert td["rows"][0][0] == "张三" and td["n_rows"] == 3 and td["n_cols"] == 3
+    assert "张三" in tables[0].content

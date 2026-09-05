@@ -352,7 +352,7 @@ def ingest_doc_repo(
     from app.core.config import settings
 
     engine = create_engine(settings.postgres_dsn_sync)
-    supported = {".md", ".markdown", ".pdf", ".docx", ".txt"}
+    supported = {".md", ".markdown", ".pdf", ".docx", ".txt", ".xlsx"}
     files = sorted(
         f for f in docs_dir.rglob("*")
         if f.suffix.lower() in supported and f.is_file()

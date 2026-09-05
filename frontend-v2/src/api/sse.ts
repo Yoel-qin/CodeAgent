@@ -1,5 +1,5 @@
 import { EventStreamContentType, fetchEventSource } from "@microsoft/fetch-event-source";
-import { API_BASE, clearToken, getToken } from "./client";
+import { API_BASE } from "./client";
 
 export interface ChatStreamHandlers {
   onConversation?: (info: unknown) => void;
@@ -51,16 +51,14 @@ export async function streamChat(
     headers: {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
-      ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
     },
     body: JSON.stringify(payload),
     signal,
     openWhenHidden: true,
     onopen: async (res) => {
-      // RBAC on + JWT 过期/无效：SSE 不走 axios 拦截器 → 此处同款处置（清 token 回登录）
+      // RBAC on + cookie 过期/无效：SSE 不走 axios 拦截器 → 此处同款处置（回登录）
       // 后 throw 终止流；页面已整页跳转，onerror 的「连接失败」气泡不会停留。
       if (res.status === 401) {
-        clearToken();
         localStorage.removeItem("coderag_username");
         if (!window.location.pathname.startsWith("/login")) {
           window.location.href = "/login";

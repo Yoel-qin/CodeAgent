@@ -8,6 +8,7 @@ import { Input, List, Modal, Typography, theme } from "antd";
 import { RightOutlined } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../stores/app";
+import { canSeeRoute } from "../access";
 
 const { Text } = Typography;
 
@@ -27,6 +28,7 @@ const NAV_COMMANDS: Cmd[] = [
 export default function CommandPalette() {
   const open = useAppStore((s) => s.cmdkOpen);
   const setOpen = useAppStore((s) => s.setCmdkOpen);
+  const me = useAppStore((s) => s.me);
   const navigate = useNavigate();
   const { token } = theme.useToken();
 
@@ -34,7 +36,9 @@ export default function CommandPalette() {
   const [sel, setSel] = useState(0);
   const inputRef = useRef<{ focus: () => void } | null>(null);
 
-  const entries: Cmd[] = NAV_COMMANDS.filter((c) => !q.trim() || c.label.includes(q.trim()));
+  const entries: Cmd[] = NAV_COMMANDS.filter(
+    (c) => (!q.trim() || c.label.includes(q.trim())) && canSeeRoute(c.key, me?.endpoint_classes),
+  );
 
   // 打开时重置 + 聚焦输入框
   useEffect(() => {

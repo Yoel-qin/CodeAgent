@@ -1,11 +1,5 @@
 import axios from "axios";
 
-const TOKEN_KEY = "coderag_token";
-
-export const getToken = () => localStorage.getItem(TOKEN_KEY);
-export const setToken = (t: string) => localStorage.setItem(TOKEN_KEY, t);
-export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
-
 export const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 
 export const api = axios.create({
@@ -13,24 +7,14 @@ export const api = axios.create({
   timeout: 30_000,
 });
 
-// 请求侧：带 JWT（M9 RBAC；SSE 侧 sse.ts 已单独带）
-api.interceptors.request.use((config) => {
-  const t = getToken();
-  if (t) config.headers.Authorization = `Bearer ${t}`;
-  return config;
-});
-
 // 统一错误格式（对齐 api 接口清单：{ error_code, message, status }）；
-// 401（token 过期/被禁）→ 清 token 回登录页；未登录首访由 Workbench 守卫处理
+// 401 只在 RBAC on 时出现（cookie 过期/无效），httpOnly token 前端读不到——一律回登录页
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401 && getToken()) {
-      clearToken();
+    if (err.response?.status === 401 && !window.location.pathname.startsWith("/login")) {
       localStorage.removeItem("coderag_username");
-      if (!window.location.pathname.startsWith("/login")) {
-        window.location.href = "/login";
-      }
+      window.location.href = "/login";
     }
     const data = err.response?.data;
     return Promise.reject(

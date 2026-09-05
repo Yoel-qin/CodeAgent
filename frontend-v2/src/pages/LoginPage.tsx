@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Button, Card, Form, Input, Typography, message } from "antd";
 import { useNavigate } from "react-router-dom";
 import { login } from "../api/auth";
-import { setToken } from "../api/client";
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
@@ -12,7 +11,6 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const res = await login(vals);
-      setToken(res.access_token);
       localStorage.setItem("coderag_username", res.user.username);
       message.success(`欢迎，${res.user.username}（${res.user.role}）`);
       nav("/chat");

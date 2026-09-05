@@ -11,7 +11,8 @@ import {
   LineChartOutlined,
 } from "@ant-design/icons";
 import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { clearToken, getToken } from "../api/client";
+import { logout as logoutApi } from "../api/auth";
+import { canSeeRoute } from "../access";
 import { useAppStore } from "../stores/app";
 import ContextPanel from "../components/ContextPanel";
 import CommandPalette from "../components/CommandPalette";
@@ -50,6 +51,10 @@ export default function Workbench() {
   const health = useAppStore((s) => s.health);
   const fetchHealth = useAppStore((s) => s.fetchHealth);
   const setCmdkOpen = useAppStore((s) => s.setCmdkOpen);
+  const me = useAppStore((s) => s.me);
+  const meResolved = useAppStore((s) => s.meResolved);
+  const fetchMe = useAppStore((s) => s.fetchMe);
+  const clearMe = useAppStore((s) => s.clearMe);
   useHotkey();
 
   useEffect(() => {
@@ -58,14 +63,26 @@ export default function Workbench() {
     return () => clearInterval(t);
   }, [fetchHealth]);
 
-  // M9 RBAC 守卫：后端要求登录且本地无 token → 回登录页（health 未加载时放行，
-  // 首帧不闪跳；health 拉到 auth_required 后本守卫立即生效）。
+  // KEEP③④：auth_required 时以 /me 探测登录态（cookie 模式下前端无从本地判断）；
+  // 401 由 axios 拦截器整页跳登录，此处探测结果供守卫与菜单过滤。
+  useEffect(() => {
+    if (health?.auth_required && !meResolved) void fetchMe();
+  }, [health, meResolved, fetchMe]);
+
+  // M9 RBAC 守卫：后端要求登录且 /me 探测完成仍无身份 → 未登录，回登录页
+  //（health 未加载/探测中放行，首帧不闪跳；health 拉到 auth_required 后本守卫立即生效）。
   // 置于 useEffect 之后——守卫提前返回会跳过其后 hook 调用，违反 Rules of Hooks。
-  if (health?.auth_required && !getToken()) {
+  if (health?.auth_required && meResolved && !me) {
     return <Navigate to="/login" replace />;
   }
 
   const selected = "/" + (location.pathname.split("/")[1] || "chat");
+
+  // KEEP③：按 endpoint_classes 过滤（off/未探测 → classes undefined → 全显）；
+  // 「管理」组子项全滤掉则整组隐藏。
+  const visibleGroups = navItems
+    .map((g) => ({ ...g, children: g.children.filter((c) => canSeeRoute(c.key, me?.endpoint_classes)) }))
+    .filter((g) => g.children.length > 0);
   const ok = health?.status === "ok";
 
   return (
@@ -103,9 +120,13 @@ export default function Workbench() {
               items: [{ key: "logout", label: "登出" }],
               onClick: ({ key }) => {
                 if (key === "logout") {
-                  clearToken();
-                  localStorage.removeItem("coderag_username");
-                  window.location.href = "/login";
+                  void logoutApi()
+                    .catch(() => undefined) // 软失败：本地清理照做
+                    .finally(() => {
+                      clearMe();
+                      localStorage.removeItem("coderag_username");
+                      window.location.href = "/login";
+                    });
                 }
               },
             }}
@@ -124,7 +145,7 @@ export default function Workbench() {
             theme="dark"
             mode="inline"
             selectedKeys={[selected]}
-            items={navItems}
+            items={visibleGroups}
             onClick={({ key }) => navigate(key)}
             style={{ borderRight: 0, paddingTop: 8 }}
           />

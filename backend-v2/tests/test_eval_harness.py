@@ -65,6 +65,53 @@ async def test_run_case_collects_evidence_no_persist(monkeypatch):
     assert set(ev.token_usage) >= {"spent_tokens", "llm_calls", "estimated"}
 
 
+async def test_ensure_tools_loaded_regressions(monkeypatch):
+    """回归锁（终审 I-1）：``run_case`` 兜载工具的补丁不被误删/误改。
+
+    现有 retrieve 降级测试把 ``load_tools`` 钉成 noop 且只断言降级路径——从
+    ``run_case`` 删掉 ``await _ensure_tools_loaded()`` 它们照样绿（真实库验证
+    run 278 的缺陷即此形态：独立进程无 lifespan → ``_TOOLS`` 恒空 → 全员
+    降级 retrieve，CI 抓不住）。本测试经 ``run_case`` 真路径断言 ``load_tools``
+    调用次数；``_TOOLS_ENSURED`` 全局经 monkeypatch 复位（无遗留 fixture 污染）。
+    """
+    from app.agent import codenav, nodes, query_analysis, react_base, tools_loader
+
+    calls = {"n": 0}
+
+    async def _counting_load(transports=None):
+        calls["n"] += 1
+
+    def _patch_retrieve_degrade():
+        # 复用既有钉法：即便本机 8110 真在跑也不进真 ReAct/LLM，恒落 retrieve 兜底
+        monkeypatch.setattr(query_analysis, "configured", lambda: False)
+        monkeypatch.setattr(nodes, "configured", lambda: False)
+        monkeypatch.setattr(react_base, "configured", lambda: False)
+        monkeypatch.setattr(nodes, "grep_code",
+                            lambda *a: {"matches": [], "total_count": 0,
+                                        "truncated": False, "engine": "python"})
+        monkeypatch.setattr(codenav, "get_code_tools", lambda *a, **kw: [])
+        monkeypatch.setattr(nodes, "hybrid_search", lambda *a: {"results": []})
+
+    case = golden.GoldenCase(id="c-ensure", query="CommitLog putMessage", repo="mini",
+                             expect_code=["CommitLog.putMessage"])
+
+    # 分支 A：独立进程形态（lifespan 未跑 → tools_ready False）——两条 case 只兜载一次
+    monkeypatch.setattr(tools_loader, "tools_ready", lambda: False)
+    monkeypatch.setattr(tools_loader, "load_tools", _counting_load)
+    monkeypatch.setattr(harness, "_TOOLS_ENSURED", False)
+    _patch_retrieve_degrade()
+    await harness.run_case(case, EvalVariant())
+    await harness.run_case(case, EvalVariant())
+    assert calls["n"] == 1, f"tools_ready=False 时两条 case 应只触发一次 load_tools，实际 {calls['n']} 次"
+
+    # 分支 B：backend 进程形态（lifespan 已载 → tools_ready True）——零次 load_tools（no-op）
+    monkeypatch.setattr(tools_loader, "tools_ready", lambda: True)
+    calls["n"] = 0
+    monkeypatch.setattr(harness, "_TOOLS_ENSURED", False)
+    await harness.run_case(case, EvalVariant())
+    assert calls["n"] == 0, "tools_ready=True（lifespan 已载）时不应再触发 load_tools"
+
+
 def test_build_row_full_shape():
     case = golden.GoldenCase(id="c1", query="q", repo="mini",
                              expect_code=["CommitLog.putMessage", "Ghost.m"],

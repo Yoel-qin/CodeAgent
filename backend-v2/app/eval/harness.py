@@ -103,8 +103,8 @@ async def run_case(case: GoldenCase, variant: EvalVariant) -> CaseEvidence:
     state = {"query": case.query, "repo": case.repo, "conversation_id": "", "history": []}
     ev = CaseEvidence(case_id=case.id, variant=variant.name)
     token = apply_model_overrides(variant.model_overrides())
-    t0 = time.perf_counter()
     await _ensure_tools_loaded()  # 独立进程兜载工具（见 _TOOLS_ENSURED 注释）
+    t0 = time.perf_counter()  # 兜载后起表：独立进程首条 case 不把 MCP 连接/list-tools 耗时计进 latency
     try:
         async for chunk in GRAPH.astream(state, config=config, stream_mode="custom"):
             if not isinstance(chunk, dict) or "event" not in chunk:

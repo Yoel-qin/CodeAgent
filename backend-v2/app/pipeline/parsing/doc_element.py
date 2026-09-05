@@ -19,8 +19,8 @@ class DocElement:
 @dataclass
 class ParseMeta:
     """解析器附加元信息。"""
-    file_format: str  # markdown / pdf / docx / doc / html / txt
-    parse_engine: str  # markdown / pymupdf / python-docx / text / none
+    file_format: str  # markdown / pdf / docx / doc / html / txt / xlsx
+    parse_engine: str  # markdown / pymupdf / python-docx / text / openpyxl / none
     total_pages: int | None = None
     total_images: int | None = None
     total_tables: int | None = None

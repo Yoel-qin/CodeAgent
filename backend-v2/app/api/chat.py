@@ -91,15 +91,17 @@ async def conversation_detail(conversation_id: str, user: dict = Depends(get_cur
 
 
 @router.post("/messages/{message_id}/feedback")
-async def message_feedback(message_id: int, body: FeedbackRequest) -> dict:
-    """消息反馈落库（M6 Task 3）。
+async def message_feedback(message_id: int, body: FeedbackRequest,
+                           user: dict = Depends(get_current_user)) -> dict:
+    """消息反馈落库（M6 Task 3；KEEP② 记录归属用户名——off 落 "anonymous"）。
 
-    feedback 无外键——message_id 不存在也接受（M9 前无用户体系）；rating 非法 /
-    comment 超 2000 字 → 422（pydantic 校验）。事务边界在本端点：service 只 flush。
+    feedback 无外键——message_id 不存在也接受；rating 非法 / comment 超
+    2000 字 → 422（pydantic 校验）。事务边界在本端点：service 只 flush。
     """
     async with SessionLocal() as session:
         feedback_id = await chat_service.add_feedback(
-            session, message_id, rating=body.rating, comment=body.comment
+            session, message_id, rating=body.rating, comment=body.comment,
+            username=user["username"],
         )
         await session.commit()
     return {"ok": True, "feedback_id": feedback_id}

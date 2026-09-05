@@ -77,3 +77,27 @@ async def test_list_conversations_orders_by_recent_activity(async_session):
     rows = [c for c in await list_conversations(async_session) if c.id in (cid_a, cid_b)]
     assert [c.id for c in rows] == [cid_a, cid_b]
     assert rows[0].updated_at > rows[0].created_at
+
+
+# ── KEEP②：feedback 用户归属 ────────────────────────────────────────────────
+
+
+async def test_add_feedback_username(async_session):
+    """username 参数落列；缺省 None（历史/直调兼容）。
+
+    brief 逐字用 conftest 的 ``session``（同步 Session）——异步 service 需
+    AsyncSession，故换本文件既有的 ``async_session``（同款连接级事务回滚不留痕）；
+    ``session.get`` 相应加 await。第二处适配：brief 签名里 ``comment`` 是必填
+    keyword-only（Step 3c 逐字），第二通调用补 ``comment=None``。
+    """
+    from app.db.models import Feedback
+    from app.services import chat_service
+
+    fid = await chat_service.add_feedback(async_session, 1, rating="HELPFUL",
+                                          comment=None, username="alice")
+    fb = await async_session.get(Feedback, fid)
+    assert fb is not None and fb.username == "alice"
+
+    fid2 = await chat_service.add_feedback(async_session, 2, rating="NOT_HELPFUL",
+                                           comment=None)
+    assert (await async_session.get(Feedback, fid2)).username is None

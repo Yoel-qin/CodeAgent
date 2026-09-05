@@ -152,3 +152,25 @@ def test_on_external_role_class_forbidden(rbac_on, seeded_user):
         with eng.begin() as conn:
             conn.execute(text("delete from users where username='rbac-test-ext'"))
         eng.dispose()
+
+
+def test_on_feedback_username(rbac_on, seeded_user):
+    """KEEP②：RBAC on → feedback.username 落登录名（Bearer 认证身份）。"""
+    from sqlalchemy import create_engine, text
+
+    from app.main import app
+
+    with TestClient(app) as client:
+        token = _login(client, "rbac-test-dev").json()["access_token"]
+        r = client.post("/v1/chat/messages/999997/feedback",
+                        json={"rating": "NOT_HELPFUL"},
+                        headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        fid = r.json()["feedback_id"]
+    eng = create_engine(settings.postgres_dsn_sync)
+    with eng.begin() as conn:
+        u = conn.execute(text("select username from feedback where id=:i"),
+                         {"i": fid}).scalar()
+        conn.execute(text("delete from feedback where id=:i"), {"i": fid})
+    eng.dispose()
+    assert u == "rbac-test-dev"

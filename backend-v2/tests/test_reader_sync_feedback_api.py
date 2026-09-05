@@ -145,3 +145,24 @@ def test_feedback_roundtrip():
             with eng.begin() as conn:
                 conn.execute(text("delete from feedback where id = :i"), {"i": fid})
         eng.dispose()
+
+
+def test_feedback_username_off():
+    """KEEP②：RBAC off → feedback.username 落 "anonymous"（ANONYMOUS_USER 透传）。"""
+    from sqlalchemy import create_engine, text
+
+    from app.core.config import settings
+    from app.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/v1/chat/messages/999998/feedback",
+                        json={"rating": "HELPFUL"})
+        assert r.status_code == 200
+        fid = r.json()["feedback_id"]
+    eng = create_engine(settings.postgres_dsn_sync)
+    with eng.begin() as conn:
+        u = conn.execute(text("select username from feedback where id=:i"),
+                         {"i": fid}).scalar()
+        conn.execute(text("delete from feedback where id=:i"), {"i": fid})
+    eng.dispose()
+    assert u == "anonymous"

@@ -105,13 +105,15 @@ async def add_feedback(
     *,
     rating: str,
     comment: str | None,
+    username: str | None = None,
 ) -> int:
     """追加一条消息反馈，flush 取自增 id（不 commit——事务边界归调用方）。
 
     feedback.message_id 故意无外键：消息随会话级联删除后反馈仍独立存活，故
-    ``message_id`` 不存在也照收（M9 前无用户体系，不校验消息存在性）。
+    ``message_id`` 不存在也照收；username 同理无外键（KEEP②归属列）。
     """
-    fb = Feedback(message_id=message_id, rating=rating, comment=comment)
+    fb = Feedback(message_id=message_id, rating=rating, comment=comment,
+                  username=username)
     session.add(fb)
     await session.flush()
     return fb.id

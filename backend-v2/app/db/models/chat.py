@@ -64,6 +64,7 @@ class Feedback(Base):
     message_id: Mapped[int | None] = mapped_column(Integer, index=True)  # 无外键，见模块 docstring
     rating: Mapped[str] = mapped_column(String(16))  # HELPFUL|NOT_HELPFUL
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    username: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 反馈者：RBAC off → "anonymous"；历史行 NULL；无外键同 message_id 约定
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), default=_utcnow
     )

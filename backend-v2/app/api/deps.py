@@ -41,11 +41,13 @@ def normalize_scopes(scopes: dict) -> dict:
 
 async def get_current_user(request: Request) -> dict:
     """请求 → 用户 dict（off → ANONYMOUS；on → Bearer JWT → DB 用户）。401 语义：
-    缺 token / 坏 token / 用户不存在 / 已禁用。"""
+    缺 token（Bearer 或 coderag_token cookie 均无）/ 坏 token / 用户不存在 / 已禁用。"""
     if not settings.rbac_enabled:
         return ANONYMOUS_USER
     auth = request.headers.get("authorization") or ""
     token = auth[7:] if auth.lower().startswith("bearer ") else ""
+    if not token:  # KEEP④：Bearer 优先，缺则 httpOnly cookie（浏览器前端免手拼 header）
+        token = request.cookies.get("coderag_token") or ""
     username = decode_token(token) if token else None
     if username is None:
         raise HTTPException(status_code=401, detail="未认证或凭证已过期")

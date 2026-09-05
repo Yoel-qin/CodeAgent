@@ -62,6 +62,7 @@ def test_off_anonymous_passthrough():
         assert client.get("/health").json()["auth_required"] is False
         assert client.post("/v1/auth/login",
                            json={"username": "x", "password": "y"}).status_code == 501
+        assert client.post("/v1/auth/logout").status_code == 501
         assert client.get("/v1/repos").status_code == 200  # 零 token 直接过
 
 
@@ -174,3 +175,35 @@ def test_on_feedback_username(rbac_on, seeded_user):
         conn.execute(text("delete from feedback where id=:i"), {"i": fid})
     eng.dispose()
     assert u == "rbac-test-dev"
+
+
+# ── KEEP④：httpOnly cookie（Bearer 双读兼容） ──────────────────────────────
+
+
+def test_login_sets_httponly_cookie(rbac_on, seeded_user):
+    """login → Set-Cookie（HttpOnly）；cookie 单独可认证（无 Bearer header）。"""
+    from app.main import app
+
+    with TestClient(app) as client:
+        r = _login(client, "rbac-test-dev")
+        assert r.status_code == 200
+        setc = r.headers.get("set-cookie", "")
+        assert "coderag_token=" in setc and "HttpOnly" in setc and "Path=/" in setc
+        token = r.json()["access_token"]
+        # 显式 cookie、无 Authorization —— 证明 deps cookie 读路径生效
+        r2 = client.get("/v1/repos", cookies={"coderag_token": token})
+        assert r2.status_code == 200
+        # Bearer 仍可认证（双读兼容，既有测试/调试姿势不变）
+        r3 = client.get("/v1/repos", headers={"Authorization": f"Bearer {token}"})
+        assert r3.status_code == 200
+
+
+def test_logout_clears_cookie(rbac_on, seeded_user):
+    """logout 无条件清 cookie（无认证依赖——清 cookie 永远成功）。"""
+    from app.main import app
+
+    with TestClient(app) as client:
+        _login(client, "rbac-test-dev")
+        r = client.post("/v1/auth/logout")
+        assert r.status_code == 200 and r.json() == {"ok": True}
+        assert "coderag_token=" in r.headers.get("set-cookie", "")

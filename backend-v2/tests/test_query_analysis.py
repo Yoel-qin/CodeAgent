@@ -45,6 +45,11 @@ def test_decide_route_truth_table(monkeypatch):
 def test_rule_classify_keywords():
     assert rule_classify("DefaultMQProducerImpl 的 send 在哪个文件").intent == "code"
     assert rule_classify("刷盘机制文档怎么写").intent == "doc"
+    # 真实库验证 T5-2：DB 种子数据类问题（数据手册/xlsx 的表内容）须落 doc——
+    # 此前 snake_case 表名不命中 PascalCase、「数据库/表初始化」不在任何关键词表 →
+    # other/0.5 → clarify，须「手册/文档」措辞才能引导到 docqa
+    assert rule_classify("数据库 sys_user 表初始化默认有哪些用户").intent == "doc"
+    assert rule_classify("xxl_job 库表的数据字典里有哪些字段定义").intent == "doc"
 
 
 async def test_node_no_key_uses_rules(monkeypatch):

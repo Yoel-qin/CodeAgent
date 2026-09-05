@@ -57,7 +57,10 @@ _RULE_MISS_CONFIDENCE = 0.5
 #: 代码信号：PascalCase 类名（至少两个驼峰段）或扩展名/中文关键词
 _PASCAL_CASE_RE = re.compile(r"([A-Z][a-z0-9]+){2,}")
 _CODE_KEYWORDS = (".java", "源码", "方法", "调用链", "实现")
-_DOC_KEYWORDS = ("文档", "手册", "教程", "配置说明", "怎么使用")
+#: doc 信号：常规文档词 + 数据字典类（真实库验证 T5-2——DB 种子数据/表结构问法落
+#: 数据手册[xlsx] 内容，此前 snake_case 表名不命中 PascalCase 只能靠「手册」措辞引导）
+_DOC_KEYWORDS = ("文档", "手册", "教程", "配置说明", "怎么使用",
+                 "数据字典", "表初始化", "初始化数据")
 
 # ── 结构化分类结果 ────────────────────────────────────────────────────────
 
@@ -116,7 +119,7 @@ def rule_classify(query: str) -> RouteDecision:
 # ── LLM 路 ────────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """你是代码知识库（CodeRAG）的意图分类器。根据用户问题只输出 json 对象，字段：
-- intent："code"（问代码位置/实现/调用链）| "doc"（问文档/手册/教程/配置说明）| "web"（需联网的时效信息）| "other"（闲聊等）
+- intent："code"（问代码位置/实现/调用链）| "doc"（问文档/手册/教程/配置说明，含数据手册——库表结构、表初始化/种子数据、数据字典）| "web"（需联网的时效信息）| "other"（闲聊等）
 - confidence：0 到 1 之间的把握
 - simple_fact：是否为与知识库无关、无需检索即可回答的简单事实
 - reason：一句话中文理由
@@ -127,6 +130,9 @@ A: {"intent": "code", "confidence": 0.92, "simple_fact": false, "reason": "问�
 
 Q: 刷盘机制在文档里是怎么写的
 A: {"intent": "doc", "confidence": 0.88, "simple_fact": false, "reason": "问文档章节内容"}
+
+Q: 数据库 sys_user 表初始化默认有哪些用户
+A: {"intent": "doc", "confidence": 0.85, "simple_fact": false, "reason": "问数据手册中的表初始化数据"}
 
 Q: 今天天气怎么样
 A: {"intent": "other", "confidence": 0.95, "simple_fact": true, "reason": "与知识库无关的日常问题"}"""

@@ -170,3 +170,6 @@ ingest 期对 docx/md 等文档中的 IMAGE 元素调 SiliconFlow 视觉模型�
 | `VISION_API_KEY` | `""` | 空 → 回落 `EMBEDDING_API_KEY` |
 | `VISION_MAX_IMAGES_PER_DOC` | `50` | 单文档描述图片数上限（成本护栏，超出记 `parse_meta.vision_skipped`） |
 
+注意：开关 on **不回填已入库文档**——ingest 的 hash 幂等跳过发生在解析之前，文件未变即整篇跳过，
+视觉描述自然不会补上；要给既有文档补描述须 `--reindex` 重灌（`python scripts/ingest_docs.py --reindex`）。
+

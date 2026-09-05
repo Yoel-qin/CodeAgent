@@ -118,7 +118,7 @@ def _ingest_doc_pg(
             meta.vision_described = described
             meta.vision_skipped = skipped or None
         except Exception:
-            pass
+            logger.debug("视觉描述注入段意外失败（已降级跳过）", exc_info=True)
 
     # ---- 分段 ----
     specs = chunk_doc_elements(elements, file_path=str(file_path), file_hash=file_hash)

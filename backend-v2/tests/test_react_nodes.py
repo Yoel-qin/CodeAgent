@@ -162,3 +162,63 @@ async def test_docqa_degraded_path_appends_no_notice(monkeypatch):
     await docqa.docqa_node(_state("docqa"), {"configurable": {}})
     assert all("未找到可引用" not in c["data"]["content"]
                for c in w if c["event"] == "token")
+
+
+# ── 预算超限 × 最终答案轮（真实库验证 T6-2 回归锁）──
+# 记账是事后结算制（on_llm_end 才置 cost.exceeded），轮询只能在下一个 astream chunk 拦截；
+# 若导致超限的那次调用恰是最终答案轮（消息无 tool_calls、Agent 已到 END），token 已全量
+# 流出、无从拦截任何后续调用——此时 notice「本次回答由降级模板提供」即谎言（QA3：961 字
+# 完整回答尾部被追加降级文案）。修复后该轮放行自然收尾；中间轮超限照旧中断（真降级）。
+
+
+def _over_budget_cost():
+    from app.agent.cost import CostController
+    cost = CostController(max_tokens=1, max_llm_calls=99)
+    cost.record_usage(completion=100)   # 预置超限（模拟结算滞后于答案流出的固有事实）
+    return cost
+
+
+async def test_react_budget_exceeded_on_final_answer_no_notice(monkeypatch):
+    """超限恰在最终答案轮结算 → 不中断、不发降级 notice、不走 retrieve。"""
+    model = _FakeToolModel(messages=iter([AIMessage(content="完整答案")]))
+    monkeypatch.setattr(react_base, "chat_model_for", lambda _t="reasoning": model)
+    monkeypatch.setattr(react_base, "configured", lambda: True)
+    monkeypatch.setattr(codenav, "get_code_tools",
+                        lambda: [_tool("grep_code", GREP_RESULT)])
+    degraded = {}
+
+    async def _fake_retrieve(state, config):
+        degraded["yes"] = True
+    monkeypatch.setattr(react_base, "retrieve_node", _fake_retrieve)
+    w = _W()
+    monkeypatch.setattr(react_base, "_safe_writer", lambda: w)
+    await codenav.codenav_node(
+        _state("codenav"), {"configurable": {"cost": _over_budget_cost()}})
+    tokens = "".join(c["data"]["content"] for c in w if c["event"] == "token")
+    assert "降级模板" not in tokens       # 未发生降级——不发与事实矛盾的文案
+    assert degraded.get("yes") is None     # 答案已成功，不走 retrieve 降级
+
+
+async def test_react_budget_exceeded_mid_rounds_still_degrades(monkeypatch):
+    """超限发生在中间轮（消息带 tool_calls，还有后续可拦）→ 照旧中断 + notice（真降级）。"""
+    model = _FakeToolModel(messages=iter([
+        AIMessage(content="", tool_calls=[{"name": "grep_code", "args": {"pattern": "x"},
+                                           "id": "c1"}]),
+        AIMessage(content="不该到达的答案"),
+    ]))
+    monkeypatch.setattr(react_base, "chat_model_for", lambda _t="reasoning": model)
+    monkeypatch.setattr(react_base, "configured", lambda: True)
+    monkeypatch.setattr(codenav, "get_code_tools",
+                        lambda: [_tool("grep_code", GREP_RESULT)])
+    degraded = {}
+
+    async def _fake_retrieve(state, config):
+        degraded["yes"] = True
+    monkeypatch.setattr(react_base, "retrieve_node", _fake_retrieve)
+    w = _W()
+    monkeypatch.setattr(react_base, "_safe_writer", lambda: w)
+    await codenav.codenav_node(
+        _state("codenav"), {"configurable": {"cost": _over_budget_cost()}})
+    tokens = "".join(c["data"]["content"] for c in w if c["event"] == "token")
+    assert "降级模板" in tokens            # 中断即止：模板 notice 顶替未发生的后续生成
+    assert degraded.get("yes") is None     # BudgetExceeded 分支本就不走 retrieve（部分结果即止）

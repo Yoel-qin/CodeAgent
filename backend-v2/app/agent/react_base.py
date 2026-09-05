@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import warnings
 
+from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
@@ -81,6 +82,26 @@ def _drain_tracker(writer, tracker: ToolCallTracker) -> None:
                                      "n": len(tracker.steps) + i + 1, "duration_ms": None})
     for c in tracker.citations:
         _emit(writer, "citation", c)
+
+
+def _is_final_answer_chunk(stream: str, chunk) -> bool:
+    """updates chunk 是否指示「最终答案已完整流出」（预算中断的放行判据，真实库验证 T6-2）。
+
+    ``create_react_agent`` 的 model 节点名 ``agent``；其完成 chunk 形如
+    ``{"agent": {"messages": [AIMessage(...)]}}``。消息无 ``tool_calls`` = ReAct 终止
+    条件（Agent 下一步即 END）——该轮 token 已经 ``TokenSSEHandler`` 全量直发给用户，
+    无后续调用可拦。其余形状（带 tool_calls 的 model 轮 / tools 节点 / custom 桥接事件）
+    一律视为还有后续，照旧可拦。
+    """
+    if stream != "updates" or not isinstance(chunk, dict):
+        return False
+    delta = chunk.get("agent")
+    if not isinstance(delta, dict):
+        return False
+    for m in reversed(delta.get("messages") or []):
+        if isinstance(m, AIMessage):
+            return not (getattr(m, "tool_calls", None) or [])
+    return False
 
 
 async def run_react_agent(state: AgentState, config: RunnableConfig | None, *, agent_name: str,
@@ -156,8 +177,12 @@ async def run_react_agent(state: AgentState, config: RunnableConfig | None, *, a
             if stream == "custom" and isinstance(chunk, dict) and writer is not None:
                 # 嵌套侧经 get_stream_writer 推的事件桥接回主图流
                 writer(chunk)
-            # 预算超限 → 中断 Agent 循环进降级（回调里抛不出去，只能在此拦）
-            if cost.exceeded is not None:
+            # 预算超限 → 中断 Agent 循环进降级（回调里抛不出去，只能在此拦）。
+            # 例外（真实库验证 T6-2）：记账是事后结算制，exceeded 可能恰在最终答案轮的
+            # on_llm_end 置位——该轮 token 已全量流出、Agent 已到 END，中断无从阻止任何
+            # 后续调用，notice「由降级模板提供」即成谎言。此时放行自然收尾（超限事实仍
+            # 记在 cost.exceeded → retrieval_meta.cost，账实分离）。
+            if cost.exceeded is not None and not _is_final_answer_chunk(stream, chunk):
                 raise cost.exceeded
         tracker.reacted = True   # ReAct 主循环完整跑完（docqa 无引用拒答判定用）
     except BudgetExceeded as e:
